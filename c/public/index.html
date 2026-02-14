@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>AirGradient Dashboard</title>
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3"></script>
+</head>
+<body>
+  <header>
+    <h1>AirGradient Dashboard</h1>
+    <div id="device-status"></div>
+  </header>
+
+  <nav id="time-range">
+    <button data-range="3600000">1h</button>
+    <button data-range="21600000">6h</button>
+    <button data-range="86400000" class="active">24h</button>
+    <button data-range="604800000">7d</button>
+    <button data-range="2592000000">30d</button>
+  </nav>
+
+  <main id="charts">
+    <div class="chart-card">
+      <h2>PM2.5 <span class="unit">(ug/m3)</span></h2>
+      <canvas id="chart-pm25"></canvas>
+    </div>
+    <div class="chart-card">
+      <h2>CO2 <span class="unit">(ppm)</span></h2>
+      <canvas id="chart-co2"></canvas>
+    </div>
+    <div class="chart-card">
+      <h2>Temperature <span class="unit">(C)</span></h2>
+      <canvas id="chart-temp"></canvas>
+    </div>
+    <div class="chart-card">
+      <h2>Humidity <span class="unit">(%)</span></h2>
+      <canvas id="chart-humidity"></canvas>
+    </div>
+    <div class="chart-card">
+      <h2>TVOC Index</h2>
+      <canvas id="chart-tvoc"></canvas>
+    </div>
+    <div class="chart-card">
+      <h2>NOx Index</h2>
+      <canvas id="chart-nox"></canvas>
+    </div>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

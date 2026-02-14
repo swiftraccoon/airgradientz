@@ -1,0 +1,10 @@
+{
+    "name": "airgradientz",
+    "description": "AirGradient air quality monitoring dashboard",
+    "targetType": "executable",
+    "dependencies": {
+        "d2sqlite3": "~>1.0.0"
+    },
+    "sourcePaths": ["source"],
+    "lflags": ["-lpthread"]
+}

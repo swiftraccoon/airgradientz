@@ -1,0 +1,6 @@
+[submodule "references/arduino"]
+	path = references/arduino
+	url = https://github.com/airgradienthq/arduino.git
+[submodule "references/python-airgradient"]
+	path = references/python-airgradient
+	url = https://github.com/airgradienthq/python-airgradient.git
