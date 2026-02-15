@@ -65,12 +65,12 @@ impl DeviceHealth {
 fn init_health(state: &AppState) {
     let mut health = state.health.write().unwrap();
     health.clear();
-    for device in state.config.devices {
+    for device in &state.config.devices {
         health.insert(
-            device.ip.to_string(),
+            device.ip.clone(),
             DeviceHealth {
-                ip: device.ip.to_string(),
-                label: device.label.to_string(),
+                ip: device.ip.clone(),
+                label: device.label.clone(),
                 status: HealthStatus::Unknown,
                 last_success: None,
                 last_error: None,
@@ -87,7 +87,7 @@ pub(crate) fn get_health_json(state: &AppState) -> JsonValue {
         .config
         .devices
         .iter()
-        .filter_map(|d| health.get(d.ip).map(DeviceHealth::to_json))
+        .filter_map(|d| health.get(&d.ip).map(DeviceHealth::to_json))
         .collect();
     json_array(items)
 }
@@ -170,8 +170,8 @@ fn fetch_device(state: &AppState, ip: &str, label: &str) {
 }
 
 fn poll_all(state: &AppState) {
-    for device in state.config.devices {
-        fetch_device(state, device.ip, device.label);
+    for device in &state.config.devices {
+        fetch_device(state, &device.ip, &device.label);
     }
 }
 

@@ -1,0 +1,9 @@
+{
+  "devices": [
+    { "ip": "192.168.88.6", "label": "outdoor" },
+    { "ip": "192.168.88.159", "label": "indoor" }
+  ],
+  "pollIntervalMs": 15000,
+  "fetchTimeoutMs": 5000,
+  "maxApiRows": 10000
+}

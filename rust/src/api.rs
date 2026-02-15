@@ -101,8 +101,8 @@ pub(crate) fn handle_config(state: &AppState) -> HttpResponse {
         .iter()
         .map(|d| {
             json_object(vec![
-                ("ip", JsonValue::String(d.ip.to_string())),
-                ("label", JsonValue::String(d.label.to_string())),
+                ("ip", JsonValue::String(d.ip.clone())),
+                ("label", JsonValue::String(d.label.clone())),
             ])
         })
         .collect();
