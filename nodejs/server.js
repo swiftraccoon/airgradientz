@@ -15,6 +15,9 @@ if (major < 24) {
 }
 
 // --- Express setup ---
+const startedAt = Date.now();
+let requestsServed = 0;
+
 const app = express();
 
 // Security: remove fingerprint header
@@ -22,11 +25,15 @@ app.disable('x-powered-by');
 
 // Security headers
 app.use((_req, res, next) => {
+  requestsServed++;
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
   next();
 });
+
+app.locals.startedAt = startedAt;
+app.locals.getRequestsServed = () => requestsServed;
 
 app.use('/api', apiRouter);
 app.use(express.static(path.join(__dirname, 'public'), {

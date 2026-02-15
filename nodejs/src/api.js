@@ -1,8 +1,9 @@
 'use strict';
 
+const fs = require('node:fs');
 const express = require('express');
-const { queryReadings, getDevices, getLatestReadings } = require('./db');
-const { getHealth } = require('./poller');
+const { queryReadings, getDevices, getLatestReadings, getReadingsCount } = require('./db');
+const { getHealth, getPollStats } = require('./poller');
 const config = require('../config');
 
 const router = express.Router();
@@ -58,6 +59,28 @@ router.get('/config', (_req, res) => {
   res.json({
     pollIntervalMs: config.pollIntervalMs,
     devices: config.devices.map(d => ({ ip: d.ip, label: d.label })),
+  });
+});
+
+router.get('/stats', (req, res) => {
+  const { pollSuccesses, pollFailures } = getPollStats();
+  let dbSizeBytes = 0;
+  try {
+    dbSizeBytes = fs.statSync(config.dbPath).size;
+  } catch {}
+
+  res.json({
+    implementation: 'nodejs',
+    pid: process.pid,
+    uptime_ms: Date.now() - req.app.locals.startedAt,
+    memory_rss_bytes: process.memoryUsage.rss(),
+    db_size_bytes: dbSizeBytes,
+    readings_count: getReadingsCount(),
+    requests_served: req.app.locals.getRequestsServed(),
+    active_connections: 0,
+    poll_successes: pollSuccesses,
+    poll_failures: pollFailures,
+    started_at: req.app.locals.startedAt,
   });
 });
 

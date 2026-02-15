@@ -11,6 +11,9 @@ let checkpointIntervalId = null;
 // Per-device health state, keyed by IP
 const health = new Map();
 
+let pollSuccesses = 0;
+let pollFailures = 0;
+
 function initHealth() {
   health.clear();
   for (const device of config.devices) {
@@ -70,6 +73,7 @@ async function fetchDevice(device) {
 }
 
 function recordSuccess(h) {
+  pollSuccesses++;
   h.status = 'ok';
   h.lastSuccess = Date.now();
   h.lastErrorMessage = null;
@@ -77,6 +81,7 @@ function recordSuccess(h) {
 }
 
 function recordFailure(h, message) {
+  pollFailures++;
   h.status = 'error';
   h.lastError = Date.now();
   h.lastErrorMessage = message;
@@ -89,6 +94,10 @@ async function pollAll() {
 
 function getHealth() {
   return Array.from(health.values());
+}
+
+function getPollStats() {
+  return { pollSuccesses, pollFailures };
 }
 
 function startPoller() {
@@ -115,4 +124,4 @@ function stopPoller() {
   console.log('[poller] Stopped');
 }
 
-module.exports = { startPoller, stopPoller, getHealth, initHealth, pollAll };
+module.exports = { startPoller, stopPoller, getHealth, getPollStats, initHealth, pollAll };

@@ -1,5 +1,7 @@
 'use strict';
 
+const fs = require('node:fs');
+const path = require('node:path');
 const Database = require('better-sqlite3');
 const config = require('../config');
 
@@ -8,30 +10,9 @@ db.pragma('journal_mode = WAL');
 db.pragma('busy_timeout = 5000');
 db.pragma('foreign_keys = ON');
 
-db.exec(`
-  CREATE TABLE IF NOT EXISTS readings (
-    id INTEGER PRIMARY KEY AUTOINCREMENT,
-    timestamp INTEGER NOT NULL,
-    device_id TEXT NOT NULL,
-    device_type TEXT NOT NULL CHECK(device_type IN ('indoor', 'outdoor')),
-    device_ip TEXT NOT NULL,
-    pm01 REAL,
-    pm02 REAL,
-    pm10 REAL,
-    pm02_compensated REAL,
-    rco2 INTEGER,
-    atmp REAL,
-    atmp_compensated REAL,
-    rhum REAL,
-    rhum_compensated REAL,
-    tvoc_index REAL,
-    nox_index REAL,
-    wifi INTEGER,
-    raw_json TEXT NOT NULL
-  );
-  CREATE INDEX IF NOT EXISTS idx_readings_ts ON readings(timestamp);
-  CREATE INDEX IF NOT EXISTS idx_readings_device ON readings(device_id, timestamp);
-`);
+const schemaPath = path.join(__dirname, '..', '..', 'schema.sql');
+const schema = fs.readFileSync(schemaPath, 'utf8');
+db.exec(schema);
 
 // Columns returned by query endpoints (excludes raw_json to keep responses small)
 const QUERY_COLS = [
@@ -141,6 +122,12 @@ function getLatestReadings() {
   return latestStmt.all();
 }
 
+const countStmt = db.prepare('SELECT COUNT(*) as count FROM readings');
+
+function getReadingsCount() {
+  return countStmt.get().count;
+}
+
 function checkpoint() {
   db.pragma('wal_checkpoint(TRUNCATE)');
 }
@@ -149,4 +136,4 @@ function close() {
   db.close();
 }
 
-module.exports = { insertReading, queryReadings, getDevices, getLatestReadings, checkpoint, close };
+module.exports = { insertReading, queryReadings, getDevices, getLatestReadings, getReadingsCount, checkpoint, close };
