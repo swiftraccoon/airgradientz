@@ -6,4 +6,4 @@ cd "$(dirname "$0")"
 # shellcheck source=setup-fnm.sh
 source ./setup-fnm.sh
 
-exec npm start
+npm install

@@ -18,6 +18,7 @@ c/test_runner
 
 # d
 d/airgradientz
+d/airgradientz-test-application
 
 # Rust
 rust/target/
@@ -33,6 +34,10 @@ elixir/deps/
 # Nim
 nim/airgradientz
 nim/nimcache/
+nim/tests/test_db
+
+# Elixir crash dumps
+elixir/erl_crash.dump
 
 # Other
 references/
