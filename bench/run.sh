@@ -2,14 +2,16 @@
 set -euo pipefail
 
 # ── Benchmark harness for airgradientz implementations ──────────────────────
-# Usage: ./bench/run.sh [impl...]   e.g. ./bench/run.sh nodejs rust
-#        ./bench/run.sh             default: all implementations
+# Usage: ./bench/run.sh [--concurrent N] [impl...]
+#        e.g. ./bench/run.sh --concurrent 50 c rust zig
+#        ./bench/run.sh             default: all implementations, sequential only
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 DATE="$(date +%Y-%m-%d)"
 RESULTS_DIR="$REPO_ROOT/bench/results"
 RESULTS_FILE="$RESULTS_DIR/$DATE.md"
 REQUESTS_PER_ENDPOINT=100
+CONCURRENT=0
 HEALTH_TIMEOUT=15   # seconds
 HEALTH_INTERVAL=0.5 # seconds
 
@@ -211,6 +213,44 @@ run_load() {
     printf '%.2f' "$avg"
 }
 
+run_concurrent_load() {
+    local port="$1" endpoint="$2" concurrency="$3"
+    local url="http://localhost:$port$endpoint"
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+
+    # Spawn N concurrent curl processes
+    for (( i=1; i<=concurrency; i++ )); do
+        curl -sf -o /dev/null -w '%{time_total}\n' "$url" > "$tmpdir/$i.txt" 2>/dev/null &
+    done
+    wait
+
+    # Collect times
+    local total=0 count=0 max=0
+    for (( i=1; i<=concurrency; i++ )); do
+        local t
+        t="$(cat "$tmpdir/$i.txt" 2>/dev/null || echo "")"
+        if [[ -n "$t" ]]; then
+            total="$(echo "$total + $t" | bc -l)"
+            count=$((count + 1))
+            if (( $(echo "$t > $max" | bc -l) )); then
+                max="$t"
+            fi
+        fi
+    done
+    rm -rf "$tmpdir"
+
+    if [[ $count -eq 0 ]]; then
+        echo "- -"
+        return
+    fi
+
+    local avg_ms max_ms
+    avg_ms="$(printf '%.2f' "$(echo "($total / $count) * 1000" | bc -l)")"
+    max_ms="$(printf '%.2f' "$(echo "$max * 1000" | bc -l)")"
+    echo "$avg_ms $max_ms"
+}
+
 get_binary_size() {
     local binary_path="$1"
     if [[ "$binary_path" == "n/a" ]]; then
@@ -293,6 +333,8 @@ declare -A R_AVG_DEVICES
 declare -A R_AVG_STATS
 declare -A R_REQUESTS
 declare -A R_BINARY_SIZE
+declare -A R_CONC_AVG
+declare -A R_CONC_MAX
 
 # Initialize all impls to "-"
 for impl_name in "${IMPL_ORDER[@]}"; do
@@ -305,16 +347,33 @@ for impl_name in "${IMPL_ORDER[@]}"; do
     R_AVG_STATS[$impl_name]="-"
     R_REQUESTS[$impl_name]="-"
     R_BINARY_SIZE[$impl_name]="-"
+    R_CONC_AVG[$impl_name]="-"
+    R_CONC_MAX[$impl_name]="-"
 done
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 check_deps
 
+# Parse --concurrent flag
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --concurrent)
+            CONCURRENT="$2"
+            shift 2
+            ;;
+        *)
+            POSITIONAL+=("$1")
+            shift
+            ;;
+    esac
+done
+
 IMPLS=()
 while IFS= read -r line; do
     [[ -n "$line" ]] && IMPLS+=("$line")
-done < <(resolve_impls "$@")
+done < <(resolve_impls "${POSITIONAL[@]}")
 
 if [[ ${#IMPLS[@]} -eq 0 ]]; then
     log "No implementations to benchmark."
@@ -381,6 +440,14 @@ for entry in "${IMPLS[@]}"; do
 
     log "  /api/stats..."
     R_AVG_STATS[$name]="$(run_load "$port" '/api/stats')"
+
+    # Concurrent load test
+    if [[ $CONCURRENT -gt 0 ]]; then
+        log "  Concurrent load ($CONCURRENT connections to /api/readings/latest)..."
+        read -r conc_avg conc_max <<< "$(run_concurrent_load "$port" '/api/readings/latest' "$CONCURRENT")"
+        R_CONC_AVG[$name]="$conc_avg"
+        R_CONC_MAX[$name]="$conc_max"
+    fi
 
     # Post-load stats
     log "Collecting post-load stats..."
@@ -456,17 +523,30 @@ generate_table() {
     print_row "/api/stats avg (ms)" R_AVG_STATS
     print_row "Requests served" R_REQUESTS
     print_row "Binary size (MB)" R_BINARY_SIZE
+
+    if [[ $CONCURRENT -gt 0 ]]; then
+        print_row "Concurrent avg (ms) [N=$CONCURRENT]" R_CONC_AVG
+        print_row "Concurrent max (ms) [N=$CONCURRENT]" R_CONC_MAX
+    fi
 }
 
 # Write report
 mkdir -p "$RESULTS_DIR"
+
+footer_text() {
+    if [[ $CONCURRENT -gt 0 ]]; then
+        echo "*${REQUESTS_PER_ENDPOINT} sequential requests per endpoint, plus ${CONCURRENT} concurrent connections. Times in milliseconds.*"
+    else
+        echo "*${REQUESTS_PER_ENDPOINT} sequential requests per endpoint. Times in milliseconds.*"
+    fi
+}
 
 {
     echo "# Benchmark Results -- $DATE"
     echo ""
     generate_table
     echo ""
-    echo "*${REQUESTS_PER_ENDPOINT} sequential requests per endpoint. Times in milliseconds.*"
+    footer_text
 } > "$RESULTS_FILE"
 
 log "============================================"
@@ -477,4 +557,4 @@ echo "# Benchmark Results -- $DATE"
 echo ""
 generate_table
 echo ""
-echo "*${REQUESTS_PER_ENDPOINT} sequential requests per endpoint. Times in milliseconds.*"
+footer_text
