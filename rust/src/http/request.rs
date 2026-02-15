@@ -1,9 +1,4 @@
-use std::io::{self, BufRead, BufReader};
-use std::net::TcpStream;
-use std::time::Duration;
-
-const MAX_HEADER_BYTES: usize = 8192;
-const READ_TIMEOUT: Duration = Duration::from_secs(10);
+use std::io;
 
 #[derive(Debug, PartialEq, Eq)]
 pub(crate) enum Method {
@@ -19,22 +14,16 @@ pub(crate) struct HttpRequest {
 }
 
 impl HttpRequest {
-    pub(crate) fn parse(stream: &TcpStream) -> Result<Self, io::Error> {
-        stream.set_read_timeout(Some(READ_TIMEOUT))?;
+    pub(crate) fn parse_from_buf(buf: &[u8]) -> Result<Self, io::Error> {
+        let data = std::str::from_utf8(buf)
+            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "invalid UTF-8"))?;
 
-        let mut reader = BufReader::new(stream);
-        let mut total_read = 0;
+        let line_end = data
+            .find("\r\n")
+            .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "incomplete request"))?;
 
-        // Read request line
-        let mut request_line = String::new();
-        let n = reader.read_line(&mut request_line)?;
-        if n == 0 {
-            return Err(io::Error::new(io::ErrorKind::UnexpectedEof, "empty request"));
-        }
-        total_read += n;
-
-        let trimmed = request_line.trim_end();
-        let mut parts = trimmed.splitn(3, ' ');
+        let request_line = &data[..line_end];
+        let mut parts = request_line.splitn(3, ' ');
 
         let method_str = parts
             .next()
@@ -49,7 +38,6 @@ impl HttpRequest {
             Method::Other(method_str.to_string())
         };
 
-        // Split path and query string
         let (path, query) = raw_path.find('?').map_or_else(
             || (raw_path.to_string(), String::new()),
             |idx| {
@@ -59,27 +47,6 @@ impl HttpRequest {
                 )
             },
         );
-
-        // Read headers (consume but don't store)
-        loop {
-            let mut line = String::new();
-            let n = reader.read_line(&mut line)?;
-            if n == 0 {
-                break;
-            }
-            total_read += n;
-            if total_read > MAX_HEADER_BYTES {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    "headers too large",
-                ));
-            }
-
-            let header_line = line.trim_end_matches(['\r', '\n']);
-            if header_line.is_empty() {
-                break;
-            }
-        }
 
         Ok(Self {
             method,
@@ -132,27 +99,12 @@ fn url_decode(s: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::io::Write;
-    use std::net::TcpListener;
-
-    fn parse_request(raw: &str) -> HttpRequest {
-        let listener = TcpListener::bind("127.0.0.1:0").unwrap();
-        let addr = listener.local_addr().unwrap();
-        let raw = raw.to_string();
-        let handle = std::thread::spawn(move || {
-            let mut client = TcpStream::connect(addr).unwrap();
-            client.write_all(raw.as_bytes()).unwrap();
-            client.flush().unwrap();
-        });
-        let (stream, _) = listener.accept().unwrap();
-        let req = HttpRequest::parse(&stream).unwrap();
-        handle.join().unwrap();
-        req
-    }
 
     #[test]
     fn test_parse_get() {
-        let req = parse_request("GET /api/readings HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        let req =
+            HttpRequest::parse_from_buf(b"GET /api/readings HTTP/1.1\r\nHost: localhost\r\n\r\n")
+                .unwrap();
         assert_eq!(req.method, Method::Get);
         assert_eq!(req.path, "/api/readings");
         assert!(req.query.is_empty());
@@ -160,7 +112,9 @@ mod tests {
 
     #[test]
     fn test_parse_query_string() {
-        let req = parse_request("GET /api/readings?from=100&to=200 HTTP/1.1\r\n\r\n");
+        let req =
+            HttpRequest::parse_from_buf(b"GET /api/readings?from=100&to=200 HTTP/1.1\r\n\r\n")
+                .unwrap();
         assert_eq!(req.path, "/api/readings");
         assert_eq!(req.query_param("from"), Some("100".to_string()));
         assert_eq!(req.query_param("to"), Some("200".to_string()));
@@ -169,7 +123,8 @@ mod tests {
 
     #[test]
     fn test_parse_non_get() {
-        let req = parse_request("POST /api/readings HTTP/1.1\r\n\r\n");
+        let req =
+            HttpRequest::parse_from_buf(b"POST /api/readings HTTP/1.1\r\n\r\n").unwrap();
         assert_eq!(req.method, Method::Other("POST".to_string()));
     }
 }

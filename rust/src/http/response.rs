@@ -1,6 +1,3 @@
-use std::io::{self, Write};
-use std::net::TcpStream;
-
 use crate::json::JsonValue;
 
 #[derive(Debug)]
@@ -84,7 +81,7 @@ impl HttpResponse {
         resp
     }
 
-    pub(crate) fn write_to(&self, stream: &mut TcpStream) -> io::Result<()> {
+    pub(crate) fn to_bytes(&self) -> Vec<u8> {
         let mut buf = Vec::with_capacity(256 + self.body.len());
 
         buf.extend_from_slice(
@@ -98,8 +95,7 @@ impl HttpResponse {
         buf.extend_from_slice(b"\r\n");
         buf.extend_from_slice(&self.body);
 
-        stream.write_all(&buf)?;
-        stream.flush()
+        buf
     }
 }
 
