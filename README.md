@@ -1,6 +1,6 @@
 # AirGradientz
 
-Local dashboard for AirGradient air quality monitors. Eight independent implementations (C, Node.js, Rust, Zig, D, Elixir, Nim, Go) share one web UI and one JSON config.
+Local dashboard for AirGradient air quality monitors. Nine independent implementations (C, Node.js, Rust, Zig, D, Elixir, Nim, Go, Bash) share one web UI and one JSON config.
 
 ## Architecture
 
@@ -12,6 +12,7 @@ Local dashboard for AirGradient air quality monitors. Eight independent implemen
 - `elixir/` — Elixir/OTP (port 3013), requires Elixir 1.17+ / Erlang 26+
 - `nim/` — Nim 2.2 (port 3015), references `../c/sqlite3.c`
 - `go/` — Go 1.25 (port 3016), `github.com/mattn/go-sqlite3` (CGo)
+- `bash/` — Pure Bash (port 3017), ncat + sqlite3 CLI + jq + curl
 - `airgradientz.json` — shared config (devices, poll interval, timeouts)
 - `schema.sql` — shared DB schema (single source of truth)
 - `c/public/` — canonical web UI (HTML/CSS/JS); all other impls symlink to it
@@ -26,7 +27,7 @@ Every implementation has a `build.sh` and `start.sh`. Root scripts orchestrate t
 ./build.sh                   # build all implementations
 ./build.sh c rust nim        # build specific ones
 ./start.sh c                 # start one implementation (exec's into it)
-./test.sh                    # run all tests (all 8 implementations)
+./test.sh                    # run all tests (all 9 implementations)
 ./test.sh c                  # run specific tests
 
 # Per-implementation (from repo root or impl directory)
@@ -38,6 +39,7 @@ d/build.sh && d/start.sh        # D (port 3013)
 elixir/build.sh && elixir/start.sh  # Elixir (port 3013)
 nim/build.sh && nim/start.sh    # Nim (port 3015)
 go/build.sh && go/start.sh      # Go (port 3016)
+bash/build.sh && bash/start.sh  # Bash (port 3017)
 
 # Debug / direct commands
 cd c && make debug           # ASan + UBSan
@@ -68,9 +70,10 @@ Config file search order: `CONFIG_PATH` env, `./airgradientz.json`, `../airgradi
 - Nim: 2.2, epoll event loop, ORC GC, SQLite via C FFI to vendored sqlite3.c
 - Zig: 0.15 APIs, epoll event loop, per-connection arena allocator
 - Go: 1.25, net/http (goroutine-per-connection), `github.com/mattn/go-sqlite3` (CGo)
+- Bash: ncat fork-per-connection, sqlite3 CLI, jq for JSON, shellcheck -o all clean
 - SQLite: WAL mode, bundled amalgamation (vendored in `c/sqlite3.c`)
 - Web UI: vanilla HTML/CSS/JS, no build step
-- All compiled impls except Go: single-threaded non-blocking I/O (no thread-per-connection)
+- All compiled impls except Go and Bash: single-threaded non-blocking I/O (no thread-per-connection)
 
 ## API Endpoints (all impls)
 
@@ -96,6 +99,7 @@ All implementations have tests. Run `./test.sh` for all, or `./test.sh <impl>` f
 | Elixir | ExUnit | `cd elixir && mix test` | 13 |
 | Nim | `unittest` module | `cd nim && nim c -r --path:src tests/test_db.nim` | 16 |
 | Go | `go test` | `cd go && go test ./...` | 48 |
+| Bash | Custom test runner | `cd bash && bash tests/run_tests.sh` | 86 |
 
 ## Gotchas
 
@@ -106,4 +110,5 @@ All implementations have tests. Run `./test.sh` for all, or `./test.sh <impl>` f
 - `.env` in `nodejs/` is gitignored — contains PORT/DB_PATH overrides
 - Each impl creates its own `airgradientz.db` in its directory
 - D and Elixir share port 3013 — don't run both simultaneously
+- Bash requires ncat (nmap), sqlite3, jq, curl at runtime
 - Schema changes go in `schema.sql`, not in individual implementations

@@ -56,6 +56,8 @@ PORT_ZIG=$(get_port zig 3012)
 PORT_D=$(get_port d 3014)
 PORT_ELIXIR=$(get_port elixir 3013)
 PORT_NIM=$(get_port nim 3015)
+PORT_GO=$(get_port go 3016)
+PORT_BASH=$(get_port bash 3017)
 
 IMPL_REGISTRY=(
     "c|${PORT_C}|c|cd c && make clean && make|cd c && ./airgradientz|c/airgradientz"
@@ -65,6 +67,8 @@ IMPL_REGISTRY=(
     "d|${PORT_D}|d|cd d && source ~/dlang/ldc-*/activate 2>/dev/null; dub build -b release|cd d && ./airgradientz|d/airgradientz"
     "elixir|${PORT_ELIXIR}|elixir|cd elixir && mix deps.get --quiet && mix compile|cd elixir && mix run --no-halt|n/a"
     "nim|${PORT_NIM}|nim|cd nim && export PATH=\$HOME/.nimble/bin:\$PATH && nim c -d:release --threads:on --mm:orc --path:src -o:airgradientz src/airgradientz.nim 2>/dev/null|cd nim && ./airgradientz|nim/airgradientz"
+    "go|${PORT_GO}|go|cd go && go build -o airgradientz .|cd go && ./airgradientz|go/airgradientz"
+    "bash|${PORT_BASH}|bash|cd bash && bash build.sh|cd bash && bash server.sh|n/a"
 )
 
 # Display names for the report header
@@ -76,10 +80,12 @@ declare -A DISPLAY_NAMES=(
     [d]="D"
     [elixir]="Elixir"
     [nim]="Nim"
+    [go]="Go"
+    [bash]="Bash"
 )
 
 # Canonical order for table columns
-IMPL_ORDER=(c nodejs rust zig d elixir nim)
+IMPL_ORDER=(c nodejs rust zig d elixir nim go bash)
 
 # ── Process tracking for cleanup ─────────────────────────────────────────────
 

@@ -39,6 +39,9 @@ nim/tests/test_db
 # Go
 go/airgradientz
 
+# Bash
+bash/run/
+
 # Elixir crash dumps
 elixir/erl_crash.dump
 

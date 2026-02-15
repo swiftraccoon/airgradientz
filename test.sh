@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-ALL_IMPLS=(c nodejs rust zig d elixir nim go)
+ALL_IMPLS=(c nodejs rust zig d elixir nim go bash)
 
 # Determine which impls to test
 if [[ $# -eq 0 ]]; then
@@ -83,6 +83,14 @@ for impl in "${impls[@]}"; do
         go)
             echo "==> Testing $impl..."
             if (cd go && go test -count=1 ./...); then
+                succeeded+=("$impl")
+            else
+                failed+=("$impl")
+            fi
+            ;;
+        bash)
+            echo "==> Testing $impl..."
+            if (cd bash && shellcheck -o all server.sh handler.sh lib/*.sh build.sh start.sh tests/run_tests.sh && bash tests/run_tests.sh); then
                 succeeded+=("$impl")
             else
                 failed+=("$impl")

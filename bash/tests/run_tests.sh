@@ -1,0 +1,528 @@
+#!/usr/bin/env bash
+# Test suite for AirGradientz bash implementation.
+# Mirrors test coverage from Go's db_test.go and server_test.go.
+# shellcheck disable=SC1091  # source paths resolved at runtime, not statically
+# shellcheck disable=SC2312  # $(func) in test assertions is intentional
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
+TEST_DIR="$(mktemp -d)"
+
+# Track results
+PASS=0
+FAIL=0
+ERRORS=()
+
+# --- Test framework ---
+
+assert_eq() {
+    local label="$1" expected="$2" actual="$3"
+    if [[ "${expected}" == "${actual}" ]]; then
+        PASS=$(( PASS + 1 ))
+    else
+        FAIL=$(( FAIL + 1 ))
+        ERRORS+=("FAIL: ${label}: expected '${expected}', got '${actual}'")
+        echo "  FAIL: ${label}" >&2
+    fi
+}
+
+assert_contains() {
+    local label="$1" haystack="$2" needle="$3"
+    if [[ "${haystack}" == *"${needle}"* ]]; then
+        PASS=$(( PASS + 1 ))
+    else
+        FAIL=$(( FAIL + 1 ))
+        ERRORS+=("FAIL: ${label}: '${haystack}' does not contain '${needle}'")
+        echo "  FAIL: ${label}" >&2
+    fi
+}
+
+assert_not_contains() {
+    local label="$1" haystack="$2" needle="$3"
+    if [[ "${haystack}" != *"${needle}"* ]]; then
+        PASS=$(( PASS + 1 ))
+    else
+        FAIL=$(( FAIL + 1 ))
+        ERRORS+=("FAIL: ${label}: '${haystack}' should not contain '${needle}'")
+        echo "  FAIL: ${label}" >&2
+    fi
+}
+
+assert_json_field() {
+    local label="$1" json="$2" field="$3" expected="$4"
+    local actual
+    actual=$(jq -r "${field}" <<< "${json}" 2>/dev/null) || actual="(jq error)"
+    assert_eq "${label}" "${expected}" "${actual}"
+}
+
+assert_json_length() {
+    local label="$1" json="$2" expected="$3"
+    local actual
+    actual=$(jq 'length' <<< "${json}" 2>/dev/null) || actual="(jq error)"
+    assert_eq "${label}" "${expected}" "${actual}"
+}
+
+assert_json_null() {
+    local label="$1" json="$2" field="$3"
+    local actual
+    actual=$(jq -r "${field}" <<< "${json}" 2>/dev/null) || actual="(jq error)"
+    assert_eq "${label}" "null" "${actual}"
+}
+
+assert_json_not_null() {
+    local label="$1" json="$2" field="$3"
+    local actual
+    actual=$(jq -r "${field}" <<< "${json}" 2>/dev/null) || actual="(jq error)"
+    if [[ "${actual}" != "null" ]] && [[ -n "${actual}" ]]; then
+        PASS=$(( PASS + 1 ))
+    else
+        FAIL=$(( FAIL + 1 ))
+        ERRORS+=("FAIL: ${label}: ${field} should not be null")
+        echo "  FAIL: ${label}" >&2
+    fi
+}
+
+# --- Setup test environment ---
+
+setup_test_env() {
+    export AGTZ_SCRIPT_DIR="${SCRIPT_DIR}"
+    export AGTZ_PORT=3017
+    export AGTZ_DB_PATH="${TEST_DIR}/test.db"
+    export AGTZ_POLL_INTERVAL_MS=15000
+    export AGTZ_FETCH_TIMEOUT_MS=5000
+    export AGTZ_MAX_API_ROWS=10000
+    export AGTZ_DEVICES_JSON='[{"ip":"192.168.1.1","label":"test-indoor"}]'
+
+    # Create run directory
+    mkdir -p "${TEST_DIR}/run"
+    printf '0' > "${TEST_DIR}/run/requests"
+    printf '0' > "${TEST_DIR}/run/poll_successes"
+    printf '0' > "${TEST_DIR}/run/poll_failures"
+    printf '%s' "$(now_ms)" > "${TEST_DIR}/run/started_at"
+    printf '%d' "$$" > "${TEST_DIR}/run/server_pid"
+
+    # Source libs
+    # shellcheck source=../lib/config.sh
+    source "${SCRIPT_DIR}/lib/config.sh"
+    # shellcheck source=../lib/db.sh
+    source "${SCRIPT_DIR}/lib/db.sh"
+    # shellcheck source=../lib/http.sh
+    source "${SCRIPT_DIR}/lib/http.sh"
+
+    # Initialize DB
+    init_db
+}
+
+# Helper: insert a test reading directly via SQL
+insert_test_reading() {
+    local device_id="$1" device_type="$2" device_ip="$3"
+    local pm02="${4:-null}" rco2="${5:-null}" atmp="${6:-null}"
+    local ts
+    ts=$(now_ms)
+    db_exec "INSERT INTO readings (
+        timestamp, device_id, device_type, device_ip,
+        pm01, pm02, pm10, pm02_compensated,
+        rco2, atmp, atmp_compensated, rhum, rhum_compensated,
+        tvoc_index, nox_index, wifi, raw_json
+    ) VALUES (
+        ${ts}, '${device_id}', '${device_type}', '${device_ip}',
+        null, ${pm02}, null, null,
+        ${rco2}, ${atmp}, null, null, null,
+        null, null, null, '{}'
+    );"
+}
+
+# Helper: run handler.sh with piped HTTP request, capture response
+do_request() {
+    local method="$1" path="$2"
+    printf '%s %s HTTP/1.1\r\nHost: localhost\r\n\r\n' "${method}" "${path}" \
+        | AGTZ_SCRIPT_DIR="${SCRIPT_DIR}" \
+          AGTZ_DB_PATH="${AGTZ_DB_PATH}" \
+          AGTZ_PORT="${AGTZ_PORT}" \
+          AGTZ_POLL_INTERVAL_MS="${AGTZ_POLL_INTERVAL_MS}" \
+          AGTZ_FETCH_TIMEOUT_MS="${AGTZ_FETCH_TIMEOUT_MS}" \
+          AGTZ_MAX_API_ROWS="${AGTZ_MAX_API_ROWS}" \
+          AGTZ_DEVICES_JSON="${AGTZ_DEVICES_JSON}" \
+          bash "${SCRIPT_DIR}/handler.sh" 2>/dev/null
+}
+
+get_status_code() {
+    local response="$1"
+    local first_line
+    first_line=$(head -1 <<< "${response}")
+    # "HTTP/1.1 200 OK" → "200"
+    local code
+    code=$(awk '{print $2}' <<< "${first_line}")
+    printf '%s' "${code}"
+}
+
+get_body() {
+    local response="$1"
+    # Body starts after the blank line
+    sed -n '/^\r*$/,$ p' <<< "${response}" | tail -n +2
+}
+
+get_header() {
+    local response="$1" header_name="$2"
+    grep -i "^${header_name}:" <<< "${response}" | sed 's/^[^:]*: //' | tr -d '\r'
+}
+
+cleanup() {
+    rm -rf "${TEST_DIR}"
+}
+trap cleanup EXIT
+
+# --- Source and setup ---
+
+# shellcheck source=../lib/config.sh
+source "${SCRIPT_DIR}/lib/config.sh"
+setup_test_env
+
+echo "Running bash tests..."
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════
+# DB TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+echo "--- DB tests ---"
+
+# TestInitDBCreatesTable
+table_name=$(db_exec "SELECT name FROM sqlite_master WHERE type='table' AND name='readings'")
+assert_eq "init_db creates readings table" "readings" "${table_name}"
+
+# TestSchemaFileExists
+if [[ -f "../schema.sql" ]]; then
+    assert_eq "schema.sql exists" "yes" "yes"
+else
+    assert_eq "schema.sql exists" "yes" "no"
+fi
+
+# TestGetReadingsCount (empty)
+count=$(get_readings_count)
+assert_eq "readings count empty db" "0" "${count}"
+
+# TestInsertAndQuery
+insert_test_reading "abc123" "indoor" "192.168.1.1" 12 450 22.5
+result=$(query_readings "all" 0 "$(( $(now_ms) + 1000 ))" 100)
+assert_json_length "query returns 1 reading" "${result}" "1"
+assert_json_field "device_id is abc123" "${result}" '.[0].device_id' "abc123"
+assert_json_field "device_type is indoor" "${result}" '.[0].device_type' "indoor"
+assert_json_field "device_ip is correct" "${result}" '.[0].device_ip' "192.168.1.1"
+assert_json_field "pm02 is 12" "${result}" '.[0].pm02' "12"
+assert_json_field "rco2 is 450" "${result}" '.[0].rco2' "450"
+assert_json_field "atmp is 22.5" "${result}" '.[0].atmp' "22.5"
+
+# TestGetReadingsCount (after insert)
+count=$(get_readings_count)
+assert_eq "readings count after insert" "1" "${count}"
+
+# TestNullFields
+insert_test_reading "boot1" "indoor" "192.168.1.1"
+result=$(query_readings "boot1" 0 "$(( $(now_ms) + 1000 ))" 100)
+assert_json_null "null pm01" "${result}" '.[0].pm01'
+assert_json_null "null pm02 for boot" "${result}" '.[0].pm02'
+assert_json_null "null rco2 for boot" "${result}" '.[0].rco2'
+assert_json_null "null atmp for boot" "${result}" '.[0].atmp'
+assert_json_null "null wifi for boot" "${result}" '.[0].wifi'
+assert_json_null "null tvoc_index for boot" "${result}" '.[0].tvoc_index'
+
+# TestZeroCompensatedValues
+insert_test_reading "zero1" "indoor" "192.168.1.1" 0 0 0
+result=$(query_readings "zero1" 0 "$(( $(now_ms) + 1000 ))" 100)
+assert_json_field "zero pm02 is 0 not null" "${result}" '.[0].pm02' "0"
+assert_json_field "zero rco2 is 0 not null" "${result}" '.[0].rco2' "0"
+assert_json_field "zero atmp is 0 not null" "${result}" '.[0].atmp' "0"
+
+# TestDeviceFiltering
+insert_test_reading "xyz789" "outdoor" "192.168.1.2" 15 0 18.5
+
+result=$(query_readings "abc123" 0 "$(( $(now_ms) + 1000 ))" 100)
+assert_json_length "filter by device abc123" "${result}" "1"
+
+result=$(query_readings "all" 0 "$(( $(now_ms) + 1000 ))" 100)
+count=$(jq 'length' <<< "${result}")
+assert_eq "all devices returns all" "4" "${count}"
+
+result=$(query_readings "" 0 "$(( $(now_ms) + 1000 ))" 100)
+count=$(jq 'length' <<< "${result}")
+assert_eq "empty device means all" "4" "${count}"
+
+result=$(query_readings "nonexistent" 0 "$(( $(now_ms) + 1000 ))" 100)
+assert_json_length "nonexistent device returns 0" "${result}" "0"
+
+# TestQueryLimit
+for i in $(seq 1 5); do
+    insert_test_reading "limitdev" "indoor" "192.168.1.1" "${i}" 0 0
+done
+result=$(query_readings "limitdev" 0 "$(( $(now_ms) + 1000 ))" 3)
+assert_json_length "query limit 3" "${result}" "3"
+
+# TestGetLatestReadings
+result=$(get_latest_readings)
+count=$(jq 'length' <<< "${result}")
+# We have abc123, boot1, zero1, xyz789, limitdev → 5 unique devices
+assert_eq "latest readings one per device" "5" "${count}"
+
+# TestGetDevices
+result=$(get_devices)
+count=$(jq 'length' <<< "${result}")
+assert_eq "devices returns unique devices" "5" "${count}"
+
+# Check reading_count for limitdev (5 inserts + any abc123 overlap)
+limitdev_count=$(jq -r '.[] | select(.device_id == "limitdev") | .reading_count' <<< "${result}")
+assert_eq "limitdev reading_count" "5" "${limitdev_count}"
+
+# TestCheckpoint
+db_checkpoint
+assert_eq "checkpoint succeeds" "0" "$?"
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════
+# CONFIG TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+echo "--- Config tests ---"
+
+assert_eq "default port" "3017" "${AGTZ_PORT}"
+assert_eq "poll interval" "15000" "${AGTZ_POLL_INTERVAL_MS}"
+assert_eq "fetch timeout" "5000" "${AGTZ_FETCH_TIMEOUT_MS}"
+assert_eq "max api rows" "10000" "${AGTZ_MAX_API_ROWS}"
+
+# TestNowMillis
+ts=$(now_ms)
+if (( ts > 1700000000000 )); then
+    assert_eq "now_ms is reasonable" "yes" "yes"
+else
+    assert_eq "now_ms is reasonable" "yes" "no (${ts})"
+fi
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════
+# HTTP / URL TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+echo "--- HTTP parsing tests ---"
+
+# TestURLDecode
+assert_eq "url_decode %2e%2e" ".." "$(url_decode '%2e%2e')"
+assert_eq "url_decode hello+world" "hello world" "$(url_decode 'hello+world')"
+assert_eq "url_decode plain" "plain" "$(url_decode 'plain')"
+assert_eq "url_decode %2F" "/" "$(url_decode '%2F')"
+
+# TestParseQueryParam
+assert_eq "parse param present" "42" "$(parse_query_param 'from=42&to=100' 'from' '')"
+assert_eq "parse param missing" "99" "$(parse_query_param 'other=1' 'from' '99')"
+assert_eq "parse param empty query" "default" "$(parse_query_param '' 'from' 'default')"
+
+# TestContentTypeFor
+assert_eq "ct html" "text/html; charset=utf-8" "$(content_type_for 'file.html')"
+assert_eq "ct css" "text/css; charset=utf-8" "$(content_type_for 'file.css')"
+assert_eq "ct js" "application/javascript; charset=utf-8" "$(content_type_for 'file.js')"
+assert_eq "ct json" "application/json; charset=utf-8" "$(content_type_for 'file.json')"
+assert_eq "ct png" "image/png" "$(content_type_for 'file.png')"
+assert_eq "ct jpg" "image/jpeg" "$(content_type_for 'file.jpg')"
+assert_eq "ct jpeg" "image/jpeg" "$(content_type_for 'file.jpeg')"
+assert_eq "ct svg" "image/svg+xml" "$(content_type_for 'file.svg')"
+assert_eq "ct ico" "image/x-icon" "$(content_type_for 'file.ico')"
+assert_eq "ct unknown" "application/octet-stream" "$(content_type_for 'file.xyz')"
+
+# TestCounters
+printf '0' > "${TEST_DIR}/run/test_counter"
+increment_counter "${TEST_DIR}/run/test_counter"
+increment_counter "${TEST_DIR}/run/test_counter"
+increment_counter "${TEST_DIR}/run/test_counter"
+val=$(read_counter "${TEST_DIR}/run/test_counter")
+assert_eq "counter increments to 3" "3" "${val}"
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════
+# HANDLER / ENDPOINT TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+echo "--- Handler tests ---"
+
+# Need to point handler at test run dir. handler.sh uses AGTZ_SCRIPT_DIR/run,
+# so we create a temporary wrapper that uses our test dirs.
+# Actually, handler.sh uses SCRIPT_DIR = AGTZ_SCRIPT_DIR, RUN_DIR = SCRIPT_DIR/run
+# So we need to make AGTZ_SCRIPT_DIR point to a dir that has our test run/ and public symlink
+
+HANDLER_TEST_DIR="${TEST_DIR}/handler_env"
+mkdir -p "${HANDLER_TEST_DIR}/run" "${HANDLER_TEST_DIR}/lib"
+ln -sf "${SCRIPT_DIR}/lib/config.sh" "${HANDLER_TEST_DIR}/lib/config.sh"
+ln -sf "${SCRIPT_DIR}/lib/http.sh" "${HANDLER_TEST_DIR}/lib/http.sh"
+ln -sf "${SCRIPT_DIR}/lib/db.sh" "${HANDLER_TEST_DIR}/lib/db.sh"
+ln -sf "${SCRIPT_DIR}/public" "${HANDLER_TEST_DIR}/public"
+ln -sf "${SCRIPT_DIR}/handler.sh" "${HANDLER_TEST_DIR}/handler.sh"
+printf '0' > "${HANDLER_TEST_DIR}/run/requests"
+printf '0' > "${HANDLER_TEST_DIR}/run/poll_successes"
+printf '0' > "${HANDLER_TEST_DIR}/run/poll_failures"
+printf '%s' "$(now_ms)" > "${HANDLER_TEST_DIR}/run/started_at"
+printf '%d' "$$" > "${HANDLER_TEST_DIR}/run/server_pid"
+
+# Initialize health.json for handler tests
+printf '[{"ip":"192.168.1.1","label":"test-indoor","status":"unknown","lastSuccess":null,"lastError":null,"lastErrorMessage":null,"consecutiveFailures":0}]' \
+    > "${HANDLER_TEST_DIR}/run/health.json"
+
+do_handler_request() {
+    local method="$1" path="$2"
+    printf '%s %s HTTP/1.1\r\nHost: localhost\r\n\r\n' "${method}" "${path}" \
+        | AGTZ_SCRIPT_DIR="${HANDLER_TEST_DIR}" \
+          AGTZ_DB_PATH="${AGTZ_DB_PATH}" \
+          AGTZ_PORT="${AGTZ_PORT}" \
+          AGTZ_POLL_INTERVAL_MS="${AGTZ_POLL_INTERVAL_MS}" \
+          AGTZ_FETCH_TIMEOUT_MS="${AGTZ_FETCH_TIMEOUT_MS}" \
+          AGTZ_MAX_API_ROWS="${AGTZ_MAX_API_ROWS}" \
+          AGTZ_DEVICES_JSON="${AGTZ_DEVICES_JSON}" \
+          bash "${HANDLER_TEST_DIR}/handler.sh" 2>/dev/null || true
+}
+
+# TestMethodNotAllowed
+response=$(do_handler_request POST "/api/readings")
+status=$(get_status_code "${response}")
+assert_eq "POST returns 405" "405" "${status}"
+
+# TestReadingsEmpty
+response=$(do_handler_request GET "/api/readings?from=99999999999999&to=99999999999999")
+status=$(get_status_code "${response}")
+body=$(get_body "${response}")
+assert_eq "readings empty status 200" "200" "${status}"
+assert_json_length "readings empty returns []" "${body}" "0"
+
+# TestReadingsEndpoint
+response=$(do_handler_request GET "/api/readings")
+status=$(get_status_code "${response}")
+body=$(get_body "${response}")
+assert_eq "readings status 200" "200" "${status}"
+count=$(jq 'length' <<< "${body}")
+# Should have the readings we inserted earlier
+if (( count > 0 )); then
+    assert_eq "readings returns data" "yes" "yes"
+else
+    assert_eq "readings returns data" "yes" "no (got ${count})"
+fi
+
+# TestReadingsWithDeviceFilter
+response=$(do_handler_request GET "/api/readings?device=abc123")
+body=$(get_body "${response}")
+filtered_count=$(jq 'length' <<< "${body}")
+assert_eq "device filter returns 1" "1" "${filtered_count}"
+
+# TestReadingsWithLimit
+response=$(do_handler_request GET "/api/readings?limit=2")
+body=$(get_body "${response}")
+limited_count=$(jq 'length' <<< "${body}")
+assert_eq "limit=2 returns 2" "2" "${limited_count}"
+
+# TestReadingsLatest
+response=$(do_handler_request GET "/api/readings/latest")
+status=$(get_status_code "${response}")
+body=$(get_body "${response}")
+assert_eq "latest status 200" "200" "${status}"
+latest_count=$(jq 'length' <<< "${body}")
+assert_eq "latest returns 5 devices" "5" "${latest_count}"
+
+# TestDevicesEndpoint
+response=$(do_handler_request GET "/api/devices")
+status=$(get_status_code "${response}")
+body=$(get_body "${response}")
+assert_eq "devices status 200" "200" "${status}"
+devices_count=$(jq 'length' <<< "${body}")
+assert_eq "devices returns 5" "5" "${devices_count}"
+
+# TestHealthEndpoint
+response=$(do_handler_request GET "/api/health")
+status=$(get_status_code "${response}")
+body=$(get_body "${response}")
+assert_eq "health status 200" "200" "${status}"
+assert_json_length "health returns 1 device" "${body}" "1"
+assert_json_field "health initial status" "${body}" '.[0].status' "unknown"
+assert_json_field "health ip" "${body}" '.[0].ip' "192.168.1.1"
+
+# TestConfigEndpoint
+response=$(do_handler_request GET "/api/config")
+status=$(get_status_code "${response}")
+body=$(get_body "${response}")
+assert_eq "config status 200" "200" "${status}"
+assert_json_field "config pollIntervalMs" "${body}" '.pollIntervalMs' "15000"
+config_devices=$(jq '.devices | length' <<< "${body}")
+assert_eq "config has 1 device" "1" "${config_devices}"
+
+# TestStatsEndpoint
+response=$(do_handler_request GET "/api/stats")
+status=$(get_status_code "${response}")
+body=$(get_body "${response}")
+assert_eq "stats status 200" "200" "${status}"
+assert_json_field "stats implementation" "${body}" '.implementation' "bash"
+assert_json_not_null "stats has uptime_ms" "${body}" '.uptime_ms'
+assert_json_not_null "stats has memory_rss_bytes" "${body}" '.memory_rss_bytes'
+assert_json_not_null "stats has started_at" "${body}" '.started_at'
+
+# TestSecurityHeaders
+response=$(do_handler_request GET "/api/health")
+ct_header=$(get_header "${response}" "Content-Type")
+xcto_header=$(get_header "${response}" "X-Content-Type-Options")
+xfo_header=$(get_header "${response}" "X-Frame-Options")
+conn_header=$(get_header "${response}" "Connection")
+assert_eq "Content-Type is application/json" "application/json" "${ct_header}"
+assert_eq "X-Content-Type-Options is nosniff" "nosniff" "${xcto_header}"
+assert_eq "X-Frame-Options is DENY" "DENY" "${xfo_header}"
+assert_eq "Connection is close" "close" "${conn_header}"
+
+# TestStaticServing (index.html)
+response=$(do_handler_request GET "/")
+status=$(get_status_code "${response}")
+body=$(get_body "${response}")
+assert_eq "/ returns 200" "200" "${status}"
+assert_contains "/ serves html" "${body}" "<!DOCTYPE html>"
+
+# TestNotFoundForMissing
+response=$(do_handler_request GET "/nonexistent.html")
+status=$(get_status_code "${response}")
+assert_eq "missing file returns 404" "404" "${status}"
+
+# TestPathTraversal
+response=$(do_handler_request GET "/../../etc/passwd")
+status=$(get_status_code "${response}")
+assert_eq "dotdot returns 404" "404" "${status}"
+
+response=$(do_handler_request GET "/%2e%2e/etc/passwd")
+status=$(get_status_code "${response}")
+assert_eq "encoded dotdot returns 404" "404" "${status}"
+
+response=$(do_handler_request GET "/foo/../../../etc/passwd")
+status=$(get_status_code "${response}")
+assert_eq "dotdot in middle returns 404" "404" "${status}"
+
+# TestRawJSONNotInAPIResponse
+response=$(do_handler_request GET "/api/readings?limit=1")
+body=$(get_body "${response}")
+assert_not_contains "raw_json not in API response" "${body}" "raw_json"
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════
+# SUMMARY
+# ═══════════════════════════════════════════════════════════════════
+
+echo "=== Results ==="
+echo "  PASSED: ${PASS}"
+echo "  FAILED: ${FAIL}"
+
+if [[ ${#ERRORS[@]} -gt 0 ]]; then
+    echo ""
+    echo "Failures:"
+    for err in "${ERRORS[@]}"; do
+        echo "  ${err}"
+    done
+fi
+
+echo ""
+echo "Total: $(( PASS + FAIL )) tests"
+
+if (( FAIL > 0 )); then
+    exit 1
+fi
