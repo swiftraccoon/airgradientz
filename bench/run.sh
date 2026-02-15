@@ -38,13 +38,29 @@ log() { echo "[bench] $*" >&2; }
 # ── Implementation registry ─────────────────────────────────────────────────
 # Format: name|port|directory|build_cmd|start_cmd|binary_path
 
+# Read ports from airgradientz.json (fall back to defaults if jq fails)
+get_port() {
+    local impl="$1"
+    local default="$2"
+    local port
+    port=$(jq -r ".ports.${impl} // empty" "$REPO_ROOT/airgradientz.json" 2>/dev/null) || true
+    echo "${port:-$default}"
+}
+
+PORT_C=$(get_port c 3011)
+PORT_NODEJS=$(get_port nodejs 3010)
+PORT_RUST=$(get_port rust 3009)
+PORT_ZIG=$(get_port zig 3012)
+PORT_D=$(get_port d 3014)
+PORT_ELIXIR=$(get_port elixir 3013)
+
 IMPL_REGISTRY=(
-    "c|3011|c|cd c && make clean && make|cd c && ./airgradientz|c/airgradientz"
-    "nodejs|3010|nodejs|cd nodejs && npm install --silent|cd nodejs && node --env-file=.env server.js|n/a"
-    "rust|3009|rust|cd rust && cargo build --release 2>/dev/null|cd rust && ./target/release/airgradientz|rust/target/release/airgradientz"
-    "zig|3012|zig|cd zig && zig build -Doptimize=ReleaseFast|cd zig && ./zig-out/bin/airgradientz|zig/zig-out/bin/airgradientz"
-    "d|3013|d|cd d && source ~/dlang/ldc-*/activate 2>/dev/null; dub build -b release|cd d && ./airgradientz|d/airgradientz"
-    "elixir|3013|elixir|cd elixir && mix deps.get --quiet && mix compile|cd elixir && mix run --no-halt|n/a"
+    "c|${PORT_C}|c|cd c && make clean && make|cd c && ./airgradientz|c/airgradientz"
+    "nodejs|${PORT_NODEJS}|nodejs|cd nodejs && npm install --silent|cd nodejs && node --env-file=.env server.js|n/a"
+    "rust|${PORT_RUST}|rust|cd rust && cargo build --release 2>/dev/null|cd rust && ./target/release/airgradientz|rust/target/release/airgradientz"
+    "zig|${PORT_ZIG}|zig|cd zig && zig build -Doptimize=ReleaseFast|cd zig && ./zig-out/bin/airgradientz|zig/zig-out/bin/airgradientz"
+    "d|${PORT_D}|d|cd d && source ~/dlang/ldc-*/activate 2>/dev/null; dub build -b release|cd d && ./airgradientz|d/airgradientz"
+    "elixir|${PORT_ELIXIR}|elixir|cd elixir && mix deps.get --quiet && mix compile|cd elixir && mix run --no-halt|n/a"
 )
 
 # Display names for the report header

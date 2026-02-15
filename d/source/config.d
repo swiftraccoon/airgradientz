@@ -9,7 +9,7 @@ struct DeviceConfig {
 }
 
 struct Config {
-    ushort port = 3012;
+    ushort port = 3014;
     string dbPath = "./airgradientz.db";
     DeviceConfig[] devices;
     uint pollIntervalMs = 15_000;
@@ -88,6 +88,19 @@ private void loadConfigFile(ref Config c) {
             }
             if (parsed.length > 0)
                 c.devices = parsed;
+        }
+    }
+
+    // Port from ports.d
+    if (auto portsVal = "ports" in root) {
+        if (portsVal.type == JSONType.object) {
+            if (auto dPort = "d" in *portsVal) {
+                if (dPort.type == JSONType.integer || dPort.type == JSONType.uinteger) {
+                    auto n = dPort.get!long;
+                    if (n > 0 && n <= 65535)
+                        c.port = cast(ushort) n;
+                }
+            }
         }
     }
 

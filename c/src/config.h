@@ -77,9 +77,20 @@ static inline char *config_find_file(void) {
     return NULL;
 }
 
-/* Apply parsed JSON config to Config struct. Does not touch port or db_path. */
+/* Apply parsed JSON config to Config struct. Does not touch db_path. */
 static inline void config_apply_json(Config *c, const JsonValue *root) {
     if (!json_is_object(root)) return;
+
+    bool ok;
+
+    const JsonValue *ports = json_get(root, "ports");
+    if (ports && json_is_object(ports)) {
+        const JsonValue *my_port = json_get(ports, "c");
+        if (my_port) {
+            int64_t p = json_as_i64(my_port, &ok);
+            if (ok && p > 0 && p <= 65535) c->port = (uint16_t)p;
+        }
+    }
 
     const JsonValue *devices = json_get(root, "devices");
     if (devices && devices->type == JSON_ARRAY && devices->u.array.count > 0) {
@@ -96,7 +107,6 @@ static inline void config_apply_json(Config *c, const JsonValue *root) {
         }
     }
 
-    bool ok;
     const JsonValue *v;
 
     v = json_get(root, "pollIntervalMs");

@@ -71,11 +71,19 @@ defmodule Airgradientz.Config do
 
   defp apply_json(config, json) do
     config
+    |> maybe_put_port(json)
     |> maybe_put_devices(json)
     |> maybe_put_positive_int(:poll_interval_ms, json, "pollIntervalMs")
     |> maybe_put_positive_int(:fetch_timeout_ms, json, "fetchTimeoutMs")
     |> maybe_put_positive_int(:max_api_rows, json, "maxApiRows")
   end
+
+  defp maybe_put_port(config, %{"ports" => %{"elixir" => port}})
+       when is_number(port) and port > 0 and port <= 65535 do
+    %{config | port: trunc(port)}
+  end
+
+  defp maybe_put_port(config, _json), do: config
 
   defp maybe_put_devices(config, %{"devices" => devices}) when is_list(devices) and devices != [] do
     parsed =

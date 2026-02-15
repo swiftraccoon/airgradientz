@@ -1,4 +1,12 @@
 {
+  "ports": {
+    "c": 3011,
+    "nodejs": 3010,
+    "rust": 3009,
+    "zig": 3012,
+    "elixir": 3013,
+    "d": 3014
+  },
   "devices": [
     { "ip": "192.168.88.6", "label": "outdoor" },
     { "ip": "192.168.88.159", "label": "indoor" }

@@ -58,6 +58,11 @@ if (fileConfig) {
   }
 }
 
+if (fileConfig?.ports?.nodejs != null) {
+  const port = Number(fileConfig.ports.nodejs);
+  if (port > 0 && port <= 65535) merged.port = port;
+}
+
 // Env var overrides (highest priority)
 if (process.env.PORT) {
   const port = Number(process.env.PORT);

@@ -104,6 +104,12 @@ impl Config {
                     config.max_api_rows = n as u32;
                 }
             }
+
+            if let Some(n) = root.get("ports").and_then(|p| p.get("rust")).and_then(JsonValue::as_i64) {
+                if n > 0 && n <= i64::from(u16::MAX) {
+                    config.port = n as u16;
+                }
+            }
         }
 
         // 3. Env var overrides (highest priority)

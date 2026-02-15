@@ -88,6 +88,17 @@ fn loadConfigFile(config: *Config) void {
         }
     }
 
+    // Port from ports.zig
+    if (root.object.get("ports")) |ports_val| {
+        if (ports_val == .object) {
+            if (ports_val.object.get("zig")) |v| {
+                if (v == .integer and v.integer > 0) {
+                    config.port = std.math.cast(u16, v.integer) orelse config.port;
+                }
+            }
+        }
+    }
+
     // Scalar fields
     if (root.object.get("pollIntervalMs")) |v| {
         if (v == .integer and v.integer > 0) {
