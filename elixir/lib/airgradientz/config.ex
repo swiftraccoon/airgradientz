@@ -33,7 +33,7 @@ defmodule Airgradientz.Config do
   defp merge_file(config) do
     case find_config_file() do
       {:ok, path, json} ->
-        :logger.info(~c"[config] Loaded config from #{path}")
+        :logger.info(~c"[config] Loaded config from #{Path.expand(path)}")
         apply_json(config, json)
 
       :none ->

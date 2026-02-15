@@ -120,3 +120,61 @@ private void writeString(ref Appender!string buf, string s) {
     }
     buf ~= '"';
 }
+
+// ---- unit tests ----
+
+unittest {
+    import std.json : parseJSON;
+    import std.math : isNaN;
+
+    // null
+    assert(jsonToString(JSONValue(null)) == "null");
+
+    // booleans
+    assert(jsonToString(JSONValue(true)) == "true");
+    assert(jsonToString(JSONValue(false)) == "false");
+
+    // integer
+    assert(jsonToString(JSONValue(42)) == "42");
+    assert(jsonToString(JSONValue(-7)) == "-7");
+    assert(jsonToString(JSONValue(0)) == "0");
+
+    // float as integer (whole numbers)
+    assert(jsonToString(JSONValue(3.0)) == "3");
+
+    // float with decimals
+    auto fs = jsonToString(JSONValue(22.5));
+    assert(fs == "22.5", "got: " ~ fs);
+
+    // NaN → null
+    assert(jsonToString(JSONValue(double.nan)) == "null");
+
+    // Infinity → null
+    assert(jsonToString(JSONValue(double.infinity)) == "null");
+
+    // string
+    assert(jsonToString(JSONValue("hello")) == `"hello"`);
+
+    // string escaping
+    assert(jsonToString(JSONValue("a\"b")) == `"a\"b"`);
+    assert(jsonToString(JSONValue("a\\b")) == `"a\\b"`);
+    assert(jsonToString(JSONValue("a\nb")) == `"a\nb"`);
+    assert(jsonToString(JSONValue("a\tb")) == `"a\tb"`);
+
+    // empty array
+    assert(jsonToString(parseJSON("[]")) == "[]");
+
+    // array with values
+    assert(jsonToString(parseJSON("[1,2,3]")) == "[1,2,3]");
+
+    // empty object
+    assert(jsonToString(parseJSON("{}")) == "{}");
+
+    // roundtrip: parse → serialize → parse → serialize
+    auto input = `{"name":"test","value":42}`;
+    auto v1 = parseJSON(input);
+    auto s1 = jsonToString(v1);
+    auto v2 = parseJSON(s1);
+    auto s2 = jsonToString(v2);
+    assert(s1 == s2);
+}

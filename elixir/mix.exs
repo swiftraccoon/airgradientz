@@ -12,10 +12,13 @@ defmodule Airgradientz.MixProject do
   end
 
   def application do
-    [
-      extra_applications: [:logger, :inets, :ssl, :public_key],
-      mod: {Airgradientz, []}
-    ]
+    apps = [:logger, :inets, :ssl, :public_key]
+
+    if Mix.env() == :test do
+      [extra_applications: apps]
+    else
+      [extra_applications: apps, mod: {Airgradientz, []}]
+    end
   end
 
   defp deps do

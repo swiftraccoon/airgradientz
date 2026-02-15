@@ -627,3 +627,94 @@ pub fn parseI64Param(query: []const u8, name: []const u8, default: i64) i64 {
     const val = queryParam(query, name) orelse return default;
     return std.fmt.parseInt(i64, val, 10) catch default;
 }
+
+// ---- inline tests ----
+
+const testing = std.testing;
+
+test "parseRequestBuf: GET request" {
+    const req = parseRequestBuf("GET /api/readings HTTP/1.1\r\nHost: localhost\r\n\r\n") orelse
+        return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("GET", req.method);
+    try testing.expectEqualStrings("/api/readings", req.path);
+    try testing.expectEqual(@as(usize, 0), req.query.len);
+}
+
+test "parseRequestBuf: with query string" {
+    const req = parseRequestBuf("GET /api/readings?from=100&to=200 HTTP/1.1\r\n\r\n") orelse
+        return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("/api/readings", req.path);
+    try testing.expectEqualStrings("from=100&to=200", req.query);
+}
+
+test "parseRequestBuf: POST method" {
+    const req = parseRequestBuf("POST /api/data HTTP/1.1\r\n\r\n") orelse
+        return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("POST", req.method);
+}
+
+test "parseRequestBuf: empty returns null" {
+    try testing.expect(parseRequestBuf("") == null);
+}
+
+test "queryParam: basic extraction" {
+    try testing.expectEqualStrings("100", queryParam("from=100&to=200", "from").?);
+    try testing.expectEqualStrings("200", queryParam("from=100&to=200", "to").?);
+}
+
+test "queryParam: missing returns null" {
+    try testing.expect(queryParam("from=100", "missing") == null);
+}
+
+test "queryParam: empty query returns null" {
+    try testing.expect(queryParam("", "from") == null);
+}
+
+test "queryParam: no-value key" {
+    try testing.expectEqualStrings("", queryParam("flag", "flag").?);
+}
+
+test "parseI64Param: valid number" {
+    try testing.expectEqual(@as(i64, 42), parseI64Param("limit=42", "limit", 100));
+}
+
+test "parseI64Param: missing uses default" {
+    try testing.expectEqual(@as(i64, 100), parseI64Param("other=1", "limit", 100));
+}
+
+test "parseI64Param: invalid uses default" {
+    try testing.expectEqual(@as(i64, 100), parseI64Param("limit=abc", "limit", 100));
+}
+
+test "urlDecodePath: basic" {
+    var buf: [512]u8 = undefined;
+    const result = urlDecodePath(&buf, "/style.css") orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("/style.css", result);
+}
+
+test "urlDecodePath: percent encoding" {
+    var buf: [512]u8 = undefined;
+    const result = urlDecodePath(&buf, "/hello%20world") orelse return error.TestUnexpectedResult;
+    try testing.expectEqualStrings("/hello world", result);
+}
+
+test "urlDecodePath: rejects null bytes" {
+    var buf: [512]u8 = undefined;
+    try testing.expect(urlDecodePath(&buf, "/test%00path") == null);
+}
+
+test "isPathSafe: rejects .." {
+    try testing.expect(!isPathSafe("../etc/passwd"));
+    try testing.expect(!isPathSafe("foo/../bar"));
+    try testing.expect(!isPathSafe(".."));
+}
+
+test "isPathSafe: allows normal paths" {
+    try testing.expect(isPathSafe("style.css"));
+    try testing.expect(isPathSafe("js/app.js"));
+    try testing.expect(isPathSafe("index.html"));
+}
+
+test "isPathSafe: allows .. in filenames" {
+    try testing.expect(isPathSafe("file..name"));
+}

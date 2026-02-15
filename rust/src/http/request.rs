@@ -72,7 +72,7 @@ impl HttpRequest {
     }
 }
 
-fn url_decode(s: &str) -> String {
+pub(crate) fn url_decode(s: &str) -> String {
     let mut result = String::with_capacity(s.len());
     let bytes = s.as_bytes();
     let mut i = 0;
@@ -82,6 +82,11 @@ fn url_decode(s: &str) -> String {
             && let Ok(hex_str) = std::str::from_utf8(&bytes[i + 1..i + 3])
             && let Ok(byte) = u8::from_str_radix(hex_str, 16)
         {
+            if byte == 0 {
+                // Reject null bytes
+                i += 3;
+                continue;
+            }
             result.push(byte as char);
             i += 3;
             continue;

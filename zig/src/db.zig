@@ -485,3 +485,362 @@ pub fn openDb(path: []const u8) !SqliteDb {
 pub fn closeDb(db: SqliteDb) void {
     _ = c.sqlite3_close(db);
 }
+
+// ---- inline tests ----
+
+const testing = std.testing;
+
+fn testOpenDb() !SqliteDb {
+    const db = try openDb(":memory:");
+    try initialize(db);
+    return db;
+}
+
+const test_indoor_json =
+    \\{"wifi":-47,"serialno":"abcdef123456","model":"I-9PSL","pm01":3,"pm02":5,"pm10":7,"pm02Compensated":6,"rco2":450,"atmp":22.5,"atmpCompensated":23.1,"rhum":45.0,"rhumCompensated":44.2,"tvocIndex":120,"noxIndex":15}
+;
+const test_outdoor_json =
+    \\{"wifi":-55,"serialno":"outdoor123","model":"O-1PST","pm01":10,"pm02":15,"pm10":20,"rco2":400,"atmp":18.3,"rhum":60.0}
+;
+const test_null_json =
+    \\{"wifi":-40,"serialno":"boot123","model":"I-9PSL"}
+;
+const test_zero_json =
+    \\{"wifi":-45,"serialno":"zero123","model":"I-9PSL","pm02Compensated":0,"atmpCompensated":0,"rhumCompensated":0}
+;
+const test_no_serial_json =
+    \\{"wifi":-30,"model":"I-9PSL","pm02":5}
+;
+
+fn testParseAndInsert(db: SqliteDb, ip: []const u8, json_str: []const u8) !void {
+    const parsed = try std.json.parseFromSlice(std.json.Value, testing.allocator, json_str, .{});
+    defer parsed.deinit();
+    try insertReading(db, ip, parsed.value, json_str);
+}
+
+test "nowMillis returns positive value" {
+    const ms = nowMillis();
+    try testing.expect(ms > 0);
+}
+
+test "insert and query indoor reading" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    try testParseAndInsert(db, "192.168.1.1", test_indoor_json);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const readings = try queryReadings(alloc, db, .{
+        .device = null,
+        .from = 0,
+        .to = nowMillis() + 1000,
+        .limit = 100,
+    });
+
+    try testing.expectEqual(@as(usize, 1), readings.len);
+    try testing.expectEqualStrings("indoor", readings[0].device_type);
+    try testing.expectEqualStrings("abcdef123456", readings[0].device_id);
+    try testing.expectEqualStrings("192.168.1.1", readings[0].device_ip);
+    try testing.expectEqual(@as(?f64, 5.0), readings[0].pm02);
+    try testing.expectEqual(@as(?i64, 450), readings[0].rco2);
+    try testing.expectEqual(@as(?f64, 22.5), readings[0].atmp);
+}
+
+test "device type classification" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
+    try testParseAndInsert(db, "10.0.0.2", test_outdoor_json);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const readings = try queryReadings(alloc, db, .{
+        .device = null,
+        .from = 0,
+        .to = nowMillis() + 1000,
+        .limit = 100,
+    });
+
+    try testing.expectEqual(@as(usize, 2), readings.len);
+    // Ordered by timestamp ASC, both inserted near-instantly
+    var found_indoor = false;
+    var found_outdoor = false;
+    for (readings) |r| {
+        if (std.mem.eql(u8, r.device_type, "indoor")) found_indoor = true;
+        if (std.mem.eql(u8, r.device_type, "outdoor")) found_outdoor = true;
+    }
+    try testing.expect(found_indoor);
+    try testing.expect(found_outdoor);
+}
+
+test "null fields handling" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    try testParseAndInsert(db, "10.0.0.1", test_null_json);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const readings = try queryReadings(alloc, db, .{
+        .device = null,
+        .from = 0,
+        .to = nowMillis() + 1000,
+        .limit = 100,
+    });
+
+    try testing.expectEqual(@as(usize, 1), readings.len);
+    try testing.expectEqual(@as(?f64, null), readings[0].pm01);
+    try testing.expectEqual(@as(?f64, null), readings[0].pm02);
+    try testing.expectEqual(@as(?i64, null), readings[0].rco2);
+    try testing.expectEqual(@as(?f64, null), readings[0].atmp);
+    try testing.expectEqual(@as(?i64, -40), readings[0].wifi);
+}
+
+test "zero compensated values are not null" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    try testParseAndInsert(db, "10.0.0.1", test_zero_json);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const readings = try queryReadings(alloc, db, .{
+        .device = null,
+        .from = 0,
+        .to = nowMillis() + 1000,
+        .limit = 100,
+    });
+
+    try testing.expectEqual(@as(usize, 1), readings.len);
+    try testing.expectEqual(@as(?f64, 0.0), readings[0].pm02_compensated);
+    try testing.expectEqual(@as(?f64, 0.0), readings[0].atmp_compensated);
+    try testing.expectEqual(@as(?f64, 0.0), readings[0].rhum_compensated);
+}
+
+test "missing serialno defaults to unknown" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    try testParseAndInsert(db, "10.0.0.1", test_no_serial_json);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const readings = try queryReadings(alloc, db, .{
+        .device = null,
+        .from = 0,
+        .to = nowMillis() + 1000,
+        .limit = 100,
+    });
+
+    try testing.expectEqual(@as(usize, 1), readings.len);
+    try testing.expectEqualStrings("unknown", readings[0].device_id);
+}
+
+test "query with device filter" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
+    try testParseAndInsert(db, "10.0.0.2", test_outdoor_json);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const readings = try queryReadings(alloc, db, .{
+        .device = "abcdef123456",
+        .from = 0,
+        .to = nowMillis() + 1000,
+        .limit = 100,
+    });
+
+    try testing.expectEqual(@as(usize, 1), readings.len);
+    try testing.expectEqualStrings("abcdef123456", readings[0].device_id);
+}
+
+test "query with device=all returns all" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
+    try testParseAndInsert(db, "10.0.0.2", test_outdoor_json);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const readings = try queryReadings(alloc, db, .{
+        .device = "all",
+        .from = 0,
+        .to = nowMillis() + 1000,
+        .limit = 100,
+    });
+
+    try testing.expectEqual(@as(usize, 2), readings.len);
+}
+
+test "query with limit" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
+    try testParseAndInsert(db, "10.0.0.2", test_outdoor_json);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const readings = try queryReadings(alloc, db, .{
+        .device = null,
+        .from = 0,
+        .to = nowMillis() + 1000,
+        .limit = 1,
+    });
+
+    try testing.expectEqual(@as(usize, 1), readings.len);
+}
+
+test "getLatestReadings returns one per device" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
+    try testParseAndInsert(db, "10.0.0.2", test_outdoor_json);
+    // Insert second indoor reading
+    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const latest = try getLatestReadings(alloc, db);
+    try testing.expectEqual(@as(usize, 2), latest.len);
+}
+
+test "getDevices returns unique devices" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
+    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
+    try testParseAndInsert(db, "10.0.0.2", test_outdoor_json);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const devices = try getDevices(alloc, db);
+    try testing.expectEqual(@as(usize, 2), devices.len);
+}
+
+test "getReadingsCount" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
+    try testParseAndInsert(db, "10.0.0.2", test_outdoor_json);
+
+    const count = try getReadingsCount(db);
+    try testing.expectEqual(@as(i64, 2), count);
+}
+
+test "empty query returns empty" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const readings = try queryReadings(alloc, db, .{
+        .device = null,
+        .from = 0,
+        .to = nowMillis() + 1000,
+        .limit = 100,
+    });
+
+    try testing.expectEqual(@as(usize, 0), readings.len);
+}
+
+test "readingToJson includes all fields" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const readings = try queryReadings(alloc, db, .{
+        .device = null,
+        .from = 0,
+        .to = nowMillis() + 1000,
+        .limit = 100,
+    });
+
+    const json = try readingToJson(alloc, &readings[0]);
+    try testing.expect(json.object.contains("device_id"));
+    try testing.expect(json.object.contains("pm02"));
+    try testing.expect(json.object.contains("rco2"));
+    try testing.expect(json.object.contains("timestamp"));
+}
+
+test "readingToJson with null fields" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    try testParseAndInsert(db, "10.0.0.1", test_null_json);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const readings = try queryReadings(alloc, db, .{
+        .device = null,
+        .from = 0,
+        .to = nowMillis() + 1000,
+        .limit = 100,
+    });
+
+    const json = try readingToJson(alloc, &readings[0]);
+    try testing.expectEqual(std.json.Value.null, json.object.get("pm01").?);
+    try testing.expectEqual(std.json.Value.null, json.object.get("rco2").?);
+}
+
+test "deviceSummaryToJson" {
+    const summary = DeviceSummary{
+        .device_id = "test123",
+        .device_type = "indoor",
+        .device_ip = "10.0.0.1",
+        .last_seen = 1000,
+        .reading_count = 5,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const json = try deviceSummaryToJson(alloc, &summary);
+    try testing.expectEqualStrings("test123", json.object.get("device_id").?.string);
+    try testing.expectEqual(@as(i64, 5), json.object.get("reading_count").?.integer);
+}
+
+test "checkpoint does not error" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    try checkpoint(db);
+}

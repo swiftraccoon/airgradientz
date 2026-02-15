@@ -6,6 +6,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <netinet/in.h>
 #include <signal.h>
 #include <stdio.h>
@@ -135,12 +136,30 @@ static char *build_error_response(int status, const char *status_text,
 
 static char *build_static_response(const char *req_path, size_t *out_len)
 {
-    if (strstr(req_path, "..")) {
-        return build_error_response(404, "Not Found", "Not found", out_len);
+    /* URL-decode the path (rejects null bytes) */
+    char *decoded = url_decode(req_path, strlen(req_path));
+    if (!decoded) {
+        return build_error_response(500, "Internal Server Error",
+                                     "Internal server error", out_len);
+    }
+
+    /* Check for path traversal in decoded path */
+    if (strstr(decoded, "..")) {
+        free(decoded);
+        return build_error_response(403, "Forbidden", "Forbidden", out_len);
+    }
+
+    /* Reject control characters (0x00-0x1F, 0x7F) */
+    for (const char *p = decoded; *p; p++) {
+        unsigned char c = (unsigned char)*p;
+        if (c < 0x20 || c == 0x7F) {
+            free(decoded);
+            return build_error_response(403, "Forbidden", "Forbidden", out_len);
+        }
     }
 
     /* Strip leading slash */
-    const char *relative = req_path;
+    const char *relative = decoded;
     while (*relative == '/') relative++;
 
     char filepath[512];
@@ -149,8 +168,22 @@ static char *build_static_response(const char *req_path, size_t *out_len)
     } else {
         snprintf(filepath, sizeof(filepath), "public/%s", relative);
     }
+    free(decoded);
 
-    int file_fd = open(filepath, O_RDONLY);
+    /* Resolve to absolute path and verify under public/ */
+    char resolved[PATH_MAX];
+    char public_resolved[PATH_MAX];
+    if (!realpath(filepath, resolved) || !realpath("public", public_resolved)) {
+        return build_error_response(404, "Not Found", "Not found", out_len);
+    }
+
+    size_t pub_len = strlen(public_resolved);
+    if (strncmp(resolved, public_resolved, pub_len) != 0 ||
+        (resolved[pub_len] != '/' && resolved[pub_len] != '\0')) {
+        return build_error_response(403, "Forbidden", "Forbidden", out_len);
+    }
+
+    int file_fd = open(resolved, O_RDONLY);
     if (file_fd < 0) {
         return build_error_response(404, "Not Found", "Not found", out_len);
     }
@@ -185,7 +218,7 @@ static char *build_static_response(const char *req_path, size_t *out_len)
     }
     close(file_fd);
 
-    const char *ct = content_type_for(filepath);
+    const char *ct = content_type_for(resolved);
     char *resp = build_response(200, "OK", ct, file_buf, total_read,
                                 "Cache-Control: public, max-age=600\r\n", out_len);
     free(file_buf);

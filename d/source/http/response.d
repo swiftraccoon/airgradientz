@@ -113,3 +113,53 @@ struct HttpResponse {
         }
     }
 }
+
+// ---- unit tests ----
+
+unittest {
+    import std.algorithm : canFind;
+
+    // notFound response
+    auto r = HttpResponse.notFound();
+    assert(r.status == 404);
+    assert(r.statusText == "Not Found");
+
+    auto bytes = cast(string) r.toBytes();
+    assert(bytes.canFind("HTTP/1.1 404 Not Found"));
+    assert(bytes.canFind("Content-Type: application/json"));
+    assert(bytes.canFind(`"error"`));
+
+    // methodNotAllowed response
+    r = HttpResponse.methodNotAllowed();
+    assert(r.status == 405);
+
+    // internalError response
+    r = HttpResponse.internalError("test error");
+    assert(r.status == 500);
+    auto body = cast(string) r.body_;
+    assert(body.canFind("test error"));
+
+    // security headers
+    r = HttpResponse.make(200, "OK");
+    auto allBytes = cast(string) r.toBytes();
+    assert(allBytes.canFind("X-Content-Type-Options: nosniff"));
+    assert(allBytes.canFind("X-Frame-Options: DENY"));
+    assert(allBytes.canFind("Connection: close"));
+
+    // okJson
+    import std.json : JSONValue;
+    auto json = JSONValue(["key": JSONValue(42)]);
+    r = HttpResponse.okJson(json);
+    assert(r.status == 200);
+    auto jsonBody = cast(string) r.body_;
+    assert(jsonBody.canFind(`"key"`));
+    assert(jsonBody.canFind("42"));
+
+    // okStatic
+    auto content = cast(const(ubyte)[]) "body content";
+    r = HttpResponse.okStatic(content, "text/plain");
+    assert(r.status == 200);
+    allBytes = cast(string) r.toBytes();
+    assert(allBytes.canFind("Content-Type: text/plain"));
+    assert(allBytes.canFind("Cache-Control: public, max-age=600"));
+}

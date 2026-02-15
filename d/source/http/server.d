@@ -15,7 +15,7 @@ import core.sys.posix.fcntl : fcntl, F_GETFL, F_SETFL, O_NONBLOCK;
 import core.sys.posix.unistd : close;
 import core.time : dur, MonoTime;
 
-import http.request : HttpRequest, Method;
+import http.request : HttpRequest, Method, urlDecode;
 import http.response : HttpResponse;
 import api;
 import state : AppState;
@@ -36,11 +36,24 @@ private string contentTypeFor(string path) {
 }
 
 private HttpResponse serveStatic(string reqPath) {
-    if (indexOf(reqPath, "..") >= 0)
+    import core.sys.posix.stdlib : realpath;
+    import core.stdc.stdlib : free;
+
+    // URL-decode the path
+    string decoded = urlDecode(reqPath);
+
+    // Check for path traversal in decoded path
+    if (indexOf(decoded, "..") >= 0)
         return HttpResponse.notFound();
 
+    // Reject control characters (0x00-0x1F, 0x7F)
+    foreach (ch; decoded) {
+        if (ch < 0x20 || ch == 0x7F)
+            return HttpResponse.notFound();
+    }
+
     // Strip leading slash
-    string relative = reqPath;
+    string relative = decoded;
     while (relative.length > 0 && relative[0] == '/')
         relative = relative[1 .. $];
 
@@ -50,11 +63,28 @@ private HttpResponse serveStatic(string reqPath) {
     else
         filePath = buildPath("public", relative);
 
-    if (!exists(filePath) || !isFile(filePath))
+    // Resolve to absolute path and verify under public/
+    import std.string : toStringz, fromStringz;
+    auto resolvedPtr = realpath(filePath.toStringz, null);
+    if (resolvedPtr is null)
+        return HttpResponse.notFound();
+    string resolved = resolvedPtr.fromStringz.idup;
+    free(resolvedPtr);
+
+    auto publicPtr = realpath("public".toStringz, null);
+    if (publicPtr is null)
+        return HttpResponse.notFound();
+    string publicResolved = publicPtr.fromStringz.idup;
+    free(publicPtr);
+
+    if (!startsWith(resolved, publicResolved ~ "/") && resolved != publicResolved)
+        return HttpResponse.notFound();
+
+    if (!exists(resolved) || !isFile(resolved))
         return HttpResponse.notFound();
 
     try {
-        auto fileSize = getSize(filePath);
+        auto fileSize = getSize(resolved);
         if (fileSize > 16 * 1024 * 1024)
             return HttpResponse.internalError("File too large");
     } catch (Exception) {
@@ -62,8 +92,8 @@ private HttpResponse serveStatic(string reqPath) {
     }
 
     try {
-        auto contents = cast(const(ubyte)[]) read(filePath);
-        auto ct = contentTypeFor(filePath);
+        auto contents = cast(const(ubyte)[]) read(resolved);
+        auto ct = contentTypeFor(resolved);
         return HttpResponse.okStatic(contents, ct);
     } catch (Exception) {
         return HttpResponse.notFound();

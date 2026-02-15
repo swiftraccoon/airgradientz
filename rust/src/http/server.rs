@@ -49,20 +49,44 @@ fn content_type_for(path: &Path) -> &'static str {
 }
 
 fn serve_static(req_path: &str) -> HttpResponse {
-    if req_path.contains("..") {
+    use crate::http::request::url_decode;
+
+    // URL-decode the path
+    let decoded = url_decode(req_path);
+
+    // Check for path traversal in decoded path
+    if decoded.contains("..") {
         return HttpResponse::not_found();
     }
 
-    let relative = req_path.trim_start_matches('/');
+    // Reject control characters (0x00-0x1F, 0x7F)
+    if decoded.bytes().any(|b| b < 0x20 || b == 0x7f) {
+        return HttpResponse::not_found();
+    }
+
+    let relative = decoded.trim_start_matches('/');
     let file_path = if relative.is_empty() {
         PathBuf::from("public/index.html")
     } else {
         PathBuf::from("public").join(relative)
     };
 
+    // Resolve to absolute path and verify under public/
+    let canonical = match fs::canonicalize(&file_path) {
+        Ok(p) => p,
+        Err(_) => return HttpResponse::not_found(),
+    };
+    let public_canonical = match fs::canonicalize("public") {
+        Ok(p) => p,
+        Err(_) => return HttpResponse::not_found(),
+    };
+    if !canonical.starts_with(&public_canonical) {
+        return HttpResponse::not_found();
+    }
+
     const MAX_STATIC_FILE: u64 = 16 * 1024 * 1024;
 
-    let meta = match fs::metadata(&file_path) {
+    let meta = match fs::metadata(&canonical) {
         Ok(m) if m.is_file() => m,
         _ => return HttpResponse::not_found(),
     };
@@ -71,10 +95,10 @@ fn serve_static(req_path: &str) -> HttpResponse {
         return HttpResponse::internal_error("File too large");
     }
 
-    fs::read(&file_path).map_or_else(
+    fs::read(&canonical).map_or_else(
         |_| HttpResponse::not_found(),
         |contents| {
-            let ct = content_type_for(&file_path);
+            let ct = content_type_for(&canonical);
             HttpResponse::ok_static(contents, ct)
         },
     )

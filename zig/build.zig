@@ -32,4 +32,29 @@ pub fn build(b: *std.Build) void {
     if (b.args) |args| {
         run_cmd.addArgs(args);
     }
+
+    // Test step — tests db.zig and http_server.zig via test_root.zig
+    const test_mod = b.createModule(.{
+        .root_source_file = b.path("src/test_root.zig"),
+        .target = target,
+        .optimize = optimize,
+        .link_libc = true,
+    });
+
+    const tests = b.addTest(.{
+        .name = "tests",
+        .root_module = test_mod,
+    });
+
+    tests.root_module.addCSourceFile(.{
+        .file = b.path("../c/sqlite3.c"),
+        .flags = &.{
+            "-DSQLITE_THREADSAFE=1",
+            "-DSQLITE_ENABLE_WAL=1",
+        },
+    });
+    tests.root_module.addIncludePath(b.path("../c"));
+
+    const test_step = b.step("test", "Run unit tests");
+    test_step.dependOn(&b.addRunArtifact(tests).step);
 }

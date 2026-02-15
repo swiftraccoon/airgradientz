@@ -13,7 +13,7 @@
 
 /* ---- url decode ---- */
 
-static char *url_decode(const char *s, size_t len)
+char *url_decode(const char *s, size_t len)
 {
     char *out = malloc(len + 1);
     if (!out) return NULL;

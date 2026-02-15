@@ -128,7 +128,13 @@ string urlDecode(string s) {
             auto hi = hexVal(s[i + 1]);
             auto lo = hexVal(s[i + 2]);
             if (hi >= 0 && lo >= 0) {
-                result ~= cast(char)(hi * 16 + lo);
+                auto val = cast(ubyte)(hi * 16 + lo);
+                if (val == 0) {
+                    // Reject null bytes
+                    i += 3;
+                    continue;
+                }
+                result ~= cast(char) val;
                 i += 3;
                 continue;
             }
@@ -148,4 +154,56 @@ private int hexVal(char c) {
     if (c >= 'a' && c <= 'f') return 10 + c - 'a';
     if (c >= 'A' && c <= 'F') return 10 + c - 'A';
     return -1;
+}
+
+// ---- unit tests ----
+
+unittest {
+    // parseFromBuf: GET request
+    auto req = HttpRequest.parseFromBuf("GET /api/readings HTTP/1.1\r\nHost: localhost\r\n\r\n");
+    assert(req.method == Method.get);
+    assert(req.path == "/api/readings");
+    assert(req.query == "");
+
+    // parseFromBuf: with query string
+    req = HttpRequest.parseFromBuf("GET /api/readings?from=100&to=200 HTTP/1.1\r\n\r\n");
+    assert(req.path == "/api/readings");
+    assert(req.query == "from=100&to=200");
+
+    // parseFromBuf: non-GET method
+    req = HttpRequest.parseFromBuf("POST /api/data HTTP/1.1\r\n\r\n");
+    assert(req.method == Method.other);
+
+    // parseFromBuf: empty input
+    req = HttpRequest.parseFromBuf("");
+    assert(req.method == Method.other);
+    assert(req.path == "");
+
+    // queryParam: basic
+    req = HttpRequest(Method.get, "/test", "from=100&to=200");
+    assert(req.queryParam("from") == "100");
+    assert(req.queryParam("to") == "200");
+
+    // queryParam: missing
+    assert(req.queryParam("missing") is null);
+
+    // queryParam: empty query
+    req = HttpRequest(Method.get, "/test", "");
+    assert(req.queryParam("from") is null);
+
+    // urlDecode: basic
+    assert(urlDecode("hello%20world") == "hello world");
+
+    // urlDecode: plus as space
+    assert(urlDecode("hello+world") == "hello world");
+
+    // urlDecode: hex encoding
+    assert(urlDecode("%41%42%43") == "ABC");
+
+    // urlDecode: null byte rejection
+    auto decoded = urlDecode("test%00path");
+    assert(decoded == "testpath", "expected null byte stripped, got: " ~ decoded);
+
+    // urlDecode: passthrough
+    assert(urlDecode("normal") == "normal");
 }

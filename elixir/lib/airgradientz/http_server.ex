@@ -7,7 +7,7 @@ defmodule Airgradientz.HttpServer do
   @max_request_bytes 8192
   @max_connections 128
   @recv_timeout_ms 10_000
-  @max_static_file_bytes 2 * 1024 * 1024
+  @max_static_file_bytes 16 * 1024 * 1024
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
