@@ -133,6 +133,8 @@ pub fn handleStats(allocator: std.mem.Allocator, state: *http_server.ServerState
     try obj.put("active_connections", .{ .integer = @as(i64, state.active_connections.load(.monotonic)) });
     try obj.put("poll_successes", .{ .integer = saturatingCastI64(state.poller_state.poll_successes.load(.monotonic)) });
     try obj.put("poll_failures", .{ .integer = saturatingCastI64(state.poller_state.poll_failures.load(.monotonic)) });
+    try obj.put("pool_alloc_count", .{ .integer = saturatingCastI64(state.arena_resets.load(.monotonic)) });
+    try obj.put("pool_bytes_used", .{ .integer = 0 });
 
     return .{ .object = obj };
 }

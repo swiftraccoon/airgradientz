@@ -27,6 +27,7 @@ pub const ServerState = struct {
     started_at: i64,
     active_connections: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
     requests_served: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    arena_resets: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 };
 
 const ConnPhase = enum { reading, writing };
@@ -324,6 +325,7 @@ fn closeAndCleanup(epfd: i32, fd: i32, connections: *std.AutoHashMap(i32, *ConnD
         conn.deinit();
         std.heap.page_allocator.destroy(conn);
         _ = state.active_connections.fetchSub(1, .release);
+        _ = state.arena_resets.fetchAdd(1, .monotonic);
     }
 
     std.posix.close(fd);

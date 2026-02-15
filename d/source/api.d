@@ -161,6 +161,8 @@ HttpResponse handleStats(AppState appState) {
     obj["active_connections"] = JSONValue(appState.getActiveConnections());
     obj["poll_successes"] = JSONValue(pollStats.successes);
     obj["poll_failures"] = JSONValue(pollStats.failures);
+    obj["pool_alloc_count"] = JSONValue(cast(long) 0);
+    obj["pool_bytes_used"] = JSONValue(cast(long) 0);
     obj["started_at"] = JSONValue(appState.startedAt);
 
     return HttpResponse.okJson(obj);

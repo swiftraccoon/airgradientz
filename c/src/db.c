@@ -1,5 +1,6 @@
 #include "db.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -7,6 +8,40 @@
 
 #include "config.h"
 #include "strbuf.h"
+
+/* ---- pool allocator stats ---- */
+
+static atomic_uint_fast64_t pool_alloc_count;
+static atomic_uint_fast64_t pool_bytes_used;
+
+void db_get_pool_stats(uint64_t *alloc_count, uint64_t *bytes_used)
+{
+    *alloc_count = atomic_load(&pool_alloc_count);
+    *bytes_used  = atomic_load(&pool_bytes_used);
+}
+
+/* ---- string arena helpers ---- */
+
+#define PTR_IN_ARENA(arena, cap, p) \
+    ((arena) && (const char *)(p) >= (arena) && (const char *)(p) < (arena) + (cap))
+
+static char *arena_strdup(char *arena, size_t arena_cap, size_t *arena_used, const char *s)
+{
+    if (!s) abort();
+    size_t len = strlen(s) + 1;
+
+    if (arena && *arena_used + len <= arena_cap) {
+        char *p = arena + *arena_used;
+        memcpy(p, s, len);
+        *arena_used += len;
+        return p;
+    }
+
+    /* Arena full or missing — fall back to strdup */
+    char *p = strdup(s);
+    if (!p) abort();
+    return p;
+}
 
 /* ---- time ---- */
 
@@ -22,26 +57,53 @@ int64_t db_now_millis(void)
 void reading_list_free(ReadingList *rl)
 {
     for (size_t i = 0; i < rl->count; i++) {
-        free(rl->items[i].device_id);
-        free(rl->items[i].device_type);
-        free(rl->items[i].device_ip);
+        if (!PTR_IN_ARENA(rl->str_arena, rl->str_arena_cap, rl->items[i].device_id))
+            free(rl->items[i].device_id);
+        if (!PTR_IN_ARENA(rl->str_arena, rl->str_arena_cap, rl->items[i].device_type))
+            free(rl->items[i].device_type);
+        if (!PTR_IN_ARENA(rl->str_arena, rl->str_arena_cap, rl->items[i].device_ip))
+            free(rl->items[i].device_ip);
     }
+    free(rl->str_arena);
     free(rl->items);
     rl->items = NULL;
-    rl->count = 0;
-    rl->cap = 0;
+    rl->count = rl->cap = 0;
+    rl->str_arena = NULL;
+    rl->str_arena_cap = rl->str_arena_used = 0;
 }
 
 void device_summary_list_free(DeviceSummaryList *dl)
 {
     for (size_t i = 0; i < dl->count; i++) {
-        free(dl->items[i].device_id);
-        free(dl->items[i].device_type);
-        free(dl->items[i].device_ip);
+        if (!PTR_IN_ARENA(dl->str_arena, dl->str_arena_cap, dl->items[i].device_id))
+            free(dl->items[i].device_id);
+        if (!PTR_IN_ARENA(dl->str_arena, dl->str_arena_cap, dl->items[i].device_type))
+            free(dl->items[i].device_type);
+        if (!PTR_IN_ARENA(dl->str_arena, dl->str_arena_cap, dl->items[i].device_ip))
+            free(dl->items[i].device_ip);
     }
+    free(dl->str_arena);
     free(dl->items);
     dl->items = NULL;
-    dl->count = 0;
+    dl->count = dl->cap = 0;
+    dl->str_arena = NULL;
+    dl->str_arena_cap = dl->str_arena_used = 0;
+}
+
+static void reading_list_init_pooled(ReadingList *rl, size_t item_cap, size_t str_cap)
+{
+    memset(rl, 0, sizeof(*rl));
+    if (item_cap > 0) {
+        rl->items = malloc(item_cap * sizeof(Reading));
+        if (rl->items) rl->cap = item_cap;
+    }
+    if (str_cap > 0) {
+        rl->str_arena = malloc(str_cap);
+        if (rl->str_arena) rl->str_arena_cap = str_cap;
+    }
+    size_t total = item_cap * sizeof(Reading) + str_cap;
+    atomic_fetch_add(&pool_alloc_count, 1);
+    atomic_fetch_add(&pool_bytes_used, total);
 }
 
 static void reading_list_push(ReadingList *rl, const Reading *r)
@@ -209,18 +271,19 @@ static bool col_is_null(sqlite3_stmt *stmt, int col)
     return sqlite3_column_type(stmt, col) == SQLITE_NULL;
 }
 
-static Reading row_to_reading(sqlite3_stmt *stmt)
+static Reading row_to_reading(sqlite3_stmt *stmt, ReadingList *rl)
 {
     Reading r;
     memset(&r, 0, sizeof(r));
 
     r.id        = sqlite3_column_int64(stmt, 0);
     r.timestamp = sqlite3_column_int64(stmt, 1);
-    r.device_id   = strdup((const char *)sqlite3_column_text(stmt, 2));
-    r.device_type = strdup((const char *)sqlite3_column_text(stmt, 3));
-    r.device_ip   = strdup((const char *)sqlite3_column_text(stmt, 4));
-
-    if (!r.device_id || !r.device_type || !r.device_ip) abort();
+    r.device_id   = arena_strdup(rl->str_arena, rl->str_arena_cap, &rl->str_arena_used,
+                                 (const char *)sqlite3_column_text(stmt, 2));
+    r.device_type = arena_strdup(rl->str_arena, rl->str_arena_cap, &rl->str_arena_used,
+                                 (const char *)sqlite3_column_text(stmt, 3));
+    r.device_ip   = arena_strdup(rl->str_arena, rl->str_arena_cap, &rl->str_arena_used,
+                                 (const char *)sqlite3_column_text(stmt, 4));
 
     /* pm01 (5) */
     r.has_pm01 = !col_is_null(stmt, 5);
@@ -266,7 +329,8 @@ static Reading row_to_reading(sqlite3_stmt *stmt)
 
 int db_query_readings(sqlite3 *db, const ReadingQuery *q, ReadingList *out)
 {
-    memset(out, 0, sizeof(*out));
+    size_t est_items = (q->limit > 0) ? (size_t)q->limit : 1000;
+    reading_list_init_pooled(out, est_items, est_items * 96);
 
     bool want_device = q->device && strcmp(q->device, "all") != 0;
 
@@ -309,7 +373,7 @@ int db_query_readings(sqlite3 *db, const ReadingQuery *q, ReadingList *out)
     }
 
     while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-        Reading r = row_to_reading(stmt);
+        Reading r = row_to_reading(stmt, out);
         reading_list_push(out, &r);
     }
 
@@ -323,6 +387,15 @@ int db_get_devices(sqlite3 *db, DeviceSummaryList *out)
 {
     memset(out, 0, sizeof(*out));
 
+    /* Pre-allocate for a reasonable number of devices */
+    size_t est_devices = 16;
+    out->items = malloc(est_devices * sizeof(DeviceSummary));
+    if (out->items) out->cap = est_devices;
+    out->str_arena = malloc(est_devices * 96);
+    if (out->str_arena) out->str_arena_cap = est_devices * 96;
+    atomic_fetch_add(&pool_alloc_count, 1);
+    atomic_fetch_add(&pool_bytes_used, est_devices * sizeof(DeviceSummary) + est_devices * 96);
+
     const char *sql =
         "SELECT device_id, device_type, device_ip, "
         "       MAX(timestamp) as last_seen, "
@@ -335,21 +408,26 @@ int db_get_devices(sqlite3 *db, DeviceSummaryList *out)
     int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
 
-    size_t cap = 0;
     while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-        if (out->count >= cap) {
-            cap = cap ? cap * 2 : 8;
-            DeviceSummary *p = realloc(out->items, cap * sizeof(*p));
+        if (out->count >= out->cap) {
+            size_t new_cap = out->cap ? out->cap * 2 : 8;
+            DeviceSummary *p = realloc(out->items, new_cap * sizeof(*p));
             if (!p) abort();
             out->items = p;
+            out->cap = new_cap;
         }
         DeviceSummary *d = &out->items[out->count++];
-        d->device_id    = strdup((const char *)sqlite3_column_text(stmt, 0));
-        d->device_type  = strdup((const char *)sqlite3_column_text(stmt, 1));
-        d->device_ip    = strdup((const char *)sqlite3_column_text(stmt, 2));
+        d->device_id    = arena_strdup(out->str_arena, out->str_arena_cap,
+                                       &out->str_arena_used,
+                                       (const char *)sqlite3_column_text(stmt, 0));
+        d->device_type  = arena_strdup(out->str_arena, out->str_arena_cap,
+                                       &out->str_arena_used,
+                                       (const char *)sqlite3_column_text(stmt, 1));
+        d->device_ip    = arena_strdup(out->str_arena, out->str_arena_cap,
+                                       &out->str_arena_used,
+                                       (const char *)sqlite3_column_text(stmt, 2));
         d->last_seen    = sqlite3_column_int64(stmt, 3);
         d->reading_count = sqlite3_column_int64(stmt, 4);
-        if (!d->device_id || !d->device_type || !d->device_ip) abort();
     }
 
     sqlite3_finalize(stmt);
@@ -360,7 +438,7 @@ int db_get_devices(sqlite3 *db, DeviceSummaryList *out)
 
 int db_get_latest_readings(sqlite3 *db, ReadingList *out)
 {
-    memset(out, 0, sizeof(*out));
+    reading_list_init_pooled(out, 16, 16 * 96);
 
     const char *sql =
         "SELECT r.id, r.timestamp, r.device_id, r.device_type, r.device_ip, "
@@ -379,7 +457,7 @@ int db_get_latest_readings(sqlite3 *db, ReadingList *out)
     if (rc != SQLITE_OK) return -1;
 
     while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
-        Reading r = row_to_reading(stmt);
+        Reading r = row_to_reading(stmt, out);
         reading_list_push(out, &r);
     }
 

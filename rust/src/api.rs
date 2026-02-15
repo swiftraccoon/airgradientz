@@ -161,6 +161,8 @@ pub(crate) fn handle_stats(state: &AppState) -> HttpResponse {
         ("active_connections", JsonValue::from_i64(active_connections)),
         ("poll_successes", JsonValue::Number(poll_successes as f64)),
         ("poll_failures", JsonValue::Number(poll_failures as f64)),
+        ("pool_alloc_count", JsonValue::Number(0.0)),
+        ("pool_bytes_used", JsonValue::Number(0.0)),
         ("started_at", JsonValue::from_i64(state.started_at)),
     ]);
 

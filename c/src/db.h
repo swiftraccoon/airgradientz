@@ -33,6 +33,9 @@ typedef struct {
     Reading *items;
     size_t   count;
     size_t   cap;
+    char    *str_arena;
+    size_t   str_arena_cap;
+    size_t   str_arena_used;
 } ReadingList;
 
 void reading_list_free(ReadingList *rl);
@@ -50,6 +53,10 @@ typedef struct {
 typedef struct {
     DeviceSummary *items;
     size_t         count;
+    size_t         cap;
+    char          *str_arena;
+    size_t         str_arena_cap;
+    size_t         str_arena_used;
 } DeviceSummaryList;
 
 void device_summary_list_free(DeviceSummaryList *dl);
@@ -74,6 +81,9 @@ int     db_checkpoint(sqlite3 *db);
 int64_t db_get_readings_count(sqlite3 *db);
 
 int64_t db_now_millis(void);
+
+/* Pool allocator stats */
+void db_get_pool_stats(uint64_t *alloc_count, uint64_t *bytes_used);
 
 /* Convert a Reading to JsonValue (caller frees) */
 JsonValue *reading_to_json(const Reading *r);

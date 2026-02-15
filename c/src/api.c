@@ -229,6 +229,10 @@ JsonValue *api_handle_stats(struct AppState *state, int *status)
     uint64_t p_successes, p_failures;
     poller_get_counters(&p_successes, &p_failures);
 
+    /* pool allocator stats */
+    uint64_t pool_allocs, pool_bytes;
+    db_get_pool_stats(&pool_allocs, &pool_bytes);
+
     JsonValue *obj = json_object_new();
     json_object_set(obj, "implementation",    json_string("c"));
     json_object_set(obj, "pid",               json_from_i64((int64_t)getpid()));
@@ -240,6 +244,8 @@ JsonValue *api_handle_stats(struct AppState *state, int *status)
     json_object_set(obj, "active_connections", json_from_i64((int64_t)atomic_load(&state->active_connections)));
     json_object_set(obj, "poll_successes",    json_from_i64((int64_t)p_successes));
     json_object_set(obj, "poll_failures",     json_from_i64((int64_t)p_failures));
+    json_object_set(obj, "pool_alloc_count",  json_from_i64((int64_t)pool_allocs));
+    json_object_set(obj, "pool_bytes_used",   json_from_i64((int64_t)pool_bytes));
     json_object_set(obj, "started_at",        json_from_i64(state->started_at));
 
     *status = 200;
