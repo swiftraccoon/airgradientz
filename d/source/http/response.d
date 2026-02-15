@@ -76,6 +76,20 @@ struct HttpResponse {
         return r;
     }
 
+    const(ubyte)[] toBytes() {
+        import std.array : Appender;
+        Appender!(ubyte[]) buf;
+        auto statusLine = format!"HTTP/1.1 %d %s\r\n"(status, statusText);
+        buf ~= cast(ubyte[]) statusLine;
+        foreach (ref h; headers) {
+            auto line = format!"%s: %s\r\n"(h.name, h.value);
+            buf ~= cast(ubyte[]) line;
+        }
+        buf ~= cast(ubyte[]) "\r\n";
+        buf ~= body_;
+        return buf[];
+    }
+
     void writeTo(Socket sock) {
         import std.array : Appender;
 

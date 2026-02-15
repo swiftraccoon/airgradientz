@@ -28,6 +28,38 @@ struct HttpRequest {
         return null;
     }
 
+    static HttpRequest parseFromBuf(string data) {
+        if (data.length == 0)
+            return HttpRequest(Method.other, "", "");
+
+        auto lineEnd = indexOf(data, "\r\n");
+        if (lineEnd < 0)
+            return HttpRequest(Method.other, "", "");
+
+        auto requestLine = data[0 .. lineEnd];
+        auto firstSpace = indexOf(requestLine, ' ');
+        if (firstSpace < 0)
+            return HttpRequest(Method.other, "", "");
+
+        auto methodStr = requestLine[0 .. firstSpace];
+        auto afterMethod = requestLine[firstSpace + 1 .. $];
+        auto secondSpace = indexOf(afterMethod, ' ');
+        string rawPath = (secondSpace >= 0) ? afterMethod[0 .. secondSpace] : afterMethod;
+
+        auto m = (methodStr == "GET") ? Method.get : Method.other;
+
+        string path, queryStr;
+        auto qmark = indexOf(rawPath, '?');
+        if (qmark >= 0) {
+            path = rawPath[0 .. qmark];
+            queryStr = rawPath[qmark + 1 .. $];
+        } else {
+            path = rawPath;
+            queryStr = "";
+        }
+        return HttpRequest(m, path, queryStr);
+    }
+
     static HttpRequest parse(Socket sock) {
         sock.setOption(SocketOptionLevel.SOCKET, SocketOption.RCVTIMEO, dur!"seconds"(10));
 
