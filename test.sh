@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-ALL_IMPLS=(c nodejs rust zig d elixir nim)
+ALL_IMPLS=(c nodejs rust zig d elixir nim go)
 
 # Determine which impls to test
 if [[ $# -eq 0 ]]; then
@@ -75,6 +75,14 @@ for impl in "${impls[@]}"; do
         nim)
             echo "==> Testing $impl..."
             if (cd nim && export PATH="$HOME/.nimble/bin:$PATH" && nim c -r --path:src --threads:on --mm:orc --passC:"-DSQLITE_THREADSAFE=2" --passC:"-DSQLITE_OMIT_LOAD_EXTENSION" tests/test_db.nim); then
+                succeeded+=("$impl")
+            else
+                failed+=("$impl")
+            fi
+            ;;
+        go)
+            echo "==> Testing $impl..."
+            if (cd go && go test -count=1 ./...); then
                 succeeded+=("$impl")
             else
                 failed+=("$impl")
