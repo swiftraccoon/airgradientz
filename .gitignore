@@ -16,6 +16,9 @@ node_modules/
 # C
 c/test_runner
 
+# d
+d/airgradientz
+
 # Rust
 rust/target/
 
@@ -29,3 +32,5 @@ elixir/deps/
 
 # Other
 references/
+CLAUDE.md
+docs/
