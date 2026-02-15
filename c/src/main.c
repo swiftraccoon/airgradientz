@@ -19,6 +19,7 @@ int main(void)
 {
     g_state.config = config_from_env();
     atomic_store(&g_state.shutdown, false);
+    g_state.started_at = db_now_millis();
 
     fprintf(stderr, "[server] Opening database at %s\n", g_state.config.db_path);
 

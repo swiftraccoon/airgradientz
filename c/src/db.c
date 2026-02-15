@@ -5,6 +5,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "config.h"
 #include "strbuf.h"
 
 /* ---- time ---- */
@@ -90,31 +91,14 @@ int db_initialize(sqlite3 *db)
         return -1;
     }
 
-    const char *schema =
-        "CREATE TABLE IF NOT EXISTS readings ("
-        "    id INTEGER PRIMARY KEY AUTOINCREMENT,"
-        "    timestamp INTEGER NOT NULL,"
-        "    device_id TEXT NOT NULL,"
-        "    device_type TEXT NOT NULL CHECK(device_type IN ('indoor', 'outdoor')),"
-        "    device_ip TEXT NOT NULL,"
-        "    pm01 REAL,"
-        "    pm02 REAL,"
-        "    pm10 REAL,"
-        "    pm02_compensated REAL,"
-        "    rco2 INTEGER,"
-        "    atmp REAL,"
-        "    atmp_compensated REAL,"
-        "    rhum REAL,"
-        "    rhum_compensated REAL,"
-        "    tvoc_index REAL,"
-        "    nox_index REAL,"
-        "    wifi INTEGER,"
-        "    raw_json TEXT NOT NULL"
-        ");"
-        "CREATE INDEX IF NOT EXISTS idx_readings_ts ON readings(timestamp);"
-        "CREATE INDEX IF NOT EXISTS idx_readings_device ON readings(device_id, timestamp);";
+    char *schema = config_read_file("../schema.sql");
+    if (!schema) {
+        fprintf(stderr, "[db] failed to read ../schema.sql\n");
+        return -1;
+    }
 
     rc = sqlite3_exec(db, schema, NULL, NULL, &errmsg);
+    free(schema);
     if (rc != SQLITE_OK) {
         fprintf(stderr, "[db] schema error: %s\n", errmsg ? errmsg : "unknown");
         sqlite3_free(errmsg);
@@ -401,6 +385,23 @@ int db_get_latest_readings(sqlite3 *db, ReadingList *out)
 
     sqlite3_finalize(stmt);
     return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
+/* ---- readings count ---- */
+
+int64_t db_get_readings_count(sqlite3 *db)
+{
+    const char *sql = "SELECT COUNT(*) FROM readings";
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) return -1;
+
+    int64_t count = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        count = sqlite3_column_int64(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return count;
 }
 
 /* ---- checkpoint ---- */

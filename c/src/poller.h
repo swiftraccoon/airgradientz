@@ -1,6 +1,7 @@
 #ifndef POLLER_H
 #define POLLER_H
 
+#include <stdatomic.h>
 #include <stdint.h>
 
 #include "config.h"
@@ -30,5 +31,8 @@ void *poller_run(void *arg);   /* arg = AppState* */
 
 /* Get health as JSON array (caller frees). Reads under health rdlock. */
 JsonValue *poller_get_health_json(struct AppState *state);
+
+/* Get poll success/failure counters. */
+void poller_get_counters(uint64_t *successes, uint64_t *failures);
 
 #endif /* POLLER_H */

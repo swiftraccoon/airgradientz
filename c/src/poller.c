@@ -4,11 +4,15 @@
 #include "http_client.h"
 #include "json.h"
 
+#include <stdatomic.h>
 #include <stdio.h>
 #include <string.h>
 #include <time.h>
 
 #define CHECKPOINT_INTERVAL_POLLS 10
+
+static atomic_uint_fast64_t poll_successes = 0;
+static atomic_uint_fast64_t poll_failures  = 0;
 
 static void record_success(DeviceHealth *h)
 {
@@ -56,6 +60,7 @@ static void fetch_device(AppState *state, size_t idx)
 
     if (!body) {
         fprintf(stderr, "[poller] %s (%s): fetch failed: %s\n", label, ip, errbuf);
+        atomic_fetch_add(&poll_failures, 1);
         pthread_rwlock_wrlock(&state->health_lock);
         record_failure(&state->health[idx], errbuf);
         pthread_rwlock_unlock(&state->health_lock);
@@ -70,6 +75,7 @@ static void fetch_device(AppState *state, size_t idx)
         char msg[256];
         snprintf(msg, sizeof(msg), "JSON parse error at pos %zu", jerr.pos);
         fprintf(stderr, "[poller] %s (%s): %s\n", label, ip, msg);
+        atomic_fetch_add(&poll_failures, 1);
         pthread_rwlock_wrlock(&state->health_lock);
         record_failure(&state->health[idx], msg);
         pthread_rwlock_unlock(&state->health_lock);
@@ -79,6 +85,7 @@ static void fetch_device(AppState *state, size_t idx)
     if (!json_is_object(data)) {
         const char *msg = "unexpected response type: not an object";
         fprintf(stderr, "[poller] %s (%s): %s\n", label, ip, msg);
+        atomic_fetch_add(&poll_failures, 1);
         pthread_rwlock_wrlock(&state->health_lock);
         record_failure(&state->health[idx], msg);
         pthread_rwlock_unlock(&state->health_lock);
@@ -94,6 +101,7 @@ static void fetch_device(AppState *state, size_t idx)
     if (rc != 0) {
         const char *msg = "DB insert failed";
         fprintf(stderr, "[poller] %s (%s): %s\n", label, ip, msg);
+        atomic_fetch_add(&poll_failures, 1);
         pthread_rwlock_wrlock(&state->health_lock);
         record_failure(&state->health[idx], msg);
         pthread_rwlock_unlock(&state->health_lock);
@@ -115,6 +123,7 @@ static void fetch_device(AppState *state, size_t idx)
     format_optional_i64(rco2_s, sizeof(rco2_s), has_rco2, rco2);
     format_optional_f64(atmp_s, sizeof(atmp_s), has_atmp, atmp);
 
+    atomic_fetch_add(&poll_successes, 1);
     pthread_rwlock_wrlock(&state->health_lock);
     record_success(&state->health[idx]);
     pthread_rwlock_unlock(&state->health_lock);
@@ -182,6 +191,14 @@ void *poller_run(void *arg)
     }
 
     return NULL;
+}
+
+/* ---- poll counters ---- */
+
+void poller_get_counters(uint64_t *successes, uint64_t *failures)
+{
+    *successes = atomic_load(&poll_successes);
+    *failures  = atomic_load(&poll_failures);
 }
 
 /* ---- health JSON ---- */

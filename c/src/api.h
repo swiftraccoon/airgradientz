@@ -20,6 +20,7 @@ JsonValue *api_handle_readings_latest(struct AppState *state, int *status);
 JsonValue *api_handle_devices(struct AppState *state, int *status);
 JsonValue *api_handle_health(struct AppState *state, int *status);
 JsonValue *api_handle_config(struct AppState *state, int *status);
+JsonValue *api_handle_stats(struct AppState *state, int *status);
 
 /* Parse a query param from raw query string. Returns heap-allocated value or NULL. */
 char *query_param(const char *query, const char *name);

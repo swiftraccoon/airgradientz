@@ -65,12 +65,13 @@ typedef struct {
 
 /* ---- Functions ---- */
 
-int  db_initialize(sqlite3 *db);
-int  db_insert_reading(sqlite3 *db, const char *ip, const JsonValue *data);
-int  db_query_readings(sqlite3 *db, const ReadingQuery *q, ReadingList *out);
-int  db_get_devices(sqlite3 *db, DeviceSummaryList *out);
-int  db_get_latest_readings(sqlite3 *db, ReadingList *out);
-int  db_checkpoint(sqlite3 *db);
+int     db_initialize(sqlite3 *db);
+int     db_insert_reading(sqlite3 *db, const char *ip, const JsonValue *data);
+int     db_query_readings(sqlite3 *db, const ReadingQuery *q, ReadingList *out);
+int     db_get_devices(sqlite3 *db, DeviceSummaryList *out);
+int     db_get_latest_readings(sqlite3 *db, ReadingList *out);
+int     db_checkpoint(sqlite3 *db);
+int64_t db_get_readings_count(sqlite3 *db);
 
 int64_t db_now_millis(void);
 

@@ -217,14 +217,20 @@ static void *handle_connection(void *arg)
     AppState *state = ca->state;
     free(ca);
 
+    atomic_fetch_add(&state->active_connections, 1);
+
     HttpReq req;
     if (parse_request(fd, &req) < 0) {
+        atomic_fetch_sub(&state->active_connections, 1);
         close(fd);
         return NULL;
     }
 
+    atomic_fetch_add(&state->requests_served, 1);
+
     if (strcmp(req.method, "GET") != 0) {
         send_error(fd, 405, "Method Not Allowed", "Method not allowed");
+        atomic_fetch_sub(&state->active_connections, 1);
         close(fd);
         return NULL;
     }
@@ -267,10 +273,16 @@ static void *handle_connection(void *arg)
         JsonValue *json = api_handle_config(state, &status);
         send_json_response(fd, status, "OK", json);
         json_free(json);
+    } else if (strcmp(req.path, "/api/stats") == 0) {
+        int status;
+        JsonValue *json = api_handle_stats(state, &status);
+        send_json_response(fd, status, "OK", json);
+        json_free(json);
     } else {
         serve_static(fd, req.path);
     }
 
+    atomic_fetch_sub(&state->active_connections, 1);
     close(fd);
     return NULL;
 }

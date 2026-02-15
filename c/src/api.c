@@ -4,9 +4,12 @@
 #include "poller.h"
 
 #include <limits.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 /* ---- url decode ---- */
 
@@ -190,4 +193,55 @@ JsonValue *api_handle_config(struct AppState *state, int *status)
 
     *status = 200;
     return cfg;
+}
+
+JsonValue *api_handle_stats(struct AppState *state, int *status)
+{
+    /* memory_rss_bytes from /proc/self/statm */
+    int64_t rss_bytes = 0;
+    {
+        FILE *f = fopen("/proc/self/statm", "r");
+        if (f) {
+            unsigned long vsize, rss;
+            if (fscanf(f, "%lu %lu", &vsize, &rss) == 2) {
+                long page_size = sysconf(_SC_PAGESIZE);
+                rss_bytes = (int64_t)rss * page_size;
+            }
+            fclose(f);
+        }
+    }
+
+    /* db_size_bytes from stat() */
+    int64_t db_size = 0;
+    {
+        struct stat st;
+        if (stat(state->config.db_path, &st) == 0) {
+            db_size = (int64_t)st.st_size;
+        }
+    }
+
+    /* readings count */
+    pthread_mutex_lock(&state->db_mutex);
+    int64_t readings_count = db_get_readings_count(state->db);
+    pthread_mutex_unlock(&state->db_mutex);
+
+    /* poll counters */
+    uint64_t p_successes, p_failures;
+    poller_get_counters(&p_successes, &p_failures);
+
+    JsonValue *obj = json_object_new();
+    json_object_set(obj, "implementation",    json_string("c"));
+    json_object_set(obj, "pid",               json_from_i64((int64_t)getpid()));
+    json_object_set(obj, "uptime_ms",         json_from_i64(db_now_millis() - state->started_at));
+    json_object_set(obj, "memory_rss_bytes",  json_from_i64(rss_bytes));
+    json_object_set(obj, "db_size_bytes",     json_from_i64(db_size));
+    json_object_set(obj, "readings_count",    json_from_i64(readings_count));
+    json_object_set(obj, "requests_served",   json_from_i64((int64_t)atomic_load(&state->requests_served)));
+    json_object_set(obj, "active_connections", json_from_i64((int64_t)atomic_load(&state->active_connections)));
+    json_object_set(obj, "poll_successes",    json_from_i64((int64_t)p_successes));
+    json_object_set(obj, "poll_failures",     json_from_i64((int64_t)p_failures));
+    json_object_set(obj, "started_at",        json_from_i64(state->started_at));
+
+    *status = 200;
+    return obj;
 }
