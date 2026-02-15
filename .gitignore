@@ -30,6 +30,10 @@ zig/zig-out/
 elixir/_build/
 elixir/deps/
 
+# Nim
+nim/airgradientz
+nim/nimcache/
+
 # Other
 references/
 CLAUDE.md

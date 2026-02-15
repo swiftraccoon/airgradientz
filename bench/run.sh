@@ -55,6 +55,7 @@ PORT_RUST=$(get_port rust 3009)
 PORT_ZIG=$(get_port zig 3012)
 PORT_D=$(get_port d 3014)
 PORT_ELIXIR=$(get_port elixir 3013)
+PORT_NIM=$(get_port nim 3015)
 
 IMPL_REGISTRY=(
     "c|${PORT_C}|c|cd c && make clean && make|cd c && ./airgradientz|c/airgradientz"
@@ -63,6 +64,7 @@ IMPL_REGISTRY=(
     "zig|${PORT_ZIG}|zig|cd zig && zig build -Doptimize=ReleaseFast|cd zig && ./zig-out/bin/airgradientz|zig/zig-out/bin/airgradientz"
     "d|${PORT_D}|d|cd d && source ~/dlang/ldc-*/activate 2>/dev/null; dub build -b release|cd d && ./airgradientz|d/airgradientz"
     "elixir|${PORT_ELIXIR}|elixir|cd elixir && mix deps.get --quiet && mix compile|cd elixir && mix run --no-halt|n/a"
+    "nim|${PORT_NIM}|nim|cd nim && export PATH=\$HOME/.nimble/bin:\$PATH && nim c -d:release --threads:on --mm:orc --path:src -o:airgradientz src/airgradientz.nim 2>/dev/null|cd nim && ./airgradientz|nim/airgradientz"
 )
 
 # Display names for the report header
@@ -73,10 +75,11 @@ declare -A DISPLAY_NAMES=(
     [zig]="Zig"
     [d]="D"
     [elixir]="Elixir"
+    [nim]="Nim"
 )
 
 # Canonical order for table columns
-IMPL_ORDER=(c nodejs rust zig d elixir)
+IMPL_ORDER=(c nodejs rust zig d elixir nim)
 
 # ── Process tracking for cleanup ─────────────────────────────────────────────
 
