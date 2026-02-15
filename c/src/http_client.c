@@ -80,7 +80,7 @@ char *http_get(const char *ip, const char *path, uint32_t timeout_ms,
     }
     strbuf_free(&req);
 
-    /* Read response */
+    /* Read response (cap at 1 MB to prevent OOM from rogue devices) */
     StrBuf resp = strbuf_new();
     char buf[4096];
     for (;;) {
@@ -93,6 +93,12 @@ char *http_get(const char *ip, const char *path, uint32_t timeout_ms,
         }
         if (n == 0) break;
         strbuf_append(&resp, buf, (size_t)n);
+        if (resp.len > 1024 * 1024) {
+            set_err(errbuf, errbuf_size, "response too large");
+            strbuf_free(&resp);
+            close(fd);
+            return NULL;
+        }
     }
     close(fd);
 

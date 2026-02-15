@@ -4,12 +4,10 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use mio::net::TcpListener;
 use mio::{Events, Interest, Poll, Token};
-use socket2::{Domain, Socket, Type};
-
 use crate::api;
 use crate::error::AppError;
 use crate::http::request::{HttpRequest, Method};
@@ -18,6 +16,8 @@ use crate::AppState;
 
 const SERVER: Token = Token(0);
 const MAX_READ_BUF: usize = 65_536;
+const MAX_CONNECTIONS: usize = 1024;
+const CONN_TIMEOUT: Duration = Duration::from_secs(30);
 const POLL_TIMEOUT: Duration = Duration::from_secs(1);
 
 enum ConnPhase {
@@ -28,6 +28,7 @@ enum ConnPhase {
 struct ConnState {
     stream: mio::net::TcpStream,
     phase: ConnPhase,
+    created_at: Instant,
     read_buf: Vec<u8>,
     response: Vec<u8>,
     write_pos: usize,
@@ -58,6 +59,17 @@ fn serve_static(req_path: &str) -> HttpResponse {
     } else {
         PathBuf::from("public").join(relative)
     };
+
+    const MAX_STATIC_FILE: u64 = 16 * 1024 * 1024;
+
+    let meta = match fs::metadata(&file_path) {
+        Ok(m) if m.is_file() => m,
+        _ => return HttpResponse::not_found(),
+    };
+
+    if meta.len() > MAX_STATIC_FILE {
+        return HttpResponse::internal_error("File too large");
+    }
 
     fs::read(&file_path).map_or_else(
         |_| HttpResponse::not_found(),
@@ -191,12 +203,7 @@ pub(crate) fn run(state: &Arc<AppState>) -> Result<(), AppError> {
         .parse()
         .map_err(|e| io::Error::new(io::ErrorKind::InvalidInput, e))?;
 
-    let socket = Socket::new(Domain::IPV4, Type::STREAM, None)?;
-    socket.set_reuse_address(true)?;
-    socket.set_nonblocking(true)?;
-    socket.bind(&addr.into())?;
-    socket.listen(128)?;
-    let mut listener = TcpListener::from_std(socket.into());
+    let mut listener = TcpListener::bind(addr)?;
 
     let mut poll = Poll::new()?;
     let mut events = Events::with_capacity(1024);
@@ -227,6 +234,11 @@ pub(crate) fn run(state: &Arc<AppState>) -> Result<(), AppError> {
                     loop {
                         match listener.accept() {
                             Ok((mut stream, _addr)) => {
+                                if connections.len() >= MAX_CONNECTIONS {
+                                    // At capacity — stream drops and closes
+                                    continue;
+                                }
+
                                 let token = Token(next_token);
                                 next_token = next_token.wrapping_add(1);
                                 if next_token == 0 {
@@ -249,6 +261,7 @@ pub(crate) fn run(state: &Arc<AppState>) -> Result<(), AppError> {
                                     ConnState {
                                         stream,
                                         phase: ConnPhase::Reading,
+                                        created_at: Instant::now(),
                                         read_buf: Vec::with_capacity(1024),
                                         response: Vec::new(),
                                         write_pos: 0,
@@ -281,6 +294,17 @@ pub(crate) fn run(state: &Arc<AppState>) -> Result<(), AppError> {
                     }
                 }
             }
+        }
+
+        // Sweep stale connections (Slowloris defense)
+        let now = Instant::now();
+        let stale: Vec<Token> = connections
+            .iter()
+            .filter(|(_, conn)| now.duration_since(conn.created_at) > CONN_TIMEOUT)
+            .map(|(token, _)| *token)
+            .collect();
+        for token in stale {
+            remove_connection(&poll, &mut connections, token, state);
         }
     }
 

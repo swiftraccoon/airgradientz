@@ -120,19 +120,22 @@ fn fetchDevice(state: *PollerState, idx: usize) void {
         return;
     }
 
-    // Insert into DB
-    {
+    // Insert into DB — release db_mutex before taking health_mutex to avoid lock ordering issues
+    const insert_ok = blk: {
         state.db_mutex.lock();
         defer state.db_mutex.unlock();
-        db_mod.insertReading(state.db, ip, data, body) catch {
-            const msg = "DB insert failed";
-            std.log.err("[poller] {s} ({s}): {s}", .{ label, ip, msg });
-            _ = state.poll_failures.fetchAdd(1, .monotonic);
-            state.health_mutex.lock();
-            defer state.health_mutex.unlock();
-            state.health[idx].recordFailure(msg);
-            return;
-        };
+        db_mod.insertReading(state.db, ip, data, body) catch break :blk false;
+        break :blk true;
+    };
+
+    if (!insert_ok) {
+        const msg = "DB insert failed";
+        std.log.err("[poller] {s} ({s}): {s}", .{ label, ip, msg });
+        _ = state.poll_failures.fetchAdd(1, .monotonic);
+        state.health_mutex.lock();
+        defer state.health_mutex.unlock();
+        state.health[idx].recordFailure(msg);
+        return;
     }
 
     // Extract values for log line (safe — returns null for NaN/Inf)

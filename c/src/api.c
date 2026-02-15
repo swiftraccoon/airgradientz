@@ -23,7 +23,7 @@ static char *url_decode(const char *s, size_t len)
             char hex[3] = { s[i+1], s[i+2], '\0' };
             char *end;
             long v = strtol(hex, &end, 16);
-            if (end == hex + 2) {
+            if (end == hex + 2 && v != 0) {
                 out[j++] = (char)v;
                 i += 2;
                 continue;

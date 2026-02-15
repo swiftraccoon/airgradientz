@@ -19,13 +19,18 @@ string httpGet(string ip, string path, Duration timeout) {
     auto request = format!"GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n"(path, ip);
     sock.send(cast(const(ubyte)[]) request);
 
-    // Read full response
+    // Read full response (cap at 1 MB to prevent OOM from rogue devices)
+    enum MAX_RESPONSE = 1024 * 1024;
     Appender!(ubyte[]) response;
     ubyte[4096] buf;
     while (true) {
         auto received = sock.receive(buf[]);
         if (received <= 0) break;
         response ~= buf[0 .. received];
+        if (response[].length > MAX_RESPONSE) {
+            sock.close();
+            throw new Exception("response too large from " ~ ip);
+        }
     }
     sock.close();
 

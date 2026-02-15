@@ -60,15 +60,19 @@ pub(crate) fn http_get(ip: &str, path: &str, timeout: Duration) -> Result<String
         }
     }
 
-    // Read body
+    // Read body (cap at 1 MB to prevent OOM from rogue devices)
+    const MAX_RESPONSE: usize = 1024 * 1024;
     if let Some(len) = content_length {
+        if len > MAX_RESPONSE {
+            return Err(AppError::Network("response too large".into()));
+        }
         let mut buf = vec![0u8; len];
         reader.read_exact(&mut buf)?;
         String::from_utf8(buf)
             .map_err(|e| io::Error::new(io::ErrorKind::InvalidData, e.to_string()).into())
     } else {
         let mut buf = String::new();
-        reader.read_to_string(&mut buf)?;
+        reader.by_ref().take(MAX_RESPONSE as u64).read_to_string(&mut buf)?;
         Ok(buf)
     }
 }

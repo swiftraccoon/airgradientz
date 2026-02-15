@@ -101,6 +101,11 @@ fn getDbSizeBytes(db_path: []const u8) i64 {
     return @intCast(size);
 }
 
+fn saturatingCastI64(val: u64) i64 {
+    if (val > @as(u64, @intCast(std.math.maxInt(i64)))) return std.math.maxInt(i64);
+    return @intCast(val);
+}
+
 pub fn handleStats(allocator: std.mem.Allocator, state: *http_server.ServerState) !std.json.Value {
     const now = db_mod.nowMillis();
     const uptime_ms = now - state.started_at;
@@ -124,10 +129,10 @@ pub fn handleStats(allocator: std.mem.Allocator, state: *http_server.ServerState
     try obj.put("memory_rss_bytes", .{ .integer = memory_rss_bytes });
     try obj.put("db_size_bytes", .{ .integer = db_size_bytes });
     try obj.put("readings_count", .{ .integer = readings_count });
-    try obj.put("requests_served", .{ .integer = @as(i64, @intCast(state.requests_served.load(.monotonic))) });
-    try obj.put("active_connections", .{ .integer = @as(i64, @intCast(state.active_connections.load(.monotonic))) });
-    try obj.put("poll_successes", .{ .integer = @as(i64, @intCast(state.poller_state.poll_successes.load(.monotonic))) });
-    try obj.put("poll_failures", .{ .integer = @as(i64, @intCast(state.poller_state.poll_failures.load(.monotonic))) });
+    try obj.put("requests_served", .{ .integer = saturatingCastI64(state.requests_served.load(.monotonic)) });
+    try obj.put("active_connections", .{ .integer = @as(i64, state.active_connections.load(.monotonic)) });
+    try obj.put("poll_successes", .{ .integer = saturatingCastI64(state.poller_state.poll_successes.load(.monotonic)) });
+    try obj.put("poll_failures", .{ .integer = saturatingCastI64(state.poller_state.poll_failures.load(.monotonic)) });
 
     return .{ .object = obj };
 }

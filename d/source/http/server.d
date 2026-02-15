@@ -3,7 +3,7 @@ module http.server;
 import std.socket;
 import std.stdio : stderr;
 import std.string : startsWith, indexOf;
-import std.file : read, exists, isFile;
+import std.file : read, exists, isFile, getSize;
 import std.path : extension, buildPath;
 import std.format : format;
 
@@ -13,6 +13,7 @@ import core.sys.posix.signal : SIGPIPE, SIG_IGN;
 import core.stdc.signal : signal;
 import core.sys.posix.fcntl : fcntl, F_GETFL, F_SETFL, O_NONBLOCK;
 import core.sys.posix.unistd : close;
+import core.time : dur, MonoTime;
 
 import http.request : HttpRequest, Method;
 import http.response : HttpResponse;
@@ -53,6 +54,14 @@ private HttpResponse serveStatic(string reqPath) {
         return HttpResponse.notFound();
 
     try {
+        auto fileSize = getSize(filePath);
+        if (fileSize > 16 * 1024 * 1024)
+            return HttpResponse.internalError("File too large");
+    } catch (Exception) {
+        return HttpResponse.notFound();
+    }
+
+    try {
         auto contents = cast(const(ubyte)[]) read(filePath);
         auto ct = contentTypeFor(filePath);
         return HttpResponse.okStatic(contents, ct);
@@ -61,10 +70,13 @@ private HttpResponse serveStatic(string reqPath) {
     }
 }
 
+private enum MAX_CONNECTIONS = 1024;
+private enum CONN_TIMEOUT = dur!"seconds"(30);
 private enum ConnPhase { reading, writing }
 
 private struct ConnData {
     ConnPhase phase = ConnPhase.reading;
+    MonoTime acceptedAt;
     ubyte[8192] readBuf;
     size_t readPos = 0;
     const(ubyte)[] response;
@@ -123,7 +135,7 @@ void runServer(AppState appState) {
     stderr.writefln("[server] Listening on http://localhost:%d", appState.config.port);
 
     // Create epoll instance
-    int epfd = epoll_create1(0);
+    int epfd = epoll_create1(EPOLL_CLOEXEC);
     if (epfd < 0) {
         stderr.writefln("[server] epoll_create1 failed: errno=%d", errno);
         return;
@@ -169,6 +181,12 @@ void runServer(AppState appState) {
                         stderr.writefln("[server] accept error: errno=%d", err);
                         break;
                     }
+
+                    if (conns.length >= MAX_CONNECTIONS) {
+                        close(clientFd);
+                        continue;
+                    }
+
                     setNonblocking(clientFd);
                     appState.incrementConnections();
 
@@ -183,7 +201,9 @@ void runServer(AppState appState) {
                         continue;
                     }
 
-                    conns[clientFd] = ConnData();
+                    auto cd = ConnData();
+                    cd.acceptedAt = MonoTime.currTime;
+                    conns[clientFd] = cd;
                 }
             } else {
                 // Handle EPOLLERR / EPOLLHUP
@@ -215,6 +235,16 @@ void runServer(AppState appState) {
                 }
             }
         }
+
+        // Sweep stale connections (Slowloris defense)
+        auto now = MonoTime.currTime;
+        int[] stale;
+        foreach (fd, ref conn; conns) {
+            if ((now - conn.acceptedAt) > CONN_TIMEOUT)
+                stale ~= fd;
+        }
+        foreach (fd; stale)
+            closeAndCleanup(fd, conns, epfd, appState);
     }
 
     // Shutdown: close all remaining connections
@@ -231,8 +261,9 @@ private void handleRead(int fd, ConnData* conn, ref ConnData[int] conns, int epf
     // Edge-triggered: read until EAGAIN
     while (true) {
         if (conn.readPos >= conn.readBuf.length) {
-            // Buffer full, try to parse what we have, or close
-            break;
+            // Buffer full without finding \r\n\r\n — request too large, close
+            closeAndCleanup(fd, conns, epfd, appState);
+            return;
         }
 
         auto n = rawRead(fd, conn.readBuf[conn.readPos .. $]);

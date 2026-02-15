@@ -6,4 +6,3 @@ edition = "2024"
 [dependencies]
 mio = { version = "1", features = ["net", "os-poll"] }
 rusqlite = { version = "0.38", features = ["bundled"] }
-socket2 = { version = "0.5", features = ["all"] }

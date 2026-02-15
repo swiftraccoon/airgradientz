@@ -8,6 +8,7 @@ const linux = std.os.linux;
 const max_request_bytes = 8192;
 const max_concurrent_connections = 128;
 const max_epoll_events = 64;
+const conn_timeout_secs = 30;
 
 pub const HttpRequest = struct {
     method: []const u8,
@@ -32,6 +33,7 @@ const ConnPhase = enum { reading, writing };
 
 const ConnData = struct {
     phase: ConnPhase = .reading,
+    accepted_at: i64 = 0,
     read_buf: [max_request_bytes]u8 = [_]u8{0} ** max_request_bytes,
     read_pos: usize = 0,
     response: ?[]u8 = null,
@@ -40,7 +42,10 @@ const ConnData = struct {
     arena: std.heap.ArenaAllocator,
 
     fn init() ConnData {
-        return .{ .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator) };
+        return .{
+            .arena = std.heap.ArenaAllocator.init(std.heap.page_allocator),
+            .accepted_at = std.time.timestamp(),
+        };
     }
 
     fn deinit(self: *ConnData) void {
@@ -313,15 +318,15 @@ fn closeAndCleanup(epfd: i32, fd: i32, connections: *std.AutoHashMap(i32, *ConnD
     // Remove from epoll (ignore errors, fd may already be invalid)
     std.posix.epoll_ctl(epfd, linux.EPOLL.CTL_DEL, fd, null) catch {};
 
-    // Free ConnData
+    // Free ConnData — only decrement counter if connection was tracked
     if (connections.fetchRemove(fd)) |kv| {
         var conn = kv.value;
         conn.deinit();
         std.heap.page_allocator.destroy(conn);
+        _ = state.active_connections.fetchSub(1, .release);
     }
 
     std.posix.close(fd);
-    _ = state.active_connections.fetchSub(1, .release);
 }
 
 pub fn run(state: *ServerState) void {
@@ -370,7 +375,7 @@ pub fn run(state: *ServerState) void {
     std.posix.sigaction(std.posix.SIG.PIPE, &pipe_sa, null);
 
     // Create epoll instance
-    const epfd = std.posix.epoll_create1(0) catch |err| {
+    const epfd = std.posix.epoll_create1(linux.EPOLL.CLOEXEC) catch |err| {
         std.log.err("[server] epoll_create1 failed: {s}", .{@errorName(err)});
         return;
     };
@@ -563,6 +568,23 @@ pub fn run(state: *ServerState) void {
                     }
                 }
             }
+        }
+
+        // Sweep stale connections (Slowloris defense)
+        const now = std.time.timestamp();
+        var stale_fds: [max_concurrent_connections]i32 = undefined;
+        var stale_count: usize = 0;
+        var sweep_it = connections.iterator();
+        while (sweep_it.next()) |entry| {
+            if (now - entry.value_ptr.*.accepted_at > conn_timeout_secs) {
+                if (stale_count < stale_fds.len) {
+                    stale_fds[stale_count] = entry.key_ptr.*;
+                    stale_count += 1;
+                }
+            }
+        }
+        for (stale_fds[0..stale_count]) |stale_fd| {
+            closeAndCleanup(epfd, stale_fd, &connections, state);
         }
     }
 

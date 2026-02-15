@@ -14,16 +14,19 @@
 #include <sys/epoll.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #define MAX_EVENTS    64
 #define MAX_CONNS     4096
 #define READ_BUF_SIZE 8192
+#define CONN_TIMEOUT  30   /* seconds */
 
 typedef enum { CONN_EMPTY, CONN_READING, CONN_WRITING } ConnPhase;
 
 typedef struct {
     ConnPhase  phase;
+    time_t     accepted_at;
     char       read_buf[READ_BUF_SIZE];
     size_t     read_pos;
     char      *response;      /* heap-allocated: headers + body */
@@ -159,6 +162,14 @@ static char *build_static_response(const char *req_path, size_t *out_len)
     }
 
     size_t file_size = (size_t)st.st_size;
+
+    /* Cap file size to prevent OOM (16 MB) */
+    if (file_size > 16u * 1024u * 1024u) {
+        close(file_fd);
+        return build_error_response(413, "Payload Too Large",
+                                     "File too large", out_len);
+    }
+
     char *file_buf = malloc(file_size);
     if (!file_buf) {
         close(file_fd);
@@ -425,6 +436,7 @@ int http_server_run(struct AppState *state)
 
                     conn_reset(client_fd);
                     conn_table[client_fd].phase = CONN_READING;
+                    conn_table[client_fd].accepted_at = time(NULL);
 
                     struct epoll_event cev;
                     cev.events = EPOLLIN | EPOLLET;
@@ -444,6 +456,10 @@ int http_server_run(struct AppState *state)
 
             /* ---- error / hangup ---- */
             if (ev_flags & (EPOLLERR | EPOLLHUP)) {
+                if (fd == listen_fd) {
+                    fprintf(stderr, "[server] listen socket error, exiting\n");
+                    goto shutdown;
+                }
                 close_conn(epoll_fd, fd, state);
                 continue;
             }
@@ -551,19 +567,29 @@ int http_server_run(struct AppState *state)
                         close_conn(epoll_fd, fd, state);
                         break;
                     }
-                    /* n == 0: unusual for write, treat as done */
+                    /* n == 0: write cannot make progress */
+                    close_conn(epoll_fd, fd, state);
                     break;
                 }
                 continue;
             }
         }
+
+        /* Sweep stale connections (Slowloris defense) */
+        time_t now = time(NULL);
+        for (int sfd = 0; sfd < MAX_CONNS; sfd++) {
+            if (conn_table[sfd].phase != CONN_EMPTY &&
+                now - conn_table[sfd].accepted_at > CONN_TIMEOUT) {
+                close_conn(epoll_fd, sfd, state);
+            }
+        }
     }
 
+shutdown:
     /* Cleanup: close all active connections */
     for (int fd = 0; fd < MAX_CONNS; fd++) {
         if (conn_table[fd].phase != CONN_EMPTY) {
-            close(fd);
-            conn_reset(fd);
+            close_conn(epoll_fd, fd, state);
         }
     }
 

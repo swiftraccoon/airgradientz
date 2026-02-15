@@ -230,6 +230,10 @@ void json_serialize(const JsonValue *v, StrBuf *out)
         break;
     case JSON_NUMBER: {
         double n = v->u.number;
+        if (!isfinite(n)) {
+            strbuf_append_cstr(out, "null");
+            break;
+        }
         double intpart;
         if (modf(n, &intpart) == 0.0 && fabs(n) < 9.007199254740992e15) {
             strbuf_appendf(out, "%lld", (long long)(int64_t)n);
