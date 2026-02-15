@@ -62,6 +62,8 @@ pub const PollerState = struct {
     health_mutex: *std.Thread.Mutex,
     config: *const config_mod.Config,
     shutdown: *std.atomic.Value(bool),
+    poll_successes: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
+    poll_failures: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 };
 
 fn formatOptF64(buf: []u8, val: ?f64) []const u8 {
@@ -90,6 +92,7 @@ fn fetchDevice(state: *PollerState, idx: usize) void {
         var err_buf: [256]u8 = [_]u8{0} ** 256;
         const err_msg = std.fmt.bufPrint(&err_buf, "fetch failed: {s}", .{@errorName(e)}) catch "fetch failed";
         std.log.err("[poller] {s} ({s}): {s}", .{ label, ip, err_msg });
+        _ = state.poll_failures.fetchAdd(1, .monotonic);
         state.health_mutex.lock();
         defer state.health_mutex.unlock();
         state.health[idx].recordFailure(err_msg);
@@ -99,6 +102,7 @@ fn fetchDevice(state: *PollerState, idx: usize) void {
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, body, .{}) catch {
         const msg = "JSON parse error";
         std.log.err("[poller] {s} ({s}): {s}", .{ label, ip, msg });
+        _ = state.poll_failures.fetchAdd(1, .monotonic);
         state.health_mutex.lock();
         defer state.health_mutex.unlock();
         state.health[idx].recordFailure(msg);
@@ -109,6 +113,7 @@ fn fetchDevice(state: *PollerState, idx: usize) void {
     if (data != .object) {
         const msg = "unexpected response type: not an object";
         std.log.err("[poller] {s} ({s}): {s}", .{ label, ip, msg });
+        _ = state.poll_failures.fetchAdd(1, .monotonic);
         state.health_mutex.lock();
         defer state.health_mutex.unlock();
         state.health[idx].recordFailure(msg);
@@ -122,6 +127,7 @@ fn fetchDevice(state: *PollerState, idx: usize) void {
         db_mod.insertReading(state.db, ip, data, body) catch {
             const msg = "DB insert failed";
             std.log.err("[poller] {s} ({s}): {s}", .{ label, ip, msg });
+            _ = state.poll_failures.fetchAdd(1, .monotonic);
             state.health_mutex.lock();
             defer state.health_mutex.unlock();
             state.health[idx].recordFailure(msg);
@@ -140,6 +146,8 @@ fn fetchDevice(state: *PollerState, idx: usize) void {
     const pm02_s = formatOptF64(&pm02_buf, pm02);
     const rco2_s = formatOptI64(&rco2_buf, rco2);
     const atmp_s = formatOptF64(&atmp_buf, atmp);
+
+    _ = state.poll_successes.fetchAdd(1, .monotonic);
 
     {
         state.health_mutex.lock();

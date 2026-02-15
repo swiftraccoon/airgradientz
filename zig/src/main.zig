@@ -35,6 +35,8 @@ pub fn main() !void {
     std.posix.sigaction(std.posix.SIG.INT, &sa, null);
     std.posix.sigaction(std.posix.SIG.TERM, &sa, null);
 
+    const started_at = db_mod.nowMillis();
+
     // Poller state
     var poller_state = poller_mod.PollerState{
         .db = db,
@@ -56,6 +58,8 @@ pub fn main() !void {
         .health_mutex = &health_mutex,
         .config = &config,
         .shutdown = &g_shutdown,
+        .poller_state = &poller_state,
+        .started_at = started_at,
     };
 
     // Run HTTP server (blocks)

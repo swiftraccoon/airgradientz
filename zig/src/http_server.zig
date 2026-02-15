@@ -20,7 +20,10 @@ pub const ServerState = struct {
     health_mutex: *std.Thread.Mutex,
     config: *const config_mod.Config,
     shutdown: *std.atomic.Value(bool),
+    poller_state: *poller_mod.PollerState,
+    started_at: i64,
     active_connections: std.atomic.Value(u32) = std.atomic.Value(u32).init(0),
+    requests_served: std.atomic.Value(u64) = std.atomic.Value(u64).init(0),
 };
 
 fn contentTypeFor(path: []const u8) []const u8 {
@@ -273,6 +276,8 @@ fn handleConnection(stream: std.net.Stream, state: *ServerState) void {
     var buf: [max_request_bytes]u8 = [_]u8{0} ** max_request_bytes;
     const req = parseRequest(stream, &buf) orelse return;
 
+    _ = state.requests_served.fetchAdd(1, .monotonic);
+
     if (!std.mem.eql(u8, req.method, "GET")) {
         sendError(stream, allocator, 405, "Method Not Allowed", "Method not allowed");
         return;
@@ -305,6 +310,12 @@ fn handleConnection(stream: std.net.Stream, state: *ServerState) void {
         sendJsonResponse(stream, allocator, 200, "OK", result);
     } else if (std.mem.eql(u8, req.path, "/api/config")) {
         const result = api.handleConfig(allocator, state) catch {
+            sendError(stream, allocator, 500, "Internal Server Error", "Internal server error");
+            return;
+        };
+        sendJsonResponse(stream, allocator, 200, "OK", result);
+    } else if (std.mem.eql(u8, req.path, "/api/stats")) {
+        const result = api.handleStats(allocator, state) catch {
             sendError(stream, allocator, 500, "Internal Server Error", "Internal server error");
             return;
         };

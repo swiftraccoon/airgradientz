@@ -62,31 +62,13 @@ pub fn initialize(db: SqliteDb) !void {
         return error.SqliteError;
     }
 
-    const schema =
-        "CREATE TABLE IF NOT EXISTS readings (" ++
-        "    id INTEGER PRIMARY KEY AUTOINCREMENT," ++
-        "    timestamp INTEGER NOT NULL," ++
-        "    device_id TEXT NOT NULL," ++
-        "    device_type TEXT NOT NULL CHECK(device_type IN ('indoor', 'outdoor'))," ++
-        "    device_ip TEXT NOT NULL," ++
-        "    pm01 REAL," ++
-        "    pm02 REAL," ++
-        "    pm10 REAL," ++
-        "    pm02_compensated REAL," ++
-        "    rco2 INTEGER," ++
-        "    atmp REAL," ++
-        "    atmp_compensated REAL," ++
-        "    rhum REAL," ++
-        "    rhum_compensated REAL," ++
-        "    tvoc_index REAL," ++
-        "    nox_index REAL," ++
-        "    wifi INTEGER," ++
-        "    raw_json TEXT NOT NULL" ++
-        ");" ++
-        "CREATE INDEX IF NOT EXISTS idx_readings_ts ON readings(timestamp);" ++
-        "CREATE INDEX IF NOT EXISTS idx_readings_device ON readings(device_id, timestamp);";
+    // Read shared schema from file (checked at ../schema.sql then ./schema.sql)
+    const schema_sql = readSchemaFile() orelse {
+        std.log.err("[db] failed to read schema.sql", .{});
+        return error.SqliteError;
+    };
 
-    rc = c.sqlite3_exec(db, schema, null, null, &errmsg);
+    rc = c.sqlite3_exec(db, schema_sql.ptr, null, null, &errmsg);
     if (rc != c.SQLITE_OK) {
         if (errmsg) |msg| {
             std.log.err("[db] schema error: {s}", .{msg});
@@ -94,6 +76,23 @@ pub fn initialize(db: SqliteDb) !void {
         }
         return error.SqliteError;
     }
+}
+
+fn readSchemaFile() ?[:0]const u8 {
+    const paths = [_][]const u8{ "../schema.sql", "./schema.sql" };
+    for (&paths) |path| {
+        const file = std.fs.cwd().openFile(path, .{}) catch continue;
+        defer file.close();
+        const stat = file.stat() catch continue;
+        if (stat.size == 0 or stat.size > 65536) continue;
+        const allocator = std.heap.page_allocator;
+        const buf = allocator.allocSentinel(u8, stat.size, 0) catch continue;
+        const n = file.readAll(buf) catch continue;
+        // Null-terminate at the actual read length
+        buf[n] = 0;
+        return buf[0..n :0];
+    }
+    return null;
 }
 
 // Safe float-to-int: reject NaN, Inf, and out-of-range values
@@ -406,6 +405,23 @@ pub fn checkpoint(db: SqliteDb) !void {
         }
         return error.SqliteError;
     }
+}
+
+pub fn getReadingsCount(db: SqliteDb) !i64 {
+    const sql = "SELECT COUNT(*) FROM readings";
+    var stmt: ?*c.sqlite3_stmt = null;
+    var rc = c.sqlite3_prepare_v2(db, sql, -1, &stmt, null);
+    if (rc != c.SQLITE_OK) {
+        std.log.err("[db] prepare count error: {s}", .{c.sqlite3_errmsg(db)});
+        return error.SqliteError;
+    }
+    defer _ = c.sqlite3_finalize(stmt);
+
+    rc = c.sqlite3_step(stmt);
+    if (rc == c.SQLITE_ROW) {
+        return c.sqlite3_column_int64(stmt, 0);
+    }
+    return error.SqliteError;
 }
 
 // JSON conversion helpers

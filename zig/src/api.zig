@@ -73,6 +73,65 @@ pub fn handleHealth(allocator: std.mem.Allocator, state: *http_server.ServerStat
     );
 }
 
+fn getMemoryRssBytes() i64 {
+    const file = std.fs.openFileAbsolute("/proc/self/statm", .{}) catch return 0;
+    defer file.close();
+
+    var buf: [256]u8 = [_]u8{0} ** 256;
+    const n = file.readAll(&buf) catch return 0;
+    const content = buf[0..n];
+
+    // statm format: size resident shared text lib data dt
+    // We want the second field (resident) * page size
+    var it = std.mem.splitScalar(u8, content, ' ');
+    _ = it.next(); // skip size
+    const resident_str = it.next() orelse return 0;
+    const pages = std.fmt.parseInt(i64, resident_str, 10) catch return 0;
+    const page_size: i64 = @intCast(std.heap.page_size_min);
+    return pages * page_size;
+}
+
+fn getDbSizeBytes(db_path: []const u8) i64 {
+    const file = std.fs.cwd().openFile(db_path, .{}) catch return 0;
+    defer file.close();
+    const stat = file.stat() catch return 0;
+    const size = stat.size;
+    // Cap to i64 range
+    if (size > @as(u64, @intCast(std.math.maxInt(i64)))) return 0;
+    return @intCast(size);
+}
+
+pub fn handleStats(allocator: std.mem.Allocator, state: *http_server.ServerState) !std.json.Value {
+    const now = db_mod.nowMillis();
+    const uptime_ms = now - state.started_at;
+
+    const memory_rss_bytes = getMemoryRssBytes();
+    const db_size_bytes = getDbSizeBytes(state.config.db_path);
+
+    const readings_count = blk: {
+        state.db_mutex.lock();
+        defer state.db_mutex.unlock();
+        break :blk db_mod.getReadingsCount(state.db) catch 0;
+    };
+
+    const pid = std.os.linux.getpid();
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("implementation", .{ .string = "zig" });
+    try obj.put("pid", .{ .integer = @as(i64, pid) });
+    try obj.put("started_at", .{ .integer = state.started_at });
+    try obj.put("uptime_ms", .{ .integer = uptime_ms });
+    try obj.put("memory_rss_bytes", .{ .integer = memory_rss_bytes });
+    try obj.put("db_size_bytes", .{ .integer = db_size_bytes });
+    try obj.put("readings_count", .{ .integer = readings_count });
+    try obj.put("requests_served", .{ .integer = @as(i64, @intCast(state.requests_served.load(.monotonic))) });
+    try obj.put("active_connections", .{ .integer = @as(i64, @intCast(state.active_connections.load(.monotonic))) });
+    try obj.put("poll_successes", .{ .integer = @as(i64, @intCast(state.poller_state.poll_successes.load(.monotonic))) });
+    try obj.put("poll_failures", .{ .integer = @as(i64, @intCast(state.poller_state.poll_failures.load(.monotonic))) });
+
+    return .{ .object = obj };
+}
+
 pub fn handleConfig(allocator: std.mem.Allocator, state: *http_server.ServerState) !std.json.Value {
     var devices_arr = std.json.Array.init(allocator);
     for (0..state.config.device_count) |i| {
