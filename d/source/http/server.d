@@ -56,9 +56,14 @@ private HttpResponse serveStatic(string reqPath) {
 }
 
 private void handleConnection(Socket clientSock, AppState appState) {
-    scope(exit) clientSock.close();
+    appState.incrementConnections();
+    scope(exit) {
+        appState.decrementConnections();
+        clientSock.close();
+    }
 
     auto req = HttpRequest.parse(clientSock);
+    appState.incrementRequests();
 
     HttpResponse response;
     if (req.method == Method.get) {
@@ -68,6 +73,7 @@ private void handleConnection(Socket clientSock, AppState appState) {
             case "/api/devices":          response = handleDevices(appState); break;
             case "/api/health":           response = handleHealth(appState); break;
             case "/api/config":           response = handleConfig(appState); break;
+            case "/api/stats":           response = handleStats(appState); break;
             default:                      response = serveStatic(req.path); break;
         }
     } else {

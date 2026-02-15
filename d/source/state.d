@@ -2,12 +2,12 @@ module state;
 
 import core.sync.mutex : Mutex;
 import core.sync.rwmutex : ReadWriteMutex;
-import core.atomic : atomicLoad;
+import core.atomic : atomicLoad, atomicOp, atomicStore;
 
 import d2sqlite3 : Database;
 
 import config : Config;
-import db : initDb;
+import db : initDb, nowMillis;
 import poller : DeviceHealth;
 
 class AppState {
@@ -18,12 +18,39 @@ class AppState {
     Config config;
     private shared(bool)* shutdownPtr_;
 
+    long startedAt;
+    shared long requestsServed;
+    shared long activeConnections;
+
     this(Config cfg, shared(bool)* shutdownPtr) {
         config = cfg;
         shutdownPtr_ = shutdownPtr;
         dbMutex_ = new Mutex();
         healthLock_ = new ReadWriteMutex();
         db_ = initDb(cfg.dbPath);
+        startedAt = nowMillis();
+        atomicStore(requestsServed, 0L);
+        atomicStore(activeConnections, 0L);
+    }
+
+    void incrementRequests() {
+        atomicOp!"+="(requestsServed, 1L);
+    }
+
+    void incrementConnections() {
+        atomicOp!"+="(activeConnections, 1L);
+    }
+
+    void decrementConnections() {
+        atomicOp!"-="(activeConnections, 1L);
+    }
+
+    long getRequestsServed() {
+        return atomicLoad(requestsServed);
+    }
+
+    long getActiveConnections() {
+        return atomicLoad(activeConnections);
     }
 
     /// Execute a delegate while holding the database lock.

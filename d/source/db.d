@@ -17,6 +17,7 @@ long nowMillis() {
 
 Database initDb(string path) {
     import std.stdio : stderr;
+    import std.file : readText;
 
     stderr.writefln("[db] Opening database at %s", path);
 
@@ -25,30 +26,47 @@ Database initDb(string path) {
     db.run("PRAGMA busy_timeout = 5000;");
     db.run("PRAGMA foreign_keys = ON;");
 
-    db.run("CREATE TABLE IF NOT EXISTS readings (
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        timestamp INTEGER NOT NULL,
-        device_id TEXT NOT NULL,
-        device_type TEXT NOT NULL CHECK(device_type IN ('indoor', 'outdoor')),
-        device_ip TEXT NOT NULL,
-        pm01 REAL,
-        pm02 REAL,
-        pm10 REAL,
-        pm02_compensated REAL,
-        rco2 INTEGER,
-        atmp REAL,
-        atmp_compensated REAL,
-        rhum REAL,
-        rhum_compensated REAL,
-        tvoc_index REAL,
-        nox_index REAL,
-        wifi INTEGER,
-        raw_json TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_readings_ts ON readings(timestamp);
-    CREATE INDEX IF NOT EXISTS idx_readings_device ON readings(device_id, timestamp);");
+    string schema;
+    try {
+        schema = readText("../schema.sql");
+    } catch (Exception e) {
+        stderr.writefln("[db] Failed to read ../schema.sql: %s, using fallback", e.msg);
+        schema = "CREATE TABLE IF NOT EXISTS readings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp INTEGER NOT NULL,
+            device_id TEXT NOT NULL,
+            device_type TEXT NOT NULL CHECK(device_type IN ('indoor', 'outdoor')),
+            device_ip TEXT NOT NULL,
+            pm01 REAL,
+            pm02 REAL,
+            pm10 REAL,
+            pm02_compensated REAL,
+            rco2 INTEGER,
+            atmp REAL,
+            atmp_compensated REAL,
+            rhum REAL,
+            rhum_compensated REAL,
+            tvoc_index REAL,
+            nox_index REAL,
+            wifi INTEGER,
+            raw_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_readings_ts ON readings(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_readings_device ON readings(device_id, timestamp);";
+    }
+
+    db.run(schema);
 
     return db;
+}
+
+long getReadingsCount(ref Database db) {
+    auto stmt = db.prepare("SELECT COUNT(*) FROM readings");
+    foreach (row; stmt.execute()) {
+        return row.peek!long(0);
+    }
+    stmt.reset();
+    return 0;
 }
 
 private Nullable!double extractF64(JSONValue data, string key) {

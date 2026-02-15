@@ -6,6 +6,7 @@ import std.json : JSONValue, parseJSON, JSONType;
 import std.conv : to;
 import core.thread : Thread;
 import core.time : dur;
+import core.atomic : atomicOp, atomicLoad;
 
 import d2sqlite3 : Database;
 
@@ -14,6 +15,21 @@ import db;
 import state : AppState;
 
 enum CHECKPOINT_INTERVAL_POLLS = 10;
+
+private shared long g_pollSuccesses = 0;
+private shared long g_pollFailures = 0;
+
+struct PollStats {
+    long successes;
+    long failures;
+}
+
+PollStats getPollStats() {
+    return PollStats(
+        atomicLoad(g_pollSuccesses),
+        atomicLoad(g_pollFailures)
+    );
+}
 
 enum HealthStatus { unknown, ok, error }
 
@@ -83,6 +99,7 @@ private void fetchDevice(AppState appState, string ip, string label) {
     } catch (Exception e) {
         auto msg = e.msg;
         stderr.writefln("[poller] %s (%s): fetch failed: %s", label, ip, msg);
+        atomicOp!"+="(g_pollFailures, 1L);
         appState.withHealthWrite((ref DeviceHealth[string] health) {
             recordFailure(health, ip, msg);
         });
@@ -95,6 +112,7 @@ private void fetchDevice(AppState appState, string ip, string label) {
     } catch (Exception e) {
         auto msg = "JSON parse error: " ~ e.msg;
         stderr.writefln("[poller] %s (%s): %s", label, ip, msg);
+        atomicOp!"+="(g_pollFailures, 1L);
         appState.withHealthWrite((ref DeviceHealth[string] health) {
             recordFailure(health, ip, msg);
         });
@@ -104,6 +122,7 @@ private void fetchDevice(AppState appState, string ip, string label) {
     if (data.type != JSONType.object) {
         auto msg = "unexpected response type: not an object";
         stderr.writefln("[poller] %s (%s): %s", label, ip, msg);
+        atomicOp!"+="(g_pollFailures, 1L);
         appState.withHealthWrite((ref DeviceHealth[string] health) {
             recordFailure(health, ip, msg);
         });
@@ -118,11 +137,14 @@ private void fetchDevice(AppState appState, string ip, string label) {
     } catch (Exception e) {
         auto msg = "DB insert failed: " ~ e.msg;
         stderr.writefln("[poller] %s (%s): %s", label, ip, msg);
+        atomicOp!"+="(g_pollFailures, 1L);
         appState.withHealthWrite((ref DeviceHealth[string] health) {
             recordFailure(health, ip, msg);
         });
         return;
     }
+
+    atomicOp!"+="(g_pollSuccesses, 1L);
 
     // Log success
     string pm02Str = "N/A", rco2Str = "N/A", atmpStr = "N/A";
