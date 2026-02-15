@@ -1,9 +1,27 @@
+# Dependencies
 node_modules/
+
+# Databases
 *.db
 *.db-wal
 *.db-shm
+
+# Environment
 .env
-rust/target/
-references/
+
+# Build artifacts
+*.o
 airgradientz
-sqlite3.*
+
+# C
+c/test_runner
+
+# Rust
+rust/target/
+
+# Zig
+zig/.zig-cache/
+zig/zig-out/
+
+# Other
+references/
