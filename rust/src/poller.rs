@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -10,6 +11,16 @@ use crate::json::{json_array, json_object, JsonValue};
 use crate::AppState;
 
 const CHECKPOINT_INTERVAL_POLLS: u32 = 10; // ~5min at 30s intervals
+
+static POLL_SUCCESSES: AtomicU64 = AtomicU64::new(0);
+static POLL_FAILURES: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn get_poll_stats() -> (u64, u64) {
+    (
+        POLL_SUCCESSES.load(Ordering::Relaxed),
+        POLL_FAILURES.load(Ordering::Relaxed),
+    )
+}
 
 #[derive(Debug, Clone)]
 pub(crate) enum HealthStatus {
@@ -119,6 +130,7 @@ fn fetch_device(state: &AppState, ip: &str, label: &str) {
 
     match http_get(ip, "/measures/current", timeout) {
         Err(e) => {
+            POLL_FAILURES.fetch_add(1, Ordering::Relaxed);
             let msg = e.to_string();
             eprintln!("[poller] {label} ({ip}): fetch failed: {msg}");
             let mut health = state.health.write().unwrap();
@@ -126,6 +138,7 @@ fn fetch_device(state: &AppState, ip: &str, label: &str) {
         }
         Ok(body) => match json::parse(&body) {
             Err(e) => {
+                POLL_FAILURES.fetch_add(1, Ordering::Relaxed);
                 let msg = format!("JSON parse error: {e}");
                 eprintln!("[poller] {label} ({ip}): {msg}");
                 let mut health = state.health.write().unwrap();
@@ -133,6 +146,7 @@ fn fetch_device(state: &AppState, ip: &str, label: &str) {
             }
             Ok(data) => {
                 if !data.is_object() {
+                    POLL_FAILURES.fetch_add(1, Ordering::Relaxed);
                     let msg = "unexpected response type: not an object".to_string();
                     eprintln!("[poller] {label} ({ip}): {msg}");
                     let mut health = state.health.write().unwrap();
@@ -146,11 +160,13 @@ fn fetch_device(state: &AppState, ip: &str, label: &str) {
                 };
 
                 if let Err(e) = db_result {
+                    POLL_FAILURES.fetch_add(1, Ordering::Relaxed);
                     let msg = format!("DB insert failed: {e}");
                     eprintln!("[poller] {label} ({ip}): {msg}");
                     let mut health = state.health.write().unwrap();
                     record_failure(&mut health, ip, msg);
                 } else {
+                    POLL_SUCCESSES.fetch_add(1, Ordering::Relaxed);
                     let pm02 = data.get("pm02").and_then(JsonValue::as_f64);
                     let rco2 = data.get("rco2").and_then(JsonValue::as_i64);
                     let atmp = data.get("atmp").and_then(JsonValue::as_f64);

@@ -24,7 +24,7 @@ mod json;
 mod poller;
 
 use std::collections::HashMap;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 
@@ -37,6 +37,9 @@ pub(crate) struct AppState {
     pub(crate) health: RwLock<HashMap<String, DeviceHealth>>,
     pub(crate) config: Config,
     pub(crate) shutdown: AtomicBool,
+    pub(crate) started_at: i64,
+    pub(crate) requests_served: AtomicU64,
+    pub(crate) active_connections: AtomicI64,
 }
 
 fn main() {
@@ -59,6 +62,9 @@ fn main() {
         health: RwLock::new(HashMap::new()),
         config,
         shutdown: AtomicBool::new(false),
+        started_at: db::now_millis(),
+        requests_served: AtomicU64::new(0),
+        active_connections: AtomicI64::new(0),
     });
 
     // Spawn poller thread

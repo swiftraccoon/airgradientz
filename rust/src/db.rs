@@ -5,37 +5,20 @@ use rusqlite::{params, Connection};
 use crate::error::AppError;
 use crate::json::JsonValue;
 
+const SCHEMA: &str = include_str!("../../schema.sql");
+
 pub(crate) fn initialize(conn: &Connection) -> Result<(), AppError> {
     conn.execute_batch("PRAGMA journal_mode = WAL;")?;
     conn.execute_batch("PRAGMA busy_timeout = 5000;")?;
     conn.execute_batch("PRAGMA foreign_keys = ON;")?;
 
-    conn.execute_batch(
-        "CREATE TABLE IF NOT EXISTS readings (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            timestamp INTEGER NOT NULL,
-            device_id TEXT NOT NULL,
-            device_type TEXT NOT NULL CHECK(device_type IN ('indoor', 'outdoor')),
-            device_ip TEXT NOT NULL,
-            pm01 REAL,
-            pm02 REAL,
-            pm10 REAL,
-            pm02_compensated REAL,
-            rco2 INTEGER,
-            atmp REAL,
-            atmp_compensated REAL,
-            rhum REAL,
-            rhum_compensated REAL,
-            tvoc_index REAL,
-            nox_index REAL,
-            wifi INTEGER,
-            raw_json TEXT NOT NULL
-        );
-        CREATE INDEX IF NOT EXISTS idx_readings_ts ON readings(timestamp);
-        CREATE INDEX IF NOT EXISTS idx_readings_device ON readings(device_id, timestamp);",
-    )?;
+    conn.execute_batch(SCHEMA)?;
 
     Ok(())
+}
+
+pub(crate) fn get_readings_count(conn: &Connection) -> Result<i64, rusqlite::Error> {
+    conn.query_row("SELECT COUNT(*) FROM readings", [], |row| row.get(0))
 }
 
 pub(crate) fn now_millis() -> i64 {

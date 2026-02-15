@@ -1,3 +1,5 @@
+use std::sync::atomic::Ordering;
+
 use crate::db::{self, ReadingQuery};
 use crate::http::request::HttpRequest;
 use crate::http::response::HttpResponse;
@@ -116,4 +118,51 @@ pub(crate) fn handle_config(state: &AppState) -> HttpResponse {
     ]);
 
     HttpResponse::ok_json(&config)
+}
+
+fn read_rss_bytes() -> u64 {
+    std::fs::read_to_string("/proc/self/statm").map_or(0, |contents| {
+        contents
+            .split_whitespace()
+            .nth(1)
+            .and_then(|s| s.parse::<u64>().ok())
+            .map_or(0, |pages| pages * 4096)
+    })
+}
+
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn handle_stats(state: &AppState) -> HttpResponse {
+    let now = db::now_millis();
+    let uptime_ms = now - state.started_at;
+
+    let readings_count = state
+        .db
+        .lock()
+        .ok()
+        .and_then(|conn| db::get_readings_count(&conn).ok())
+        .unwrap_or(0);
+
+    let db_size_bytes = std::fs::metadata(&state.config.db_path)
+        .map(|m| m.len())
+        .unwrap_or(0);
+
+    let requests_served = state.requests_served.load(Ordering::Relaxed);
+    let active_connections = state.active_connections.load(Ordering::Relaxed);
+    let (poll_successes, poll_failures) = poller::get_poll_stats();
+
+    let body = json_object(vec![
+        ("implementation", JsonValue::String("rust".to_string())),
+        ("pid", JsonValue::Number(f64::from(std::process::id()))),
+        ("uptime_ms", JsonValue::from_i64(uptime_ms)),
+        ("memory_rss_bytes", JsonValue::Number(read_rss_bytes() as f64)),
+        ("db_size_bytes", JsonValue::Number(db_size_bytes as f64)),
+        ("readings_count", JsonValue::from_i64(readings_count)),
+        ("requests_served", JsonValue::Number(requests_served as f64)),
+        ("active_connections", JsonValue::from_i64(active_connections)),
+        ("poll_successes", JsonValue::Number(poll_successes as f64)),
+        ("poll_failures", JsonValue::Number(poll_failures as f64)),
+        ("started_at", JsonValue::from_i64(state.started_at)),
+    ]);
+
+    HttpResponse::ok_json(&body)
 }

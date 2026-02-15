@@ -1,6 +1,7 @@
 use std::fs;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::Ordering;
 use std::sync::Arc;
 use std::thread;
 
@@ -46,13 +47,25 @@ fn serve_static(req_path: &str) -> HttpResponse {
 }
 
 fn handle_connection(state: &AppState, stream: std::net::TcpStream) {
-    let req = match HttpRequest::parse(&stream) {
-        Ok(r) => r,
-        Err(e) => {
-            eprintln!("[server] Failed to parse request: {e}");
-            return;
-        }
-    };
+    state.active_connections.fetch_add(1, Ordering::Relaxed);
+
+    let result = handle_request(state, stream);
+
+    state.active_connections.fetch_sub(1, Ordering::Relaxed);
+
+    if let Err(msg) = result {
+        eprintln!("[server] {msg}");
+    }
+}
+
+fn handle_request(
+    state: &AppState,
+    stream: std::net::TcpStream,
+) -> Result<(), String> {
+    let req = HttpRequest::parse(&stream)
+        .map_err(|e| format!("Failed to parse request: {e}"))?;
+
+    state.requests_served.fetch_add(1, Ordering::Relaxed);
 
     let response = if req.method == Method::Get {
         match req.path.as_str() {
@@ -61,6 +74,7 @@ fn handle_connection(state: &AppState, stream: std::net::TcpStream) {
             "/api/devices" => api::handle_devices(state),
             "/api/health" => api::handle_health(state),
             "/api/config" => api::handle_config(state),
+            "/api/stats" => api::handle_stats(state),
             path => serve_static(path),
         }
     } else {
@@ -68,9 +82,9 @@ fn handle_connection(state: &AppState, stream: std::net::TcpStream) {
     };
 
     let mut stream = stream;
-    if let Err(e) = response.write_to(&mut stream) {
-        eprintln!("[server] Failed to write response: {e}");
-    }
+    response
+        .write_to(&mut stream)
+        .map_err(|e| format!("Failed to write response: {e}"))
 }
 
 pub(crate) fn run(state: &Arc<AppState>) -> Result<(), AppError> {
