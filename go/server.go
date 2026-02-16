@@ -18,7 +18,15 @@ import (
 	"time"
 )
 
-const maxStaticFileSize = 16 * 1024 * 1024
+const (
+	maxStaticFileSize    = 16 * 1024 * 1024
+	serverReadTimeout    = 10 * time.Second
+	serverWriteTimeout   = 30 * time.Second
+	serverIdleTimeout    = 60 * time.Second
+	serverMaxHeaderBytes = 8192
+	shutdownTimeout      = 5 * time.Second
+	msPerSecond          = 1000
+)
 
 type serverStats struct {
 	requestsServed    int64
@@ -41,10 +49,10 @@ func RunServer(ctx context.Context, db *sql.DB, cfg *Config, poller *Poller) {
 	srv := &http.Server{
 		Addr:           fmt.Sprintf(":%d", cfg.Port),
 		Handler:        h,
-		ReadTimeout:    10 * time.Second,
-		WriteTimeout:   30 * time.Second,
-		IdleTimeout:    60 * time.Second,
-		MaxHeaderBytes: 8192,
+		ReadTimeout:    serverReadTimeout,
+		WriteTimeout:   serverWriteTimeout,
+		IdleTimeout:    serverIdleTimeout,
+		MaxHeaderBytes: serverMaxHeaderBytes,
 		ConnState: func(_ net.Conn, state http.ConnState) {
 			switch state {
 			case http.StateNew:
@@ -59,7 +67,7 @@ func RunServer(ctx context.Context, db *sql.DB, cfg *Config, poller *Poller) {
 
 	go func() {
 		<-ctx.Done()
-		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
 			log.Printf("[server] Shutdown error: %v", err)
@@ -105,7 +113,7 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (h *handler) handleReadings(w http.ResponseWriter, r *http.Request) {
 	now := NowMillis()
-	defaultFrom := now - 24*60*60*1000
+	defaultFrom := now - 24*60*60*msPerSecond
 
 	from := parseInt64Param(r, "from", defaultFrom)
 	to := parseInt64Param(r, "to", now)
@@ -139,7 +147,7 @@ func (h *handler) handleReadings(w http.ResponseWriter, r *http.Request) {
 	for i := range readings {
 		items[i] = ReadingToJSON(&readings[i])
 	}
-	writeJSON(w, http.StatusOK, items)
+	writeJSON(w, items)
 }
 
 func (h *handler) handleReadingsLatest(w http.ResponseWriter, _ *http.Request) {
@@ -154,7 +162,7 @@ func (h *handler) handleReadingsLatest(w http.ResponseWriter, _ *http.Request) {
 	for i := range readings {
 		items[i] = ReadingToJSON(&readings[i])
 	}
-	writeJSON(w, http.StatusOK, items)
+	writeJSON(w, items)
 }
 
 func (h *handler) handleDevices(w http.ResponseWriter, _ *http.Request) {
@@ -169,11 +177,11 @@ func (h *handler) handleDevices(w http.ResponseWriter, _ *http.Request) {
 	for i := range devices {
 		items[i] = DeviceSummaryToJSON(&devices[i])
 	}
-	writeJSON(w, http.StatusOK, items)
+	writeJSON(w, items)
 }
 
 func (h *handler) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, http.StatusOK, h.poller.HealthJSON())
+	writeJSON(w, h.poller.HealthJSON())
 }
 
 func (h *handler) handleConfig(w http.ResponseWriter, _ *http.Request) {
@@ -182,7 +190,7 @@ func (h *handler) handleConfig(w http.ResponseWriter, _ *http.Request) {
 		devices[i] = map[string]string{"ip": d.IP, "label": d.Label}
 	}
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSON(w, map[string]any{
 		"pollIntervalMs": h.cfg.PollIntervalMs,
 		"devices":        devices,
 	})
@@ -207,7 +215,7 @@ func (h *handler) handleStats(w http.ResponseWriter, _ *http.Request) {
 
 	successes, failures := h.poller.PollStats()
 
-	writeJSON(w, http.StatusOK, map[string]any{
+	writeJSON(w, map[string]any{
 		"implementation":     "go",
 		"pid":                os.Getpid(),
 		"uptime_ms":          uptimeMs,
@@ -265,7 +273,7 @@ func isValidStaticPath(reqPath string) bool {
 	if strings.Contains(reqPath, "..") {
 		return false
 	}
-	for i := 0; i < len(reqPath); i++ {
+	for i := range len(reqPath) {
 		c := reqPath[i]
 		if c < 0x20 || c == 0x7F {
 			return false
@@ -310,7 +318,7 @@ func resolveStaticPath(reqPath string) (string, error) {
 
 // --- helpers ---
 
-func writeJSON(w http.ResponseWriter, status int, data any) {
+func writeJSON(w http.ResponseWriter, data any) {
 	body, err := json.Marshal(data)
 	if err != nil {
 		w.Header().Set("Content-Type", "application/json")
@@ -319,7 +327,7 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
+	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
 }
 

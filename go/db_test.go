@@ -22,34 +22,34 @@ func openTestDB(t *testing.T) *sql.DB {
 }
 
 var indoorFull = map[string]any{
-	"serialno":         testDeviceID,
-	"model":            "I-9PSL",
-	"pm01":             float64(5),
-	"pm02":             float64(12),
-	"pm10":             float64(18),
-	"pm02Compensated":  float64(10),
-	"rco2":             float64(450),
-	"atmp":             float64(22.5),
-	"atmpCompensated":  float64(21.0),
-	"rhum":             float64(55.0),
-	"rhumCompensated":  float64(53.0),
-	"tvocIndex":        float64(100),
-	"noxIndex":         float64(1),
-	"wifi":             float64(-42),
+	"serialno":        testDeviceID,
+	"model":           "I-9PSL",
+	"pm01":            float64(5),
+	"pm02":            float64(12),
+	"pm10":            float64(18),
+	"pm02Compensated": float64(10),
+	"rco2":            float64(450),
+	"atmp":            float64(22.5),
+	"atmpCompensated": float64(21.0),
+	"rhum":            float64(55.0),
+	"rhumCompensated": float64(53.0),
+	"tvocIndex":       float64(100),
+	"noxIndex":        float64(1),
+	"wifi":            float64(-42),
 }
 
 var outdoorFull = map[string]any{
-	"serialno":         "xyz789",
-	"model":            "O-1PST",
-	"pm01":             float64(8),
-	"pm02":             float64(15),
-	"pm10":             float64(22),
-	"pm02Compensated":  float64(14),
-	"atmp":             float64(18.5),
-	"atmpCompensated":  float64(17.0),
-	"rhum":             float64(65.0),
-	"rhumCompensated":  float64(63.0),
-	"wifi":             float64(-55),
+	"serialno":        "xyz789",
+	"model":           "O-1PST",
+	"pm01":            float64(8),
+	"pm02":            float64(15),
+	"pm10":            float64(22),
+	"pm02Compensated": float64(14),
+	"atmp":            float64(18.5),
+	"atmpCompensated": float64(17.0),
+	"rhum":            float64(65.0),
+	"rhumCompensated": float64(63.0),
+	"wifi":            float64(-55),
 }
 
 var afterBoot = map[string]any{
@@ -58,15 +58,15 @@ var afterBoot = map[string]any{
 }
 
 var zeroCompensated = map[string]any{
-	"serialno":         "zero1",
-	"model":            "I-9PSL",
-	"pm02":             float64(0),
-	"pm02Compensated":  float64(0),
-	"rco2":             float64(0),
-	"atmp":             float64(0),
-	"atmpCompensated":  float64(0),
-	"rhum":             float64(0),
-	"rhumCompensated":  float64(0),
+	"serialno":        "zero1",
+	"model":           "I-9PSL",
+	"pm02":            float64(0),
+	"pm02Compensated": float64(0),
+	"rco2":            float64(0),
+	"atmp":            float64(0),
+	"atmpCompensated": float64(0),
+	"rhum":            float64(0),
+	"rhumCompensated": float64(0),
 }
 
 func TestInsertAndQueryReading(t *testing.T) {
@@ -112,9 +112,9 @@ func TestInsertAndQueryReading(t *testing.T) {
 
 func TestClassifyDeviceType(t *testing.T) {
 	tests := []struct {
-		name   string
-		data   map[string]any
-		want   string
+		name string
+		data map[string]any
+		want string
 	}{
 		{"indoor I-9PSL", map[string]any{"model": "I-9PSL"}, deviceTypeIndoor},
 		{"outdoor O-1PST", map[string]any{"model": "O-1PST"}, deviceTypeOutdoor},
@@ -291,7 +291,7 @@ func TestDeviceFiltering(t *testing.T) {
 func TestQueryLimit(t *testing.T) {
 	db := openTestDB(t)
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		if err := InsertReading(db, "192.168.1.1", indoorFull); err != nil {
 			t.Fatal(err)
 		}
@@ -361,7 +361,7 @@ func TestGetLatestReadings(t *testing.T) {
 func TestGetDevices(t *testing.T) {
 	db := openTestDB(t)
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		if err := InsertReading(db, "192.168.1.1", indoorFull); err != nil {
 			t.Fatal(err)
 		}
@@ -406,10 +406,12 @@ func TestGetReadingsCount(t *testing.T) {
 		t.Errorf("expected 0, got %d", count)
 	}
 
-	if err := InsertReading(db, "192.168.1.1", indoorFull); err != nil {
+	err = InsertReading(db, "192.168.1.1", indoorFull)
+	if err != nil {
 		t.Fatal(err)
 	}
-	if err := InsertReading(db, "192.168.1.2", outdoorFull); err != nil {
+	err = InsertReading(db, "192.168.1.2", outdoorFull)
+	if err != nil {
 		t.Fatal(err)
 	}
 
@@ -431,14 +433,14 @@ func TestCheckpoint(t *testing.T) {
 
 func TestReadingToJSON(t *testing.T) {
 	r := Reading{
-		ID:        1,
-		Timestamp: 1700000000000,
-		DeviceID:  testDeviceID,
+		ID:         1,
+		Timestamp:  1700000000000,
+		DeviceID:   testDeviceID,
 		DeviceType: deviceTypeIndoor,
-		DeviceIP:  "192.168.1.1",
-		PM02:      sql.NullFloat64{Float64: 12, Valid: true},
-		RCO2:      sql.NullInt64{Int64: 450, Valid: true},
-		ATMP:      sql.NullFloat64{Float64: 22.5, Valid: true},
+		DeviceIP:   "192.168.1.1",
+		PM02:       sql.NullFloat64{Float64: 12, Valid: true},
+		RCO2:       sql.NullInt64{Int64: 450, Valid: true},
+		ATMP:       sql.NullFloat64{Float64: 22.5, Valid: true},
 	}
 
 	j := ReadingToJSON(&r)
@@ -484,15 +486,15 @@ func TestDeviceSummaryToJSON(t *testing.T) {
 
 func TestOptFloat(t *testing.T) {
 	tests := []struct {
-		name string
-		data map[string]any
-		key  string
 		want any
+		data map[string]any
+		name string
+		key  string
 	}{
-		{"float64", map[string]any{"k": float64(1.5)}, "k", float64(1.5)},
-		{"int", map[string]any{"k": int(3)}, "k", float64(3)},
-		{"missing", map[string]any{}, "k", nil},
-		{"string", map[string]any{"k": "not a number"}, "k", nil},
+		{float64(1.5), map[string]any{"k": float64(1.5)}, "float64", "k"},
+		{float64(3), map[string]any{"k": int(3)}, "int", "k"},
+		{nil, map[string]any{}, "missing", "k"},
+		{nil, map[string]any{"k": "not a number"}, "string", "k"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -506,15 +508,15 @@ func TestOptFloat(t *testing.T) {
 
 func TestOptInt(t *testing.T) {
 	tests := []struct {
-		name string
-		data map[string]any
-		key  string
 		want any
+		data map[string]any
+		name string
+		key  string
 	}{
-		{"float64", map[string]any{"k": float64(42)}, "k", int64(42)},
-		{"int", map[string]any{"k": int(7)}, "k", int64(7)},
-		{"missing", map[string]any{}, "k", nil},
-		{"string", map[string]any{"k": "nope"}, "k", nil},
+		{int64(42), map[string]any{"k": float64(42)}, "float64", "k"},
+		{int64(7), map[string]any{"k": int(7)}, "int", "k"},
+		{nil, map[string]any{}, "missing", "k"},
+		{nil, map[string]any{"k": "nope"}, "string", "k"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

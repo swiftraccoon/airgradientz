@@ -6,6 +6,9 @@ on:
   pull_request:
     branches: [master]
 
+permissions:
+  contents: read
+
 jobs:
   c:
     name: C (gcc-14 + cppcheck)
@@ -19,7 +22,8 @@ jobs:
       - name: cppcheck
         run: |
           cppcheck --enable=all --suppress=missingIncludeSystem \
-            --suppress=unusedFunction --error-exitcode=1 \
+            --suppress=unusedFunction --suppress=unmatchedSuppression \
+            --suppress=checkersReport --error-exitcode=1 \
             --std=c11 -DSQLITE_THREADSAFE=2 --inline-suppr \
             -I c/ c/src/
 

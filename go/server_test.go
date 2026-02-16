@@ -27,7 +27,7 @@ func newTestHandler(t *testing.T) *handler {
 }
 
 func doGet(h *handler, path string) *httptest.ResponseRecorder {
-	req := httptest.NewRequest(http.MethodGet, path, nil)
+	req := httptest.NewRequest(http.MethodGet, path, http.NoBody)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 	return rr
@@ -92,7 +92,7 @@ func TestReadingsWithDeviceFilter(t *testing.T) {
 func TestReadingsWithLimit(t *testing.T) {
 	h := newTestHandler(t)
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		if err := InsertReading(h.db, "192.168.1.1", indoorFull); err != nil {
 			t.Fatal(err)
 		}
@@ -109,7 +109,7 @@ func TestReadingsLimitCannotExceedMax(t *testing.T) {
 	h := newTestHandler(t)
 	h.cfg.MaxAPIRows = 3
 
-	for i := 0; i < 5; i++ {
+	for range 5 {
 		if err := InsertReading(h.db, "192.168.1.1", indoorFull); err != nil {
 			t.Fatal(err)
 		}
@@ -161,7 +161,7 @@ func TestReadingsLatest(t *testing.T) {
 func TestDevicesEndpoint(t *testing.T) {
 	h := newTestHandler(t)
 
-	for i := 0; i < 3; i++ {
+	for range 3 {
 		if err := InsertReading(h.db, "192.168.1.1", indoorFull); err != nil {
 			t.Fatal(err)
 		}
@@ -247,7 +247,7 @@ func TestStatsEndpoint(t *testing.T) {
 func TestMethodNotAllowed(t *testing.T) {
 	h := newTestHandler(t)
 
-	req := httptest.NewRequest(http.MethodPost, "/api/readings", nil)
+	req := httptest.NewRequest(http.MethodPost, "/api/readings", http.NoBody)
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
 
@@ -372,7 +372,7 @@ func TestParseInt64Param(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			req := httptest.NewRequest(http.MethodGet, "/test"+tt.query, nil)
+			req := httptest.NewRequest(http.MethodGet, "/test"+tt.query, http.NoBody)
 			got := parseInt64Param(req, tt.param, tt.defaultVal)
 			if got != tt.want {
 				t.Errorf("parseInt64Param = %d, want %d", got, tt.want)

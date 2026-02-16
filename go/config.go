@@ -10,39 +10,48 @@ import (
 	"strconv"
 )
 
+// Configuration default values.
+const (
+	defaultPort           = 3016
+	defaultPollIntervalMs = 15000
+	defaultFetchTimeoutMs = 5000
+	defaultMaxAPIRows     = 10000
+	maxConfigFileSize     = 1048576
+)
+
 type DeviceConfig struct {
 	IP    string `json:"ip"`
 	Label string `json:"label"`
 }
 
 type Config struct {
-	Port           uint16
 	DBPath         string
 	Devices        []DeviceConfig
 	PollIntervalMs int
 	FetchTimeoutMs int
 	MaxAPIRows     int
+	Port           uint16
 }
 
 type configFile struct {
 	Ports          map[string]int `json:"ports"`
-	Devices        []DeviceConfig `json:"devices"`
 	PollIntervalMs *int           `json:"pollIntervalMs"`
 	FetchTimeoutMs *int           `json:"fetchTimeoutMs"`
 	MaxAPIRows     *int           `json:"maxApiRows"`
+	Devices        []DeviceConfig `json:"devices"`
 }
 
 func LoadConfig() Config {
 	cfg := Config{
-		Port:   3016,
+		Port:   defaultPort,
 		DBPath: "./airgradientz.db",
 		Devices: []DeviceConfig{
 			{IP: "192.168.88.6", Label: "outdoor"},
 			{IP: "192.168.88.159", Label: "indoor"},
 		},
-		PollIntervalMs: 15000,
-		FetchTimeoutMs: 5000,
-		MaxAPIRows:     10000,
+		PollIntervalMs: defaultPollIntervalMs,
+		FetchTimeoutMs: defaultFetchTimeoutMs,
+		MaxAPIRows:     defaultMaxAPIRows,
 	}
 
 	if content, path := findConfigFile(); content != nil {
@@ -63,9 +72,19 @@ func LoadConfig() Config {
 	return cfg
 }
 
+// safeUint16 converts an int to uint16, returning (value, true) if in range.
+func safeUint16(v int) (uint16, bool) {
+	if v > 0 && v <= math.MaxUint16 {
+		return uint16(v), true //nolint:gosec // bounds checked above
+	}
+	return 0, false
+}
+
 func applyConfigFile(cfg *Config, cf *configFile) {
-	if p, ok := cf.Ports["go"]; ok && p > 0 && p <= math.MaxUint16 {
-		cfg.Port = uint16(p)
+	if p, ok := cf.Ports["go"]; ok {
+		if port, valid := safeUint16(p); valid {
+			cfg.Port = port
+		}
 	}
 	if len(cf.Devices) > 0 {
 		cfg.Devices = cf.Devices
@@ -83,8 +102,10 @@ func applyConfigFile(cfg *Config, cf *configFile) {
 
 func applyEnvOverrides(cfg *Config) {
 	if portStr := os.Getenv("PORT"); portStr != "" {
-		if p, err := strconv.Atoi(portStr); err == nil && p > 0 && p <= math.MaxUint16 {
-			cfg.Port = uint16(p)
+		if p, err := strconv.Atoi(portStr); err == nil {
+			if port, valid := safeUint16(p); valid {
+				cfg.Port = port
+			}
 		}
 	}
 	if dbPath := os.Getenv("DB_PATH"); dbPath != "" {
@@ -118,7 +139,7 @@ func findConfigFile() (content []byte, absPath string) {
 			}
 			continue
 		}
-		if len(content) > 1048576 {
+		if len(content) > maxConfigFileSize {
 			continue
 		}
 		absPath, err := filepath.Abs(path)

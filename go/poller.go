@@ -14,28 +14,28 @@ import (
 )
 
 const (
-	maxResponseBody      = 1 * 1024 * 1024
+	maxResponseBody         = 1 * 1024 * 1024
 	checkpointIntervalPolls = 10
+	pollerMsPerSecond       = 1000
 )
 
 type DeviceHealth struct {
 	IP                  string
 	Label               string
 	Status              string
+	LastErrorMessage    string
 	LastSuccess         int64
 	LastError           int64
-	LastErrorMessage    string
 	ConsecutiveFailures int
 }
 
 type Poller struct {
-	db     *sql.DB
-	cfg    *Config
-	mu     sync.RWMutex
-	health []DeviceHealth
-
+	db        *sql.DB
+	cfg       *Config
+	health    []DeviceHealth
 	successes int64
 	failures  int64
+	mu        sync.RWMutex
 }
 
 func NewPoller(db *sql.DB, cfg *Config) *Poller {
@@ -52,7 +52,7 @@ func NewPoller(db *sql.DB, cfg *Config) *Poller {
 
 func (p *Poller) Run(ctx context.Context) {
 	log.Printf("[poller] Starting — polling %d devices every %.1fs",
-		len(p.cfg.Devices), float64(p.cfg.PollIntervalMs)/1000)
+		len(p.cfg.Devices), float64(p.cfg.PollIntervalMs)/pollerMsPerSecond)
 
 	p.pollAll()
 
@@ -90,8 +90,13 @@ func (p *Poller) fetchDevice(idx int) {
 		Timeout: time.Duration(p.cfg.FetchTimeoutMs) * time.Millisecond,
 	}
 
-	url := fmt.Sprintf("http://%s/measures/current", d.IP)
-	resp, err := client.Get(url)
+	reqURL := fmt.Sprintf("http://%s/measures/current", d.IP)
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, reqURL, http.NoBody)
+	if err != nil {
+		p.setError(idx, fmt.Sprintf("create request: %v", err))
+		return
+	}
+	resp, err := client.Do(req)
 	if err != nil {
 		p.setError(idx, fmt.Sprintf("fetch failed: %v", err))
 		return

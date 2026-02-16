@@ -1,5 +1,8 @@
 # AirGradientz
 
+[![Lint](https://github.com/swiftraccoon/airgradientz/actions/workflows/lint.yml/badge.svg)](https://github.com/swiftraccoon/airgradientz/actions/workflows/lint.yml)
+[![Test](https://github.com/swiftraccoon/airgradientz/actions/workflows/test.yml/badge.svg)](https://github.com/swiftraccoon/airgradientz/actions/workflows/test.yml)
+
 Local dashboard for AirGradient air quality monitors. Ten independent implementations (C, Node.js, Rust, Zig, D, Elixir, Nim, Go, Bash, ASM) share one web UI and one JSON config.
 
 ## Architecture

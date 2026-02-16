@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,23 +14,23 @@ import (
 )
 
 type Reading struct {
-	ID              int64
-	Timestamp       int64
-	DeviceID        string
 	DeviceType      string
 	DeviceIP        string
+	DeviceID        string
+	PM02Compensated sql.NullFloat64
+	ATMP            sql.NullFloat64
 	PM01            sql.NullFloat64
 	PM02            sql.NullFloat64
 	PM10            sql.NullFloat64
-	PM02Compensated sql.NullFloat64
+	Wifi            sql.NullInt64
 	RCO2            sql.NullInt64
-	ATMP            sql.NullFloat64
+	NOXIndex        sql.NullFloat64
 	ATMPCompensated sql.NullFloat64
 	RHUM            sql.NullFloat64
 	RHUMCompensated sql.NullFloat64
 	TVOCIndex       sql.NullFloat64
-	NOXIndex        sql.NullFloat64
-	Wifi            sql.NullInt64
+	Timestamp       int64
+	ID              int64
 }
 
 type DeviceSummary struct {
@@ -208,23 +209,23 @@ func Checkpoint(db *sql.DB) error {
 
 func ReadingToJSON(r *Reading) map[string]any {
 	return map[string]any{
-		"id":                r.ID,
-		"timestamp":         r.Timestamp,
-		"device_id":         r.DeviceID,
-		"device_type":       r.DeviceType,
-		"device_ip":         r.DeviceIP,
-		"pm01":              nullFloat(r.PM01),
-		"pm02":              nullFloat(r.PM02),
-		"pm10":              nullFloat(r.PM10),
-		"pm02_compensated":  nullFloat(r.PM02Compensated),
-		"rco2":              nullInt(r.RCO2),
-		"atmp":              nullFloat(r.ATMP),
-		"atmp_compensated":  nullFloat(r.ATMPCompensated),
-		"rhum":              nullFloat(r.RHUM),
-		"rhum_compensated":  nullFloat(r.RHUMCompensated),
-		"tvoc_index":        nullFloat(r.TVOCIndex),
-		"nox_index":         nullFloat(r.NOXIndex),
-		"wifi":              nullInt(r.Wifi),
+		"id":               r.ID,
+		"timestamp":        r.Timestamp,
+		"device_id":        r.DeviceID,
+		"device_type":      r.DeviceType,
+		"device_ip":        r.DeviceIP,
+		"pm01":             nullFloat(r.PM01),
+		"pm02":             nullFloat(r.PM02),
+		"pm10":             nullFloat(r.PM10),
+		"pm02_compensated": nullFloat(r.PM02Compensated),
+		"rco2":             nullInt(r.RCO2),
+		"atmp":             nullFloat(r.ATMP),
+		"atmp_compensated": nullFloat(r.ATMPCompensated),
+		"rhum":             nullFloat(r.RHUM),
+		"rhum_compensated": nullFloat(r.RHUMCompensated),
+		"tvoc_index":       nullFloat(r.TVOCIndex),
+		"nox_index":        nullFloat(r.NOXIndex),
+		"wifi":             nullInt(r.Wifi),
 	}
 }
 
@@ -336,7 +337,7 @@ func logInsertResult(label, ip string, data map[string]any) {
 		pm02s = fmt.Sprintf("%.2f", v)
 	}
 	if v, ok := data["rco2"].(float64); ok {
-		rco2s = fmt.Sprintf("%d", int64(v))
+		rco2s = strconv.FormatInt(int64(v), 10)
 	}
 	if v, ok := data["atmp"].(float64); ok {
 		atmps = fmt.Sprintf("%.1f", v)

@@ -59,7 +59,8 @@ for impl in "${impls[@]}"; do
             # cppcheck (static analysis)
             if has_tool cppcheck; then
                 if ! run_lint "cppcheck" cppcheck --enable=all --suppress=missingIncludeSystem \
-                    --suppress=unusedFunction --error-exitcode=1 \
+                    --suppress=unusedFunction --suppress=unmatchedSuppression \
+                    --suppress=checkersReport --error-exitcode=1 \
                     --std=c11 -DSQLITE_THREADSAFE=2 --inline-suppr \
                     -I c/ c/src/; then
                     impl_ok=false
