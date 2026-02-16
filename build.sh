@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-ALL_IMPLS=(c nodejs rust zig d elixir nim go bash)
+ALL_IMPLS=(c nodejs rust zig d elixir nim go bash asm)
 
 usage() {
     echo "Usage: $0 [impl...]"

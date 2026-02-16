@@ -58,6 +58,7 @@ PORT_ELIXIR=$(get_port elixir 3013)
 PORT_NIM=$(get_port nim 3015)
 PORT_GO=$(get_port go 3016)
 PORT_BASH=$(get_port bash 3017)
+PORT_ASM=$(get_port asm 3018)
 
 IMPL_REGISTRY=(
     "c|${PORT_C}|c|cd c && make clean && make|cd c && ./airgradientz|c/airgradientz"
@@ -69,6 +70,7 @@ IMPL_REGISTRY=(
     "nim|${PORT_NIM}|nim|cd nim && export PATH=\$HOME/.nimble/bin:\$PATH && nim c -d:release --threads:on --mm:orc --path:src -o:airgradientz src/airgradientz.nim 2>/dev/null|cd nim && ./airgradientz|nim/airgradientz"
     "go|${PORT_GO}|go|cd go && go build -o airgradientz .|cd go && ./airgradientz|go/airgradientz"
     "bash|${PORT_BASH}|bash|cd bash && bash build.sh|cd bash && bash server.sh|n/a"
+    "asm|${PORT_ASM}|asm|cd asm && make clean && make|cd asm && ./airgradientz|asm/airgradientz"
 )
 
 # Display names for the report header
@@ -82,10 +84,11 @@ declare -A DISPLAY_NAMES=(
     [nim]="Nim"
     [go]="Go"
     [bash]="Bash"
+    [asm]="x86_64 ASM"
 )
 
 # Canonical order for table columns
-IMPL_ORDER=(c nodejs rust zig d elixir nim go bash)
+IMPL_ORDER=(c nodejs rust zig d elixir nim go bash asm)
 
 # ── Process tracking for cleanup ─────────────────────────────────────────────
 

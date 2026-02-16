@@ -1,6 +1,6 @@
 # AirGradientz
 
-Local dashboard for AirGradient air quality monitors. Nine independent implementations (C, Node.js, Rust, Zig, D, Elixir, Nim, Go, Bash) share one web UI and one JSON config.
+Local dashboard for AirGradient air quality monitors. Ten independent implementations (C, Node.js, Rust, Zig, D, Elixir, Nim, Go, Bash, ASM) share one web UI and one JSON config.
 
 ## Architecture
 
@@ -13,6 +13,7 @@ Local dashboard for AirGradient air quality monitors. Nine independent implement
 - `nim/` — Nim 2.2 (port 3015), references `../c/sqlite3.c`
 - `go/` — Go 1.25 (port 3016), `github.com/mattn/go-sqlite3` (CGo)
 - `bash/` — Pure Bash (port 3017), ncat + sqlite3 CLI + jq + curl
+- `asm/` — x86_64 NASM assembly (port 3018), links libc + vendored sqlite3.o
 - `airgradientz.json` — shared config (devices, poll interval, timeouts)
 - `schema.sql` — shared DB schema (single source of truth)
 - `c/public/` — canonical web UI (HTML/CSS/JS); all other impls symlink to it
@@ -27,7 +28,7 @@ Every implementation has a `build.sh` and `start.sh`. Root scripts orchestrate t
 ./build.sh                   # build all implementations
 ./build.sh c rust nim        # build specific ones
 ./start.sh c                 # start one implementation (exec's into it)
-./test.sh                    # run all tests (all 9 implementations)
+./test.sh                    # run all tests (all 10 implementations)
 ./test.sh c                  # run specific tests
 
 # Per-implementation (from repo root or impl directory)
@@ -40,6 +41,7 @@ elixir/build.sh && elixir/start.sh  # Elixir (port 3013)
 nim/build.sh && nim/start.sh    # Nim (port 3015)
 go/build.sh && go/start.sh      # Go (port 3016)
 bash/build.sh && bash/start.sh  # Bash (port 3017)
+asm/build.sh && asm/start.sh    # ASM (port 3018)
 
 # Debug / direct commands
 cd c && make debug           # ASan + UBSan
@@ -71,9 +73,10 @@ Config file search order: `CONFIG_PATH` env, `./airgradientz.json`, `../airgradi
 - Zig: 0.15 APIs, epoll event loop, per-connection arena allocator
 - Go: 1.25, net/http (goroutine-per-connection), `github.com/mattn/go-sqlite3` (CGo)
 - Bash: ncat fork-per-connection, sqlite3 CLI, jq for JSON, shellcheck -o all clean
+- ASM: x86_64 NASM, epoll event loop, System V AMD64 ABI, links libc + sqlite3.o from `../c/sqlite3.c`
 - SQLite: WAL mode, bundled amalgamation (vendored in `c/sqlite3.c`)
 - Web UI: vanilla HTML/CSS/JS, no build step
-- All compiled impls except Go and Bash: single-threaded non-blocking I/O (no thread-per-connection)
+- All compiled impls except Go and Bash: single-threaded non-blocking I/O (no thread-per-connection, ASM uses poller thread for background polling)
 
 ## API Endpoints (all impls)
 
@@ -100,15 +103,17 @@ All implementations have tests. Run `./test.sh` for all, or `./test.sh <impl>` f
 | Nim | `unittest` module | `cd nim && nim c -r --path:src tests/test_db.nim` | 16 |
 | Go | `go test` | `cd go && go test ./...` | 48 |
 | Bash | Custom test runner | `cd bash && bash tests/run_tests.sh` | 86 |
+| ASM | Custom test runner | `make -C asm test` | 54 |
 
 ## Gotchas
 
 - `c/sqlite3.c` and `c/sqlite3.h` are vendored (marked in `.gitattributes`) — don't edit
-- Zig and Nim impls share C's SQLite via `../c/sqlite3.c` — C impl must be present
+- Zig, Nim, and ASM impls share C's SQLite via `../c/sqlite3.c` — C impl must be present
 - Node.js requires fnm for version management (v24 pinned)
 - `references/` is gitignored — local-only reference materials
 - `.env` in `nodejs/` is gitignored — contains PORT/DB_PATH overrides
 - Each impl creates its own `airgradientz.db` in its directory
 - D and Elixir share port 3013 — don't run both simultaneously
 - Bash requires ncat (nmap), sqlite3, jq, curl at runtime
+- ASM requires nasm assembler and gcc linker at build time
 - Schema changes go in `schema.sql`, not in individual implementations

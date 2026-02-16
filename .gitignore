@@ -42,6 +42,11 @@ go/airgradientz
 # Bash
 bash/run/
 
+# Assembly
+asm/airgradientz
+asm/sqlite3.o
+asm/src/*.o
+
 # Elixir crash dumps
 elixir/erl_crash.dump
 
