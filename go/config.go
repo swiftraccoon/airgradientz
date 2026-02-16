@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -63,7 +64,7 @@ func LoadConfig() Config {
 }
 
 func applyConfigFile(cfg *Config, cf *configFile) {
-	if p, ok := cf.Ports["go"]; ok && p > 0 && p <= 65535 {
+	if p, ok := cf.Ports["go"]; ok && p > 0 && p <= math.MaxUint16 {
 		cfg.Port = uint16(p)
 	}
 	if len(cf.Devices) > 0 {
@@ -82,7 +83,7 @@ func applyConfigFile(cfg *Config, cf *configFile) {
 
 func applyEnvOverrides(cfg *Config) {
 	if portStr := os.Getenv("PORT"); portStr != "" {
-		if p, err := strconv.Atoi(portStr); err == nil && p > 0 && p <= 65535 {
+		if p, err := strconv.Atoi(portStr); err == nil && p > 0 && p <= math.MaxUint16 {
 			cfg.Port = uint16(p)
 		}
 	}
@@ -102,7 +103,7 @@ func logConfig(cfg *Config) {
 	log.Printf("[config] port=%d devices=[%s] poll=%dms", cfg.Port, deviceList, cfg.PollIntervalMs)
 }
 
-func findConfigFile() ([]byte, string) {
+func findConfigFile() (content []byte, absPath string) {
 	var candidates []string
 	if envPath := os.Getenv("CONFIG_PATH"); envPath != "" {
 		candidates = append(candidates, envPath)

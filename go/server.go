@@ -51,6 +51,8 @@ func RunServer(ctx context.Context, db *sql.DB, cfg *Config, poller *Poller) {
 				atomic.AddInt64(&h.stats.activeConnections, 1)
 			case http.StateClosed, http.StateHijacked:
 				atomic.AddInt64(&h.stats.activeConnections, -1)
+			case http.StateActive, http.StateIdle:
+				// No action needed for active/idle transitions.
 			}
 		},
 	}
@@ -190,7 +192,10 @@ func (h *handler) handleStats(w http.ResponseWriter, _ *http.Request) {
 	now := NowMillis()
 	uptimeMs := now - h.stats.startedAt
 
-	readingsCount, _ := GetReadingsCount(h.db)
+	readingsCount, err := GetReadingsCount(h.db)
+	if err != nil {
+		log.Printf("[api] get_readings_count error: %v", err)
+	}
 
 	var dbSizeBytes int64
 	if info, err := os.Stat(h.cfg.DBPath); err == nil {
@@ -222,49 +227,13 @@ func (h *handler) handleStats(w http.ResponseWriter, _ *http.Request) {
 func (h *handler) serveStatic(w http.ResponseWriter, r *http.Request) {
 	reqPath := r.URL.Path
 
-	if strings.Contains(reqPath, "..") {
+	if !isValidStaticPath(reqPath) {
 		writeError(w, http.StatusNotFound, "Not found")
 		return
 	}
 
-	for i := 0; i < len(reqPath); i++ {
-		c := reqPath[i]
-		if c < 0x20 || c == 0x7F {
-			writeError(w, http.StatusNotFound, "Not found")
-			return
-		}
-	}
-
-	relative := strings.TrimLeft(reqPath, "/")
-	filePath := "public/index.html"
-	if relative != "" {
-		filePath = filepath.Join("public", relative)
-	}
-
-	resolved, err := filepath.EvalSymlinks(filePath)
+	resolved, err := resolveStaticPath(reqPath)
 	if err != nil {
-		writeError(w, http.StatusNotFound, "Not found")
-		return
-	}
-	publicDir, err := filepath.EvalSymlinks("public")
-	if err != nil {
-		writeError(w, http.StatusNotFound, "Not found")
-		return
-	}
-
-	absResolved, err := filepath.Abs(resolved)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "Not found")
-		return
-	}
-	absPublic, err := filepath.Abs(publicDir)
-	if err != nil {
-		writeError(w, http.StatusNotFound, "Not found")
-		return
-	}
-
-	if absResolved != absPublic &&
-		!strings.HasPrefix(absResolved, absPublic+string(filepath.Separator)) {
 		writeError(w, http.StatusNotFound, "Not found")
 		return
 	}
@@ -291,6 +260,54 @@ func (h *handler) serveStatic(w http.ResponseWriter, r *http.Request) {
 	_, _ = w.Write(content)
 }
 
+// isValidStaticPath checks for path traversal and control characters.
+func isValidStaticPath(reqPath string) bool {
+	if strings.Contains(reqPath, "..") {
+		return false
+	}
+	for i := 0; i < len(reqPath); i++ {
+		c := reqPath[i]
+		if c < 0x20 || c == 0x7F {
+			return false
+		}
+	}
+	return true
+}
+
+// resolveStaticPath resolves a request path to a safe filesystem path under public/.
+func resolveStaticPath(reqPath string) (string, error) {
+	relative := strings.TrimLeft(reqPath, "/")
+	filePath := "public/index.html"
+	if relative != "" {
+		filePath = filepath.Join("public", relative)
+	}
+
+	resolved, err := filepath.EvalSymlinks(filePath)
+	if err != nil {
+		return "", err
+	}
+	publicDir, err := filepath.EvalSymlinks("public")
+	if err != nil {
+		return "", err
+	}
+
+	absResolved, err := filepath.Abs(resolved)
+	if err != nil {
+		return "", err
+	}
+	absPublic, err := filepath.Abs(publicDir)
+	if err != nil {
+		return "", err
+	}
+
+	if absResolved != absPublic &&
+		!strings.HasPrefix(absResolved, absPublic+string(filepath.Separator)) {
+		return "", fmt.Errorf("path traversal: %s", reqPath)
+	}
+
+	return resolved, nil
+}
+
 // --- helpers ---
 
 func writeJSON(w http.ResponseWriter, status int, data any) {
@@ -307,7 +324,13 @@ func writeJSON(w http.ResponseWriter, status int, data any) {
 }
 
 func writeError(w http.ResponseWriter, status int, msg string) {
-	body, _ := json.Marshal(map[string]string{"error": msg})
+	body, err := json.Marshal(map[string]string{"error": msg})
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte(`{"error":"Internal server error"}`))
+		return
+	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_, _ = w.Write(body)

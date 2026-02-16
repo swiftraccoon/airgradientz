@@ -19,7 +19,7 @@ JsonValue *api_handle_readings(struct AppState *state, const HttpReq *req, int *
 JsonValue *api_handle_readings_latest(struct AppState *state, int *status);
 JsonValue *api_handle_devices(struct AppState *state, int *status);
 JsonValue *api_handle_health(struct AppState *state, int *status);
-JsonValue *api_handle_config(struct AppState *state, int *status);
+JsonValue *api_handle_config(const struct AppState *state, int *status);
 JsonValue *api_handle_stats(struct AppState *state, int *status);
 
 /* URL-decode a string. Returns heap-allocated result or NULL. Rejects null bytes. */

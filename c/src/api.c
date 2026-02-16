@@ -177,7 +177,7 @@ JsonValue *api_handle_health(struct AppState *state, int *status)
     return poller_get_health_json(state);
 }
 
-JsonValue *api_handle_config(struct AppState *state, int *status)
+JsonValue *api_handle_config(const struct AppState *state, int *status)
 {
     JsonValue *devices = json_array_new();
     for (size_t i = 0; i < state->config.device_count; i++) {

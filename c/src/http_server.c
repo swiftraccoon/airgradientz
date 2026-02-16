@@ -109,7 +109,7 @@ static char *build_response(int status, const char *status_text,
 }
 
 static char *build_json_response(int status, const char *status_text,
-                                  JsonValue *json, size_t *out_len)
+                                  const JsonValue *json, size_t *out_len)
 {
     StrBuf body = strbuf_new();
     json_serialize(json, &body);
@@ -288,7 +288,7 @@ static int parse_request_buf(const char *buf, size_t len, HttpReq *req)
 
 /* ---- routing ---- */
 
-static void route_request(AppState *state, HttpReq *req,
+static void route_request(AppState *state, const HttpReq *req,
                            char **resp, size_t *resp_len)
 {
     if (strcmp(req->method, "GET") != 0) {
@@ -445,6 +445,10 @@ int http_server_run(struct AppState *state)
 
             /* ---- listen socket: accept loop ---- */
             if (fd == listen_fd) {
+                if (ev_flags & (EPOLLERR | EPOLLHUP)) {
+                    fprintf(stderr, "[server] listen socket error, exiting\n");
+                    goto shutdown;
+                }
                 for (;;) {
                     int client_fd = accept(listen_fd, NULL, NULL);
                     if (client_fd < 0) {
@@ -489,10 +493,6 @@ int http_server_run(struct AppState *state)
 
             /* ---- error / hangup ---- */
             if (ev_flags & (EPOLLERR | EPOLLHUP)) {
-                if (fd == listen_fd) {
-                    fprintf(stderr, "[server] listen socket error, exiting\n");
-                    goto shutdown;
-                }
                 close_conn(epoll_fd, fd, state);
                 continue;
             }

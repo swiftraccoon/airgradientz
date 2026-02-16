@@ -430,7 +430,7 @@ static void test_whitespace_handling(void)
 static void test_parse_trailing_data_error(void)
 {
     JsonError err;
-    JsonValue *v = json_parse("42 extra", 8, &err);
+    const JsonValue *v = json_parse("42 extra", 8, &err);
     ASSERT_NULL(v);
     ASSERT_INT_EQ(err.kind, 5); /* trailing data */
 }
@@ -439,7 +439,7 @@ static void test_parse_unexpected_eof(void)
 {
     JsonError err;
 
-    JsonValue *v = json_parse("{\"a\":", 5, &err);
+    const JsonValue *v = json_parse("{\"a\":", 5, &err);
     ASSERT_NULL(v);
 
     v = json_parse("[1,", 3, &err);
@@ -453,7 +453,7 @@ static void test_parse_invalid_input(void)
 {
     JsonError err;
 
-    JsonValue *v = json_parse("xyz", 3, &err);
+    const JsonValue *v = json_parse("xyz", 3, &err);
     ASSERT_NULL(v);
     ASSERT_INT_EQ(err.kind, 2); /* unexpected char */
 
@@ -465,7 +465,7 @@ static void test_parse_invalid_input(void)
 static void test_parse_invalid_number(void)
 {
     JsonError err;
-    JsonValue *v = json_parse("1.", 2, &err);
+    const JsonValue *v = json_parse("1.", 2, &err);
     ASSERT_NULL(v);
     ASSERT_INT_EQ(err.kind, 4); /* invalid number */
 }
@@ -473,7 +473,7 @@ static void test_parse_invalid_number(void)
 static void test_parse_invalid_escape(void)
 {
     JsonError err;
-    JsonValue *v = json_parse("\"\\q\"", 4, &err);
+    const JsonValue *v = json_parse("\"\\q\"", 4, &err);
     ASSERT_NULL(v);
     ASSERT_INT_EQ(err.kind, 3); /* invalid escape */
 }
@@ -482,7 +482,7 @@ static void test_parse_lone_surrogate(void)
 {
     JsonError err;
     /* High surrogate without low surrogate */
-    JsonValue *v = json_parse("\"\\uD800\"", 8, &err);
+    const JsonValue *v = json_parse("\"\\uD800\"", 8, &err);
     ASSERT_NULL(v);
 }
 

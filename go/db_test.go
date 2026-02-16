@@ -7,6 +7,8 @@ import (
 	"testing"
 )
 
+const testDeviceID = "abc123"
+
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
 	tmp := t.TempDir()
@@ -20,7 +22,7 @@ func openTestDB(t *testing.T) *sql.DB {
 }
 
 var indoorFull = map[string]any{
-	"serialno":         "abc123",
+	"serialno":         testDeviceID,
 	"model":            "I-9PSL",
 	"pm01":             float64(5),
 	"pm02":             float64(12),
@@ -88,11 +90,11 @@ func TestInsertAndQueryReading(t *testing.T) {
 	}
 
 	r := readings[0]
-	if r.DeviceID != "abc123" {
-		t.Errorf("device_id = %q, want %q", r.DeviceID, "abc123")
+	if r.DeviceID != testDeviceID {
+		t.Errorf("device_id = %q, want %q", r.DeviceID, testDeviceID)
 	}
-	if r.DeviceType != "indoor" {
-		t.Errorf("device_type = %q, want %q", r.DeviceType, "indoor")
+	if r.DeviceType != deviceTypeIndoor {
+		t.Errorf("device_type = %q, want %q", r.DeviceType, deviceTypeIndoor)
 	}
 	if r.DeviceIP != "192.168.1.1" {
 		t.Errorf("device_ip = %q, want %q", r.DeviceIP, "192.168.1.1")
@@ -114,11 +116,11 @@ func TestClassifyDeviceType(t *testing.T) {
 		data   map[string]any
 		want   string
 	}{
-		{"indoor I-9PSL", map[string]any{"model": "I-9PSL"}, "indoor"},
-		{"outdoor O-1PST", map[string]any{"model": "O-1PST"}, "outdoor"},
-		{"no model", map[string]any{}, "outdoor"},
-		{"short model", map[string]any{"model": "I"}, "outdoor"},
-		{"non-string model", map[string]any{"model": 42}, "outdoor"},
+		{"indoor I-9PSL", map[string]any{"model": "I-9PSL"}, deviceTypeIndoor},
+		{"outdoor O-1PST", map[string]any{"model": "O-1PST"}, deviceTypeOutdoor},
+		{"no model", map[string]any{}, deviceTypeOutdoor},
+		{"short model", map[string]any{"model": "I"}, deviceTypeOutdoor},
+		{"non-string model", map[string]any{"model": 42}, deviceTypeOutdoor},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -236,7 +238,7 @@ func TestDeviceFiltering(t *testing.T) {
 
 	t.Run("filter by device", func(t *testing.T) {
 		readings, err := QueryReadings(db, ReadingQuery{
-			Device: "abc123", From: 0, To: NowMillis() + 1000, Limit: 100,
+			Device: testDeviceID, From: 0, To: NowMillis() + 1000, Limit: 100,
 		})
 		if err != nil {
 			t.Fatal(err)
@@ -244,7 +246,7 @@ func TestDeviceFiltering(t *testing.T) {
 		if len(readings) != 1 {
 			t.Fatalf("expected 1, got %d", len(readings))
 		}
-		if readings[0].DeviceID != "abc123" {
+		if readings[0].DeviceID != testDeviceID {
 			t.Errorf("device_id = %q, want abc123", readings[0].DeviceID)
 		}
 	})
@@ -378,12 +380,12 @@ func TestGetDevices(t *testing.T) {
 
 	found := false
 	for _, d := range devices {
-		if d.DeviceID == "abc123" {
+		if d.DeviceID == testDeviceID {
 			found = true
 			if d.ReadingCount != 3 {
 				t.Errorf("reading_count = %d, want 3", d.ReadingCount)
 			}
-			if d.DeviceType != "indoor" {
+			if d.DeviceType != deviceTypeIndoor {
 				t.Errorf("device_type = %q, want indoor", d.DeviceType)
 			}
 		}
@@ -431,8 +433,8 @@ func TestReadingToJSON(t *testing.T) {
 	r := Reading{
 		ID:        1,
 		Timestamp: 1700000000000,
-		DeviceID:  "abc123",
-		DeviceType: "indoor",
+		DeviceID:  testDeviceID,
+		DeviceType: deviceTypeIndoor,
 		DeviceIP:  "192.168.1.1",
 		PM02:      sql.NullFloat64{Float64: 12, Valid: true},
 		RCO2:      sql.NullInt64{Int64: 450, Valid: true},
@@ -444,7 +446,7 @@ func TestReadingToJSON(t *testing.T) {
 	if j["id"] != int64(1) {
 		t.Errorf("id = %v", j["id"])
 	}
-	if j["device_id"] != "abc123" {
+	if j["device_id"] != testDeviceID {
 		t.Errorf("device_id = %v", j["device_id"])
 	}
 	if j["pm02"] != 12.0 {
@@ -463,8 +465,8 @@ func TestReadingToJSON(t *testing.T) {
 
 func TestDeviceSummaryToJSON(t *testing.T) {
 	d := DeviceSummary{
-		DeviceID:     "abc123",
-		DeviceType:   "indoor",
+		DeviceID:     testDeviceID,
+		DeviceType:   deviceTypeIndoor,
 		DeviceIP:     "192.168.1.1",
 		LastSeen:     1700000000000,
 		ReadingCount: 42,
@@ -472,7 +474,7 @@ func TestDeviceSummaryToJSON(t *testing.T) {
 
 	j := DeviceSummaryToJSON(&d)
 
-	if j["device_id"] != "abc123" {
+	if j["device_id"] != testDeviceID {
 		t.Errorf("device_id = %v", j["device_id"])
 	}
 	if j["reading_count"] != int64(42) {
@@ -565,7 +567,7 @@ func TestRawJSONStored(t *testing.T) {
 }
 
 func TestRawJSONNotInAPIResponse(t *testing.T) {
-	r := Reading{ID: 1, DeviceID: "test", DeviceType: "indoor", DeviceIP: "1.1.1.1"}
+	r := Reading{ID: 1, DeviceID: "test", DeviceType: deviceTypeIndoor, DeviceIP: "1.1.1.1"}
 	j := ReadingToJSON(&r)
 	if _, exists := j["raw_json"]; exists {
 		t.Error("raw_json should not appear in API JSON response")

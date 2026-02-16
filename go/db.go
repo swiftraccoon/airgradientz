@@ -238,6 +238,14 @@ func DeviceSummaryToJSON(d *DeviceSummary) map[string]any {
 	}
 }
 
+// --- constants ---
+
+const (
+	deviceTypeIndoor  = "indoor"
+	deviceTypeOutdoor = "outdoor"
+	valueNA           = "N/A"
+)
+
 // --- helpers ---
 
 func scanReadings(rows *sql.Rows) ([]Reading, error) {
@@ -261,9 +269,9 @@ func scanReadings(rows *sql.Rows) ([]Reading, error) {
 func classifyDevice(data map[string]any) string {
 	model, ok := data["model"].(string)
 	if ok && len(model) >= 2 && model[0] == 'I' && model[1] == '-' {
-		return "indoor"
+		return deviceTypeIndoor
 	}
-	return "outdoor"
+	return deviceTypeOutdoor
 }
 
 func getSerial(data map[string]any) string {
@@ -320,9 +328,9 @@ func nullInt(ni sql.NullInt64) any {
 
 // logInsertResult logs a summary of a successful reading insertion.
 func logInsertResult(label, ip string, data map[string]any) {
-	pm02s := "N/A"
-	rco2s := "N/A"
-	atmps := "N/A"
+	pm02s := valueNA
+	rco2s := valueNA
+	atmps := valueNA
 
 	if v, ok := data["pm02"].(float64); ok {
 		pm02s = fmt.Sprintf("%.2f", v)

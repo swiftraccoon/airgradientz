@@ -45,7 +45,7 @@ func TestLoadConfigFromFile(t *testing.T) {
 		"fetchTimeoutMs": 10000,
 		"maxApiRows": 5000
 	}`
-	if err := os.WriteFile(configPath, []byte(content), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -122,7 +122,7 @@ func TestEnvPortValidation(t *testing.T) {
 func TestConfigFileInvalidJSON(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "bad.json")
-	if err := os.WriteFile(configPath, []byte("{invalid json}"), 0644); err != nil {
+	if err := os.WriteFile(configPath, []byte("{invalid json}"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 
@@ -154,7 +154,7 @@ func TestConfigFilePortBounds(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			configPath := filepath.Join(tmp, tt.name+".json")
-			if err := os.WriteFile(configPath, []byte(tt.json), 0644); err != nil {
+			if err := os.WriteFile(configPath, []byte(tt.json), 0o644); err != nil {
 				t.Fatal(err)
 			}
 			t.Setenv("CONFIG_PATH", configPath)
@@ -177,7 +177,7 @@ func TestConfigFileTooLarge(t *testing.T) {
 	for i := range huge {
 		huge[i] = ' '
 	}
-	if err := os.WriteFile(configPath, huge, 0644); err != nil {
+	if err := os.WriteFile(configPath, huge, 0o644); err != nil {
 		t.Fatal(err)
 	}
 
