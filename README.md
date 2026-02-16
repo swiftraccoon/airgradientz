@@ -8,7 +8,7 @@ Local dashboard for AirGradient air quality monitors. Ten independent implementa
 - `nodejs/` — Node.js/Express (port 3010), requires fnm + Node 24
 - `rust/` — Rust 2024 edition (port 3009)
 - `zig/` — Zig 0.15 (port 3012), references `../c/sqlite3.c`
-- `d/` — D/LDC (port 3013)
+- `d/` — D/LDC (port 3014)
 - `elixir/` — Elixir/OTP (port 3013), requires Elixir 1.17+ / Erlang 26+
 - `nim/` — Nim 2.2 (port 3015), references `../c/sqlite3.c`
 - `go/` — Go 1.25 (port 3016), `github.com/mattn/go-sqlite3` (CGo)
@@ -30,13 +30,15 @@ Every implementation has a `build.sh` and `start.sh`. Root scripts orchestrate t
 ./start.sh c                 # start one implementation (exec's into it)
 ./test.sh                    # run all tests (all 10 implementations)
 ./test.sh c                  # run specific tests
+./lint.sh                    # lint all implementations
+./lint.sh rust go            # lint specific ones
 
 # Per-implementation (from repo root or impl directory)
 c/build.sh && c/start.sh     # C (port 3011)
 nodejs/build.sh              # Node.js deps; nodejs/start.sh runs (port 3010)
 rust/build.sh && rust/start.sh  # Rust (port 3009)
 zig/build.sh && zig/start.sh    # Zig (port 3012)
-d/build.sh && d/start.sh        # D (port 3013)
+d/build.sh && d/start.sh        # D (port 3014)
 elixir/build.sh && elixir/start.sh  # Elixir (port 3013)
 nim/build.sh && nim/start.sh    # Nim (port 3015)
 go/build.sh && go/start.sh      # Go (port 3016)
@@ -58,7 +60,7 @@ Priority: env vars > `airgradientz.json` > hardcoded defaults.
 | Source | Keys |
 |--------|------|
 | Env vars | `PORT`, `DB_PATH`, `CONFIG_PATH` |
-| JSON file | `devices[].ip/label`, `pollIntervalMs`, `fetchTimeoutMs`, `maxApiRows` |
+| JSON file | `ports.<impl>`, `devices[].ip/label`, `pollIntervalMs`, `fetchTimeoutMs`, `maxApiRows` |
 
 Config file search order: `CONFIG_PATH` env, `./airgradientz.json`, `../airgradientz.json`.
 
@@ -105,6 +107,23 @@ All implementations have tests. Run `./test.sh` for all, or `./test.sh <impl>` f
 | Bash | Custom test runner | `cd bash && bash tests/run_tests.sh` | 86 |
 | ASM | Custom test runner | `make -C asm test` | 54 |
 
+## Linting
+
+Run `./lint.sh` for all, or `./lint.sh <impl>` for specific implementations. CI runs on push/PR via GitHub Actions (`.github/workflows/lint.yml`).
+
+| Impl | Tool | Config |
+|------|------|--------|
+| C | gcc `-Werror -Wpedantic` + cppcheck | `c/Makefile` |
+| Node.js | ESLint 9 + eslint-plugin-security | `nodejs/eslint.config.mjs` |
+| Rust | clippy (pedantic + nursery) + cargo-audit | `#![deny]` in `rust/src/main.rs` |
+| Go | go vet + golangci-lint (~50 linters) | `go/.golangci.yml` |
+| Elixir | credo (strict) + dialyxir + mix_audit | `elixir/.credo.exs` |
+| Bash | shellcheck `-x -o all` | — |
+| Zig | compiler warnings | — |
+| Nim | compiler hints/warnings | — |
+| D | LDC compiler | — |
+| ASM | NASM syntax check | — |
+
 ## Gotchas
 
 - `c/sqlite3.c` and `c/sqlite3.h` are vendored (marked in `.gitattributes`) — don't edit
@@ -113,7 +132,7 @@ All implementations have tests. Run `./test.sh` for all, or `./test.sh <impl>` f
 - `references/` is gitignored — local-only reference materials
 - `.env` in `nodejs/` is gitignored — contains PORT/DB_PATH overrides
 - Each impl creates its own `airgradientz.db` in its directory
-- D and Elixir share port 3013 — don't run both simultaneously
+- D uses port 3014, Elixir uses port 3013 — verify `airgradientz.json` ports map if overriding
 - Bash requires ncat (nmap), sqlite3, jq, curl at runtime
 - ASM requires nasm assembler and gcc linker at build time
 - Schema changes go in `schema.sql`, not in individual implementations

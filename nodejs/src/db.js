@@ -105,7 +105,7 @@ function queryReadings({ device, from, to, limit } = {}) {
     params.device = String(device);
   }
 
-  const limitN = limit != null ? Math.floor(Number(limit)) : 0;
+  const limitN = limit !== undefined && limit !== null ? Math.floor(Number(limit)) : 0;
   if (limitN > 0) {
     params.limit = limitN;
     return (wantDevice ? queryStmts.oneDevRangeLimit : queryStmts.allDevRangeLimit).all(params);

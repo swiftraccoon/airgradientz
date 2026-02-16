@@ -74,7 +74,7 @@ impl DeviceHealth {
 }
 
 fn init_health(state: &AppState) {
-    let mut health = state.health.write().unwrap_or_else(|e| e.into_inner());
+    let mut health = state.health.write().unwrap_or_else(std::sync::PoisonError::into_inner);
     health.clear();
     for device in &state.config.devices {
         health.insert(
@@ -93,7 +93,7 @@ fn init_health(state: &AppState) {
 }
 
 pub(crate) fn get_health_json(state: &AppState) -> JsonValue {
-    let health = state.health.read().unwrap_or_else(|e| e.into_inner());
+    let health = state.health.read().unwrap_or_else(std::sync::PoisonError::into_inner);
     let items: Vec<JsonValue> = state
         .config
         .devices
@@ -133,7 +133,7 @@ fn fetch_device(state: &AppState, ip: &str, label: &str) {
             POLL_FAILURES.fetch_add(1, Ordering::Relaxed);
             let msg = e.to_string();
             eprintln!("[poller] {label} ({ip}): fetch failed: {msg}");
-            let mut health = state.health.write().unwrap_or_else(|e| e.into_inner());
+            let mut health = state.health.write().unwrap_or_else(std::sync::PoisonError::into_inner);
             record_failure(&mut health, ip, msg);
         }
         Ok(body) => match json::parse(&body) {
@@ -141,7 +141,7 @@ fn fetch_device(state: &AppState, ip: &str, label: &str) {
                 POLL_FAILURES.fetch_add(1, Ordering::Relaxed);
                 let msg = format!("JSON parse error: {e}");
                 eprintln!("[poller] {label} ({ip}): {msg}");
-                let mut health = state.health.write().unwrap_or_else(|e| e.into_inner());
+                let mut health = state.health.write().unwrap_or_else(std::sync::PoisonError::into_inner);
                 record_failure(&mut health, ip, msg);
             }
             Ok(data) => {
@@ -149,13 +149,13 @@ fn fetch_device(state: &AppState, ip: &str, label: &str) {
                     POLL_FAILURES.fetch_add(1, Ordering::Relaxed);
                     let msg = "unexpected response type: not an object".to_string();
                     eprintln!("[poller] {label} ({ip}): {msg}");
-                    let mut health = state.health.write().unwrap_or_else(|e| e.into_inner());
+                    let mut health = state.health.write().unwrap_or_else(std::sync::PoisonError::into_inner);
                     record_failure(&mut health, ip, msg);
                     return;
                 }
 
                 let db_result = {
-                    let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+                    let conn = state.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
                     db::insert_reading(&conn, ip, &data)
                 };
 
@@ -163,7 +163,7 @@ fn fetch_device(state: &AppState, ip: &str, label: &str) {
                     POLL_FAILURES.fetch_add(1, Ordering::Relaxed);
                     let msg = format!("DB insert failed: {e}");
                     eprintln!("[poller] {label} ({ip}): {msg}");
-                    let mut health = state.health.write().unwrap_or_else(|e| e.into_inner());
+                    let mut health = state.health.write().unwrap_or_else(std::sync::PoisonError::into_inner);
                     record_failure(&mut health, ip, msg);
                 } else {
                     POLL_SUCCESSES.fetch_add(1, Ordering::Relaxed);
@@ -171,7 +171,7 @@ fn fetch_device(state: &AppState, ip: &str, label: &str) {
                     let rco2 = data.get("rco2").and_then(JsonValue::as_i64);
                     let atmp = data.get("atmp").and_then(JsonValue::as_f64);
 
-                    let mut health = state.health.write().unwrap_or_else(|e| e.into_inner());
+                    let mut health = state.health.write().unwrap_or_else(std::sync::PoisonError::into_inner);
                     record_success(&mut health, ip);
                     eprintln!(
                         "[poller] {label} ({ip}): OK — PM2.5={}, CO2={}, T={}°C",
@@ -217,7 +217,7 @@ pub(crate) fn run(state: &Arc<AppState>) {
         poll_count += 1;
 
         if poll_count.is_multiple_of(CHECKPOINT_INTERVAL_POLLS) {
-            let conn = state.db.lock().unwrap_or_else(|e| e.into_inner());
+            let conn = state.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Err(e) = db::checkpoint(&conn) {
                 eprintln!("[poller] WAL checkpoint failed: {e}");
             }

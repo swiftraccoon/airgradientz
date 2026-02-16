@@ -61,7 +61,7 @@ defmodule Airgradientz.DBTest do
       try do
         GenServer.stop(Airgradientz.DB)
       catch
-        :exit, _ -> :ok
+        :exit, _reason -> :ok
       end
 
       File.rm(db_path)
@@ -95,7 +95,7 @@ defmodule Airgradientz.DBTest do
     now = System.system_time(:millisecond)
     readings = Airgradientz.DB.query_readings(%{from: 0, to: now + 1000, limit: 100})
 
-    types = Enum.map(readings, & &1.device_type) |> Enum.sort()
+    types = readings |> Enum.map(& &1.device_type) |> Enum.sort()
     assert types == ["indoor", "outdoor"]
   end
 
@@ -189,7 +189,7 @@ defmodule Airgradientz.DBTest do
     devices = Airgradientz.DB.get_devices()
     assert length(devices) == 2
 
-    ids = Enum.map(devices, & &1.device_id) |> Enum.sort()
+    ids = devices |> Enum.map(& &1.device_id) |> Enum.sort()
     assert ids == ["abcdef123456", "outdoor123"]
   end
 

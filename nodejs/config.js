@@ -12,7 +12,9 @@ function loadConfigFile() {
 
   for (const p of candidates) {
     try {
-      const content = fs.readFileSync(p, 'utf8');
+      // Path `p` comes from a controlled list: CONFIG_PATH env var (operator-set),
+      // or hardcoded ./airgradientz.json and ../airgradientz.json. Not user input.
+      const content = fs.readFileSync(p, 'utf8'); // eslint-disable-line security/detect-non-literal-fs-filename
       const label = p === process.env.CONFIG_PATH ? `CONFIG_PATH: ${p}` : p;
       console.error(`[config] Loaded config from ${label}`);
       return JSON.parse(content);
@@ -58,15 +60,19 @@ if (fileConfig) {
   }
 }
 
-if (fileConfig?.ports?.nodejs != null) {
+if (fileConfig?.ports?.nodejs !== undefined && fileConfig?.ports?.nodejs !== null) {
   const port = Number(fileConfig.ports.nodejs);
-  if (port > 0 && port <= 65535) merged.port = port;
+  if (port > 0 && port <= 65535) {
+    merged.port = port;
+  }
 }
 
 // Env var overrides (highest priority)
 if (process.env.PORT) {
   const port = Number(process.env.PORT);
-  if (port > 0 && port <= 65535) merged.port = port;
+  if (port > 0 && port <= 65535) {
+    merged.port = port;
+  }
 }
 if (process.env.DB_PATH) {
   merged.dbPath = process.env.DB_PATH;

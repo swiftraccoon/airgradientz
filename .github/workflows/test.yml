@@ -1,0 +1,125 @@
+name: Test
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  c:
+    name: C tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build and test
+        run: make -C c test
+
+  nodejs:
+    name: Node.js tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install dependencies
+        run: cd nodejs && npm ci
+      - name: Run tests
+        run: cd nodejs && npm test
+
+  rust:
+    name: Rust tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Run tests
+        run: cd rust && cargo test
+
+  go:
+    name: Go tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+      - name: Run tests
+        run: cd go && go test -count=1 ./...
+
+  elixir:
+    name: Elixir tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.17"
+          otp-version: "27"
+      - name: Install dependencies
+        run: cd elixir && mix deps.get
+      - name: Run tests
+        run: cd elixir && mix test
+
+  zig:
+    name: Zig tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: "0.15.0"
+      - name: Run tests
+        run: cd zig && zig build test
+
+  nim:
+    name: Nim tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: "2.2.x"
+      - name: Run tests
+        run: |
+          cd nim && nim c -r --path:src --threads:on --mm:orc \
+            --passC:"-DSQLITE_THREADSAFE=2" \
+            --passC:"-DSQLITE_OMIT_LOAD_EXTENSION" \
+            tests/test_db.nim
+
+  d:
+    name: D tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: ldc-latest
+      - name: Run tests
+        run: cd d && dub test
+
+  bash-test:
+    name: Bash tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y ncat sqlite3 jq curl
+      - name: ShellCheck
+        run: |
+          cd bash && shellcheck -x -o all \
+            server.sh handler.sh lib/*.sh \
+            build.sh start.sh tests/run_tests.sh
+      - name: Run tests
+        run: cd bash && bash tests/run_tests.sh
+
+  asm:
+    name: Assembly tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install NASM
+        run: sudo apt-get update && sudo apt-get install -y nasm
+      - name: Build and test
+        run: make -C asm test

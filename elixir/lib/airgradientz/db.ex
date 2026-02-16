@@ -10,7 +10,7 @@ defmodule Airgradientz.DB do
   )
 
   @query_cols Enum.join(@query_columns, ", ")
-  @query_cols_aliased @query_columns |> Enum.map_join(", ", &"r.#{&1}")
+  @query_cols_aliased Enum.map_join(@query_columns, ", ", &"r.#{&1}")
 
   @insert_sql """
   INSERT INTO readings (

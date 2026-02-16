@@ -21,23 +21,28 @@ pub(crate) struct Config {
 }
 
 fn load_config_file() -> Option<JsonValue> {
-    let path = if let Ok(p) = env::var("CONFIG_PATH") {
-        if Path::new(&p).exists() {
-            eprintln!("[config] Loaded config from CONFIG_PATH: {p}");
-            Some(p)
-        } else {
-            eprintln!("[config] CONFIG_PATH set but unreadable: {p}");
-            None
-        }
-    } else if Path::new("./airgradientz.json").exists() {
-        eprintln!("[config] Loaded config from ./airgradientz.json");
-        Some("./airgradientz.json".to_string())
-    } else if Path::new("../airgradientz.json").exists() {
-        eprintln!("[config] Loaded config from ../airgradientz.json");
-        Some("../airgradientz.json".to_string())
-    } else {
-        None
-    };
+    let path = env::var("CONFIG_PATH").map_or_else(
+        |_| {
+            if Path::new("./airgradientz.json").exists() {
+                eprintln!("[config] Loaded config from ./airgradientz.json");
+                Some("./airgradientz.json".to_string())
+            } else if Path::new("../airgradientz.json").exists() {
+                eprintln!("[config] Loaded config from ../airgradientz.json");
+                Some("../airgradientz.json".to_string())
+            } else {
+                None
+            }
+        },
+        |p| {
+            if Path::new(&p).exists() {
+                eprintln!("[config] Loaded config from CONFIG_PATH: {p}");
+                Some(p)
+            } else {
+                eprintln!("[config] CONFIG_PATH set but unreadable: {p}");
+                None
+            }
+        },
+    );
 
     let path = path?;
     let content = fs::read_to_string(&path)
@@ -89,34 +94,35 @@ impl Config {
                 }
             }
 
-            if let Some(n) = root.get("pollIntervalMs").and_then(JsonValue::as_i64) {
-                if n > 0 {
-                    config.poll_interval_ms = n as u32;
-                }
+            if let Some(n) = root.get("pollIntervalMs").and_then(JsonValue::as_i64)
+                && n > 0
+            {
+                config.poll_interval_ms = u32::try_from(n).unwrap_or(u32::MAX);
             }
-            if let Some(n) = root.get("fetchTimeoutMs").and_then(JsonValue::as_i64) {
-                if n > 0 {
-                    config.fetch_timeout_ms = n as u32;
-                }
+            if let Some(n) = root.get("fetchTimeoutMs").and_then(JsonValue::as_i64)
+                && n > 0
+            {
+                config.fetch_timeout_ms = u32::try_from(n).unwrap_or(u32::MAX);
             }
-            if let Some(n) = root.get("maxApiRows").and_then(JsonValue::as_i64) {
-                if n > 0 {
-                    config.max_api_rows = n as u32;
-                }
+            if let Some(n) = root.get("maxApiRows").and_then(JsonValue::as_i64)
+                && n > 0
+            {
+                config.max_api_rows = u32::try_from(n).unwrap_or(u32::MAX);
             }
 
-            if let Some(n) = root.get("ports").and_then(|p| p.get("rust")).and_then(JsonValue::as_i64) {
-                if n > 0 && n <= i64::from(u16::MAX) {
-                    config.port = n as u16;
-                }
+            if let Some(n) = root.get("ports").and_then(|p| p.get("rust")).and_then(JsonValue::as_i64)
+                && n > 0
+                && n <= i64::from(u16::MAX)
+            {
+                config.port = u16::try_from(n).unwrap_or(config.port);
             }
         }
 
         // 3. Env var overrides (highest priority)
-        if let Ok(v) = env::var("PORT") {
-            if let Ok(p) = v.parse() {
-                config.port = p;
-            }
+        if let Ok(v) = env::var("PORT")
+            && let Ok(p) = v.parse()
+        {
+            config.port = p;
         }
         if let Ok(v) = env::var("DB_PATH") {
             config.db_path = v;

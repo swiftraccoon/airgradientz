@@ -44,22 +44,24 @@ defmodule Airgradientz.Config do
 
   defp find_config_file do
     candidates =
-      [
-        System.get_env("CONFIG_PATH"),
-        Path.join(File.cwd!(), "airgradientz.json"),
-        Path.join([File.cwd!(), "..", "airgradientz.json"])
-      ]
-      |> Enum.filter(&(&1 != nil))
+      Enum.filter(
+        [
+          System.get_env("CONFIG_PATH"),
+          Path.join(File.cwd!(), "airgradientz.json"),
+          Path.join([File.cwd!(), "..", "airgradientz.json"])
+        ],
+        &(&1 != nil)
+      )
 
     Enum.reduce_while(candidates, :none, fn path, acc ->
       case File.read(path) do
         {:ok, content} ->
           case Jason.decode(content) do
             {:ok, json} when is_map(json) -> {:halt, {:ok, path, json}}
-            _ -> {:cont, acc}
+            _invalid -> {:cont, acc}
           end
 
-        {:error, _} ->
+        {:error, _reason} ->
           if path == System.get_env("CONFIG_PATH") do
             :logger.warning(~c"[config] CONFIG_PATH set but unreadable: #{path}")
           end
@@ -79,13 +81,14 @@ defmodule Airgradientz.Config do
   end
 
   defp maybe_put_port(config, %{"ports" => %{"elixir" => port}})
-       when is_number(port) and port > 0 and port <= 65535 do
+       when is_number(port) and port > 0 and port <= 65_535 do
     %{config | port: trunc(port)}
   end
 
   defp maybe_put_port(config, _json), do: config
 
-  defp maybe_put_devices(config, %{"devices" => devices}) when is_list(devices) and devices != [] do
+  defp maybe_put_devices(config, %{"devices" => devices})
+       when is_list(devices) and devices != [] do
     parsed =
       Enum.map(devices, fn d ->
         %{ip: Map.get(d, "ip", ""), label: Map.get(d, "label", "")}
@@ -99,7 +102,7 @@ defmodule Airgradientz.Config do
   defp maybe_put_positive_int(config, key, json, json_key) do
     case Map.get(json, json_key) do
       val when is_number(val) and val > 0 -> Map.put(config, key, trunc(val))
-      _ -> config
+      _other -> config
     end
   end
 
@@ -116,8 +119,8 @@ defmodule Airgradientz.Config do
 
       val ->
         case Integer.parse(val) do
-          {port, ""} when port > 0 and port <= 65535 -> %{config | port: port}
-          _ -> config
+          {port, ""} when port > 0 and port <= 65_535 -> %{config | port: port}
+          _invalid -> config
         end
     end
   end

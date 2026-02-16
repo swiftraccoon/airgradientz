@@ -5,6 +5,7 @@ use std::time::Duration;
 use crate::error::AppError;
 
 pub(crate) fn http_get(ip: &str, path: &str, timeout: Duration) -> Result<String, AppError> {
+    const MAX_RESPONSE: usize = 1024 * 1024;
     let addr = format!("{ip}:80");
     let mut stream = TcpStream::connect_timeout(
         &addr
@@ -61,7 +62,6 @@ pub(crate) fn http_get(ip: &str, path: &str, timeout: Duration) -> Result<String
     }
 
     // Read body (cap at 1 MB to prevent OOM from rogue devices)
-    const MAX_RESPONSE: usize = 1024 * 1024;
     if let Some(len) = content_length {
         if len > MAX_RESPONSE {
             return Err(AppError::Network("response too large".into()));

@@ -50,6 +50,7 @@ fn content_type_for(path: &Path) -> &'static str {
 
 fn serve_static(req_path: &str) -> HttpResponse {
     use crate::http::request::url_decode;
+    const MAX_STATIC_FILE: u64 = 16 * 1024 * 1024;
 
     // URL-decode the path
     let decoded = url_decode(req_path);
@@ -72,24 +73,22 @@ fn serve_static(req_path: &str) -> HttpResponse {
     };
 
     // Resolve to absolute path and verify under public/
-    let canonical = match fs::canonicalize(&file_path) {
-        Ok(p) => p,
-        Err(_) => return HttpResponse::not_found(),
+    let Ok(canonical) = fs::canonicalize(&file_path) else {
+        return HttpResponse::not_found();
     };
-    let public_canonical = match fs::canonicalize("public") {
-        Ok(p) => p,
-        Err(_) => return HttpResponse::not_found(),
+    let Ok(public_canonical) = fs::canonicalize("public") else {
+        return HttpResponse::not_found();
     };
     if !canonical.starts_with(&public_canonical) {
         return HttpResponse::not_found();
     }
 
-    const MAX_STATIC_FILE: u64 = 16 * 1024 * 1024;
-
-    let meta = match fs::metadata(&canonical) {
-        Ok(m) if m.is_file() => m,
-        _ => return HttpResponse::not_found(),
+    let Ok(meta) = fs::metadata(&canonical) else {
+        return HttpResponse::not_found();
     };
+    if !meta.is_file() {
+        return HttpResponse::not_found();
+    }
 
     if meta.len() > MAX_STATIC_FILE {
         return HttpResponse::internal_error("File too large");
@@ -322,12 +321,12 @@ pub(crate) fn run(state: &Arc<AppState>) -> Result<(), AppError> {
 
         // Sweep stale connections (Slowloris defense)
         let now = Instant::now();
-        let stale: Vec<Token> = connections
+        let expired: Vec<Token> = connections
             .iter()
             .filter(|(_, conn)| now.duration_since(conn.created_at) > CONN_TIMEOUT)
             .map(|(token, _)| *token)
             .collect();
-        for token in stale {
+        for token in expired {
             remove_connection(&poll, &mut connections, token, state);
         }
     }

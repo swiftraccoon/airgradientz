@@ -66,7 +66,9 @@ router.get('/stats', (req, res) => {
   const { pollSuccesses, pollFailures } = getPollStats();
   let dbSizeBytes = 0;
   try {
-    dbSizeBytes = fs.statSync(config.dbPath).size;
+    // config.dbPath comes from: DB_PATH env var (operator-set) or hardcoded default.
+    // Not user-controlled input.
+    dbSizeBytes = fs.statSync(config.dbPath).size; // eslint-disable-line security/detect-non-literal-fs-filename
   } catch {}
 
   res.json({
@@ -85,7 +87,6 @@ router.get('/stats', (req, res) => {
 });
 
 // JSON error handler — all DB or unexpected errors return JSON, not HTML
-// eslint-disable-next-line no-unused-vars
 router.use((err, _req, res, _next) => {
   console.error('[api] Unhandled error:', err);
   res.status(500).json({ error: 'Internal server error' });

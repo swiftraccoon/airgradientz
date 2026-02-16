@@ -10,10 +10,15 @@
   "scripts": {
     "start": "node --env-file=.env server.js",
     "start:strict": "node --env-file=.env --permission --allow-fs-read=* --allow-fs-write=* server.js",
-    "test": "node --test tests/*.test.js"
+    "test": "node --test tests/*.test.js",
+    "lint": "eslint ."
   },
   "dependencies": {
     "better-sqlite3": "^11.0.0",
     "express": "^4.21.0"
+  },
+  "devDependencies": {
+    "eslint": "^9.39.2",
+    "eslint-plugin-security": "^3.0.1"
   }
 }

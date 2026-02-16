@@ -60,7 +60,9 @@ server.on('error', (err) => {
 let shuttingDown = false;
 
 function shutdown(signal) {
-  if (shuttingDown) return;
+  if (shuttingDown) {
+    return;
+  }
   shuttingDown = true;
   console.log(`[server] ${signal} received, shutting down`);
   stopPoller();

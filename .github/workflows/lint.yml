@@ -1,0 +1,143 @@
+name: Lint
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+jobs:
+  c:
+    name: C (gcc + cppcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install cppcheck
+        run: sudo apt-get update && sudo apt-get install -y cppcheck
+      - name: GCC strict build
+        run: make -C c clean all
+      - name: cppcheck
+        run: |
+          cppcheck --enable=all --suppress=missingIncludeSystem \
+            --suppress=unusedFunction --error-exitcode=1 \
+            --std=c11 -DSQLITE_THREADSAFE=2 --inline-suppr \
+            -I c/ c/src/
+
+  nodejs:
+    name: Node.js (ESLint + npm audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+      - name: Install dependencies
+        run: cd nodejs && npm ci
+      - name: ESLint
+        run: cd nodejs && npx eslint .
+      - name: npm audit
+        run: cd nodejs && npm audit --omit=dev
+
+  rust:
+    name: Rust (clippy + cargo audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - name: Clippy
+        run: cd rust && cargo clippy -- -D warnings
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+      - name: Cargo audit
+        run: cd rust && cargo audit
+
+  go:
+    name: Go (go vet + golangci-lint)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+      - name: go vet
+        run: cd go && go vet ./...
+      - uses: golangci/golangci-lint-action@v6
+        with:
+          working-directory: go
+
+  elixir:
+    name: Elixir (credo + dialyxir + mix audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: erlef/setup-beam@v1
+        with:
+          elixir-version: "1.17"
+          otp-version: "27"
+      - name: Install dependencies
+        run: cd elixir && mix deps.get
+      - name: Credo (strict)
+        run: cd elixir && mix credo --strict
+      - name: Dependency audit
+        run: cd elixir && mix deps.audit
+      - name: Dialyzer
+        run: cd elixir && mix dialyzer
+
+  bash-lint:
+    name: Bash (shellcheck)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: ShellCheck
+        run: |
+          cd bash && shellcheck -x -o all \
+            server.sh handler.sh lib/*.sh \
+            build.sh start.sh tests/run_tests.sh
+
+  asm:
+    name: Assembly (NASM syntax)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install NASM
+        run: sudo apt-get update && sudo apt-get install -y nasm
+      - name: NASM syntax check
+        run: |
+          for f in asm/src/*.asm; do
+            nasm -f elf64 -o /dev/null "$f"
+          done
+
+  zig:
+    name: Zig (compiler)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: mlugg/setup-zig@v2
+        with:
+          version: "0.15.0"
+      - name: Zig build
+        run: cd zig && zig build
+
+  nim:
+    name: Nim (compiler check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: "2.2.x"
+      - name: Nim check
+        run: cd nim && nim check --path:src --hints:off --warnings:on src/airgradientz.nim
+
+  d:
+    name: D (LDC build)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dlang-community/setup-dlang@v2
+        with:
+          compiler: ldc-latest
+      - name: DUB build
+        run: cd d && dub build --force

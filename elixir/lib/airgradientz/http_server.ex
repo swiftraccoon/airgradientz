@@ -8,6 +8,14 @@ defmodule Airgradientz.HttpServer do
   @max_connections 128
   @recv_timeout_ms 10_000
   @max_static_file_bytes 16 * 1024 * 1024
+  @status_texts %{
+    400 => "Bad Request",
+    403 => "Forbidden",
+    404 => "Not Found",
+    405 => "Method Not Allowed",
+    413 => "Content Too Large",
+    500 => "Internal Server Error"
+  }
 
   def start_link(opts) do
     GenServer.start_link(__MODULE__, opts, name: __MODULE__)
@@ -65,10 +73,12 @@ defmodule Airgradientz.HttpServer do
     end
   end
 
+  @impl true
   def handle_info(:conn_closed, state) do
     {:noreply, %{state | active_connections: max(state.active_connections - 1, 0)}}
   end
 
+  @impl true
   def handle_info(_msg, state) do
     {:noreply, state}
   end
@@ -124,7 +134,7 @@ defmodule Airgradientz.HttpServer do
             {:error, :request_too_large}
 
           String.contains?(buf, "\r\n") ->
-            # We have at least the request line — that's all we need for routing
+            # We have at least the request line -- that's all we need for routing
             parse_request(buf)
 
           true ->
@@ -138,9 +148,9 @@ defmodule Airgradientz.HttpServer do
 
   defp parse_request(data) do
     case String.split(data, "\r\n", parts: 2) do
-      [request_line | _] ->
+      [request_line | _rest] ->
         case String.split(request_line, " ", parts: 3) do
-          [method, raw_path | _] ->
+          [method, raw_path | _version] ->
             {path, query} =
               case String.split(raw_path, "?", parts: 2) do
                 [p, q] -> {p, q}
@@ -149,11 +159,11 @@ defmodule Airgradientz.HttpServer do
 
             {:ok, method, path, query}
 
-          _ ->
+          _malformed ->
             {:error, :bad_request}
         end
 
-      _ ->
+      _incomplete ->
         {:error, :bad_request}
     end
   end
@@ -162,7 +172,7 @@ defmodule Airgradientz.HttpServer do
 
   defp route(socket, "GET", "/api/readings/latest", _query, _config) do
     readings = Airgradientz.DB.get_latest_readings()
-    send_json(socket, 200, readings)
+    send_json(socket, readings)
   end
 
   defp route(socket, "GET", "/api/readings", query, config) do
@@ -189,17 +199,17 @@ defmodule Airgradientz.HttpServer do
         limit: effective_limit
       })
 
-    send_json(socket, 200, readings)
+    send_json(socket, readings)
   end
 
   defp route(socket, "GET", "/api/devices", _query, _config) do
     devices = Airgradientz.DB.get_devices()
-    send_json(socket, 200, devices)
+    send_json(socket, devices)
   end
 
   defp route(socket, "GET", "/api/health", _query, _config) do
     health = Airgradientz.Health.get_all()
-    send_json(socket, 200, health)
+    send_json(socket, health)
   end
 
   defp route(socket, "GET", "/api/config", _query, config) do
@@ -208,7 +218,7 @@ defmodule Airgradientz.HttpServer do
       devices: Enum.map(config.devices, &%{ip: &1.ip, label: &1.label})
     }
 
-    send_json(socket, 200, payload)
+    send_json(socket, payload)
   end
 
   defp route(socket, "GET", "/api/stats", _query, config) do
@@ -218,32 +228,35 @@ defmodule Airgradientz.HttpServer do
     memory_rss_bytes =
       case File.read("/proc/self/statm") do
         {:ok, content} ->
-          case content |> String.trim() |> String.split() do
-            [_size, rss | _] ->
+          content
+          |> String.trim()
+          |> String.split()
+          |> case do
+            [_size, rss | _rest] ->
               case Integer.parse(rss) do
-                {pages, _} -> pages * 4096
+                {pages, _remainder} -> pages * 4096
                 :error -> 0
               end
 
-            _ ->
+            _other ->
               0
           end
 
-        {:error, _} ->
+        {:error, _reason} ->
           0
       end
 
     db_size_bytes =
       case File.stat(config.db_path) do
         {:ok, %{size: size}} -> size
-        {:error, _} -> 0
+        {:error, _reason} -> 0
       end
 
     readings_count = Airgradientz.DB.get_readings_count()
 
     pid =
       case Integer.parse(System.pid()) do
-        {n, _} -> n
+        {n, _remainder} -> n
         :error -> 0
       end
 
@@ -261,7 +274,7 @@ defmodule Airgradientz.HttpServer do
       started_at: counters.started_at
     }
 
-    send_json(socket, 200, stats)
+    send_json(socket, stats)
   end
 
   defp route(socket, "GET", path, _query, _config) do
@@ -278,7 +291,7 @@ defmodule Airgradientz.HttpServer do
     file_path =
       case path do
         "/" -> "index.html"
-        _ -> String.trim_leading(path, "/")
+        _other -> String.trim_leading(path, "/")
       end
 
     # URL-decode before path traversal check
@@ -313,11 +326,11 @@ defmodule Airgradientz.HttpServer do
             content_type = content_type_for(file_path)
             send_response(socket, 200, "OK", content_type, content)
 
-          {:error, _} ->
+          {:error, _reason} ->
             serve_index_fallback(socket)
         end
 
-      _ ->
+      _not_found ->
         serve_index_fallback(socket)
     end
   end
@@ -329,7 +342,7 @@ defmodule Airgradientz.HttpServer do
       {:ok, content} ->
         send_response(socket, 200, "OK", "text/html; charset=utf-8", content)
 
-      {:error, _} ->
+      {:error, _reason} ->
         send_json_error(socket, 404, "Not found")
     end
   end
@@ -354,25 +367,16 @@ defmodule Airgradientz.HttpServer do
     :gen_tcp.send(socket, [header, body])
   end
 
-  defp send_json(socket, status_code, data) do
+  defp send_json(socket, data) do
     body = Jason.encode!(data)
-    status_text = if status_code == 200, do: "OK", else: "Error"
-    send_response(socket, status_code, status_text, "application/json", body)
+    send_response(socket, 200, "OK", "application/json", body)
   end
 
   defp send_json_error(socket, status_code, message) do
     body = Jason.encode!(%{error: message})
-    status_text = status_text_for(status_code)
+    status_text = Map.get(@status_texts, status_code, "Error")
     send_response(socket, status_code, status_text, "application/json", body)
   end
-
-  defp status_text_for(400), do: "Bad Request"
-  defp status_text_for(403), do: "Forbidden"
-  defp status_text_for(404), do: "Not Found"
-  defp status_text_for(405), do: "Method Not Allowed"
-  defp status_text_for(413), do: "Content Too Large"
-  defp status_text_for(500), do: "Internal Server Error"
-  defp status_text_for(_), do: "Error"
 
   # -- Query string parsing --
 
@@ -394,8 +398,8 @@ defmodule Airgradientz.HttpServer do
   defp parse_int(str) do
     case Integer.parse(str) do
       {n, ""} -> n
-      {n, _} when is_integer(n) -> n
-      _ -> nil
+      {n, _suffix} when is_integer(n) -> n
+      _not_a_number -> nil
     end
   end
 
@@ -412,7 +416,7 @@ defmodule Airgradientz.HttpServer do
       ".jpeg" -> "image/jpeg"
       ".svg" -> "image/svg+xml"
       ".ico" -> "image/x-icon"
-      _ -> "application/octet-stream"
+      _other -> "application/octet-stream"
     end
   end
 end

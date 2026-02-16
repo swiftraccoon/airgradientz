@@ -40,12 +40,11 @@ defmodule Airgradientz.Poller do
         end)
       end)
 
-    Task.yield_many(tasks, config.fetch_timeout_ms + 5_000)
-    |> Enum.each(fn {task, result} ->
+    Enum.each(Task.yield_many(tasks, config.fetch_timeout_ms + 5_000), fn {task, result} ->
       case result do
         nil -> Task.shutdown(task, :brutal_kill)
         {:exit, reason} -> Logger.error("[poller] Task crashed: #{inspect(reason)}")
-        _ -> :ok
+        _ok -> :ok
       end
     end)
 
@@ -75,10 +74,10 @@ defmodule Airgradientz.Poller do
     url = ~c"http://#{device.ip}/measures/current"
 
     case :httpc.request(:get, {url, []}, [timeout: timeout_ms, connect_timeout: timeout_ms], []) do
-      {:ok, {{_, status, _}, _headers, body}} when status in 200..299 ->
+      {:ok, {{_protocol, status, _reason_phrase}, _headers, body}} when status in 200..299 ->
         handle_response(device, body)
 
-      {:ok, {{_, status, _}, _headers, _body}} ->
+      {:ok, {{_protocol, status, _reason_phrase}, _headers, _body}} ->
         msg = "HTTP #{status}"
         Airgradientz.Health.record_failure(device.ip, msg)
         Airgradientz.Stats.increment_poll_failures()
@@ -131,7 +130,7 @@ defmodule Airgradientz.Poller do
     end
   end
 
-  defp format_error({:failed_connect, _}, timeout_ms), do: "timeout after #{timeout_ms}ms"
+  defp format_error({:failed_connect, _details}, timeout_ms), do: "timeout after #{timeout_ms}ms"
   defp format_error(:timeout, timeout_ms), do: "timeout after #{timeout_ms}ms"
   defp format_error(reason, _timeout_ms), do: inspect(reason)
 end
