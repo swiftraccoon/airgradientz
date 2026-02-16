@@ -53,4 +53,6 @@ elixir/erl_crash.dump
 # Other
 references/
 CLAUDE.md
-docs/
+docs/*
+!docs/api-spec.md
+!docs/polling-spec.md
