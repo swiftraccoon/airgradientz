@@ -20,7 +20,11 @@ Local dashboard for AirGradient air quality monitors. Ten independent implementa
 - `airgradientz.json` — shared config (devices, poll interval, timeouts)
 - `schema.sql` — shared DB schema (single source of truth)
 - `c/public/` — canonical web UI (HTML/CSS/JS); all other impls symlink to it
+- `queries.sql` — named SQL queries (column lists, INSERT/SELECT patterns)
+- `test-fixtures.json` — canonical AirGradient device payloads for test suites
 - `bench/run.sh` — benchmark harness comparing all implementations
+- `docs/api-spec.md` — API response contract (JSON shapes for all endpoints)
+- `docs/polling-spec.md` — device polling contract (field mapping, health state machine)
 
 ## Build & Run
 
@@ -63,7 +67,7 @@ Priority: env vars > `airgradientz.json` > hardcoded defaults.
 | Source | Keys |
 |--------|------|
 | Env vars | `PORT`, `DB_PATH`, `CONFIG_PATH` |
-| JSON file | `ports.<impl>`, `devices[].ip/label`, `pollIntervalMs`, `fetchTimeoutMs`, `maxApiRows` |
+| JSON file | `defaults.*`, `ports.<impl>`, `devices[].ip/label`, `pollIntervalMs`, `fetchTimeoutMs`, `maxApiRows` |
 
 Config file search order: `CONFIG_PATH` env, `./airgradientz.json`, `../airgradientz.json`.
 
@@ -139,3 +143,5 @@ Run `./lint.sh` for all, or `./lint.sh <impl>` for specific implementations. CI 
 - Bash requires ncat (nmap), sqlite3, jq, curl at runtime
 - ASM requires nasm assembler and gcc linker at build time
 - Schema changes go in `schema.sql`, not in individual implementations
+- Query column lists come from `queries.sql` — keep in sync with `schema.sql`
+- Test suites should load `test-fixtures.json` for device payloads instead of hardcoding
