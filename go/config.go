@@ -35,11 +35,11 @@ type Config struct {
 
 type configFile struct {
 	Ports          map[string]int `json:"ports"`
+	Defaults       *configFile    `json:"defaults"`
 	PollIntervalMs *int           `json:"pollIntervalMs"`
 	FetchTimeoutMs *int           `json:"fetchTimeoutMs"`
 	MaxAPIRows     *int           `json:"maxApiRows"`
 	Devices        []DeviceConfig `json:"devices"`
-	Defaults       *configFile    `json:"defaults"`
 }
 
 func LoadConfig() Config {

@@ -4,19 +4,20 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 ALL_IMPLS=(c nodejs rust zig d elixir nim go bash asm)
-STRICT=false
+STRICT=true
 
 usage() {
-    echo "Usage: $0 [--strict] [impl...]"
-    echo "  No args: lint all implementations"
-    echo "  --strict: fail if any tool is missing (matches CI)"
+    echo "Usage: $0 [--no-strict] [impl...]"
+    echo "  No args: lint all implementations (strict by default, matches CI)"
+    echo "  --no-strict: skip missing tools instead of failing"
     echo "  Impls: ${ALL_IMPLS[*]}"
 }
 
-# Parse --strict flag
+# Parse flags
 args=()
 for arg in "$@"; do
     case "$arg" in
+        --no-strict) STRICT=false ;;
         --strict) STRICT=true ;;
         --help|-h) usage; exit 0 ;;
         *) args+=("$arg") ;;
@@ -145,13 +146,13 @@ for impl in "${impls[@]}"; do
                 if ! run_lint "dub-build" bash -c 'source d/activate-toolchain.sh && cd d && dub build --force 2>&1'; then
                     impl_ok=false
                 fi
-                # dscanner (static analysis)
+                # dscanner (optional — not in CI)
                 if has_tool dscanner || ls ~/dlang/*/bin/dscanner &>/dev/null 2>&1; then
                     if ! run_lint "dscanner" bash -c 'source d/activate-toolchain.sh && cd d && dscanner --styleCheck source/'; then
                         impl_ok=false
                     fi
                 else
-                    if ! skip_tool "dscanner" "install: dub fetch dscanner && dub run dscanner"; then impl_ok=false; fi
+                    echo "  SKIP: dscanner not found (optional, not in CI)"
                 fi
             else
                 if ! skip_tool "D toolchain" "run: d/setup.sh"; then impl_ok=false; fi
@@ -203,8 +204,14 @@ for impl in "${impls[@]}"; do
                     impl_ok=false
                 fi
                 # golangci-lint (comprehensive)
+                golangci=""
                 if has_tool golangci-lint; then
-                    if ! run_lint "golangci-lint" bash -c 'cd go && golangci-lint run'; then
+                    golangci="golangci-lint"
+                elif [[ -x "${GOPATH:-$HOME/go}/bin/golangci-lint" ]]; then
+                    golangci="${GOPATH:-$HOME/go}/bin/golangci-lint"
+                fi
+                if [[ -n "$golangci" ]]; then
+                    if ! run_lint "golangci-lint" bash -c "cd go && \"$golangci\" run"; then
                         impl_ok=false
                     fi
                 else

@@ -155,15 +155,16 @@ func parseQueriesSQL(content string) map[string]string {
 
 	for _, line := range strings.Split(content, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "-- name: ") {
+		switch {
+		case strings.HasPrefix(trimmed, "-- name: "):
 			if name != "" {
 				queries[name] = strings.TrimRight(strings.TrimSpace(strings.Join(lines, "\n")), ";")
 			}
 			name = strings.TrimSpace(strings.TrimPrefix(trimmed, "-- name: "))
 			lines = nil
-		} else if strings.HasPrefix(trimmed, "--") || trimmed == "" {
+		case strings.HasPrefix(trimmed, "--"), trimmed == "":
 			// skip comments and blank lines
-		} else {
+		default:
 			lines = append(lines, trimmed)
 		}
 	}
