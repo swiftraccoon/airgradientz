@@ -77,22 +77,13 @@ static inline char *config_find_file(void) {
     return NULL;
 }
 
-/* Apply parsed JSON config to Config struct. Does not touch db_path. */
-static inline void config_apply_json(Config *c, const JsonValue *root) {
-    if (!json_is_object(root)) return;
+/* Apply devices and scalar config values from a JSON object. */
+static inline void config_apply_values(Config *c, const JsonValue *obj) {
+    if (!json_is_object(obj)) return;
 
     bool ok;
 
-    const JsonValue *ports = json_get(root, "ports");
-    if (ports && json_is_object(ports)) {
-        const JsonValue *my_port = json_get(ports, "c");
-        if (my_port) {
-            int64_t p = json_as_i64(my_port, &ok);
-            if (ok && p > 0 && p <= 65535) c->port = (uint16_t)p;
-        }
-    }
-
-    const JsonValue *devices = json_get(root, "devices");
+    const JsonValue *devices = json_get(obj, "devices");
     if (devices && devices->type == JSON_ARRAY && devices->u.array.count > 0) {
         size_t count = devices->u.array.count;
         if (count > MAX_DEVICES) count = MAX_DEVICES;
@@ -109,22 +100,45 @@ static inline void config_apply_json(Config *c, const JsonValue *root) {
 
     const JsonValue *v;
 
-    v = json_get(root, "pollIntervalMs");
+    v = json_get(obj, "pollIntervalMs");
     if (v) {
         int64_t n = json_as_i64(v, &ok);
         if (ok && n > 0) c->poll_interval_ms = (uint32_t)n;
     }
 
-    v = json_get(root, "fetchTimeoutMs");
+    v = json_get(obj, "fetchTimeoutMs");
     if (v) {
         int64_t n = json_as_i64(v, &ok);
         if (ok && n > 0) c->fetch_timeout_ms = (uint32_t)n;
     }
 
-    v = json_get(root, "maxApiRows");
+    v = json_get(obj, "maxApiRows");
     if (v) {
         int64_t n = json_as_i64(v, &ok);
         if (ok && n > 0) c->max_api_rows = (uint32_t)n;
+    }
+}
+
+/* Apply parsed JSON config to Config struct. Does not touch db_path. */
+static inline void config_apply_json(Config *c, const JsonValue *root) {
+    if (!json_is_object(root)) return;
+
+    /* Apply defaults first (lower priority) */
+    const JsonValue *defaults = json_get(root, "defaults");
+    if (defaults) config_apply_values(c, defaults);
+
+    /* Apply top-level overrides (higher priority) */
+    config_apply_values(c, root);
+
+    /* Port from ports.c */
+    bool ok;
+    const JsonValue *ports = json_get(root, "ports");
+    if (ports && json_is_object(ports)) {
+        const JsonValue *my_port = json_get(ports, "c");
+        if (my_port) {
+            int64_t p = json_as_i64(my_port, &ok);
+            if (ok && p > 0 && p <= 65535) c->port = (uint16_t)p;
+        }
     }
 }
 

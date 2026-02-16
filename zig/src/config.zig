@@ -64,8 +64,30 @@ fn loadConfigFile(config: *Config) void {
     const root = parsed.value;
     if (root != .object) return;
 
-    // Devices
-    if (root.object.get("devices")) |devices_val| {
+    // Apply defaults first (lower priority)
+    if (root.object.get("defaults")) |defaults_val| {
+        if (defaults_val == .object) {
+            applyConfigValues(config, defaults_val.object);
+        }
+    }
+
+    // Apply top-level overrides (higher priority)
+    applyConfigValues(config, root.object);
+
+    // Port from ports.zig
+    if (root.object.get("ports")) |ports_val| {
+        if (ports_val == .object) {
+            if (ports_val.object.get("zig")) |v| {
+                if (v == .integer and v.integer > 0) {
+                    config.port = std.math.cast(u16, v.integer) orelse config.port;
+                }
+            }
+        }
+    }
+}
+
+fn applyConfigValues(config: *Config, obj: std.json.ObjectMap) void {
+    if (obj.get("devices")) |devices_val| {
         if (devices_val == .array) {
             var count: usize = 0;
             for (devices_val.array.items) |dev| {
@@ -79,7 +101,6 @@ fn loadConfigFile(config: *Config) void {
             }
             if (count > 0) {
                 config.device_count = count;
-                // Clear remaining slots
                 var i = count;
                 while (i < max_devices) : (i += 1) {
                     config.devices[i] = empty_device;
@@ -88,29 +109,17 @@ fn loadConfigFile(config: *Config) void {
         }
     }
 
-    // Port from ports.zig
-    if (root.object.get("ports")) |ports_val| {
-        if (ports_val == .object) {
-            if (ports_val.object.get("zig")) |v| {
-                if (v == .integer and v.integer > 0) {
-                    config.port = std.math.cast(u16, v.integer) orelse config.port;
-                }
-            }
-        }
-    }
-
-    // Scalar fields
-    if (root.object.get("pollIntervalMs")) |v| {
+    if (obj.get("pollIntervalMs")) |v| {
         if (v == .integer and v.integer > 0) {
             config.poll_interval_ms = std.math.cast(u32, v.integer) orelse config.poll_interval_ms;
         }
     }
-    if (root.object.get("fetchTimeoutMs")) |v| {
+    if (obj.get("fetchTimeoutMs")) |v| {
         if (v == .integer and v.integer > 0) {
             config.fetch_timeout_ms = std.math.cast(u32, v.integer) orelse config.fetch_timeout_ms;
         }
     }
-    if (root.object.get("maxApiRows")) |v| {
+    if (obj.get("maxApiRows")) |v| {
         if (v == .integer and v.integer > 0) {
             config.max_api_rows = std.math.cast(u32, v.integer) orelse config.max_api_rows;
         }

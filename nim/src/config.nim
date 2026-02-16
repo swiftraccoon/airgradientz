@@ -72,6 +72,34 @@ proc loadConfig*(): Config =
           if p > 0 and p <= 65535:
             result.port = uint16(p)
 
+      # Apply defaults first (lower priority)
+      if root.hasKey("defaults") and root["defaults"].kind == JObject:
+        let defs = root["defaults"]
+        if defs.hasKey("devices") and defs["devices"].kind == JArray:
+          let devArr = defs["devices"]
+          let count = min(devArr.len, MaxDevices)
+          result.deviceCount = count
+          for i in 0 ..< count:
+            let dev = devArr[i]
+            if dev.kind == JObject:
+              if dev.hasKey("ip") and dev["ip"].kind == JString:
+                result.devices[i].ip = dev["ip"].getStr()
+              if dev.hasKey("label") and dev["label"].kind == JString:
+                result.devices[i].label = dev["label"].getStr()
+        if defs.hasKey("pollIntervalMs"):
+          let n = defs["pollIntervalMs"].getInt()
+          if n > 0:
+            result.pollIntervalMs = uint32(n)
+        if defs.hasKey("fetchTimeoutMs"):
+          let n = defs["fetchTimeoutMs"].getInt()
+          if n > 0:
+            result.fetchTimeoutMs = uint32(n)
+        if defs.hasKey("maxApiRows"):
+          let n = defs["maxApiRows"].getInt()
+          if n > 0:
+            result.maxApiRows = uint32(n)
+
+      # Top-level overrides (higher priority)
       if root.hasKey("devices") and root["devices"].kind == JArray:
         let devArr = root["devices"]
         let count = min(devArr.len, MaxDevices)

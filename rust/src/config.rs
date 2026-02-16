@@ -77,7 +77,17 @@ impl Config {
 
         // 2. Config file overrides
         if let Some(root) = load_config_file() {
-            if let Some(JsonValue::Array(devices)) = root.get("devices") {
+            let defaults = root.get("defaults");
+
+            // Helper: look up key in root, falling back to defaults
+            let get_i64 = |key: &str| {
+                root.get(key)
+                    .and_then(JsonValue::as_i64)
+                    .or_else(|| defaults.and_then(|d| d.get(key)).and_then(JsonValue::as_i64))
+            };
+
+            let devices_val = root.get("devices").or_else(|| defaults.and_then(|d| d.get("devices")));
+            if let Some(JsonValue::Array(devices)) = devices_val {
                 let mut parsed = Vec::new();
                 for dev in devices {
                     let ip = dev.get("ip").and_then(JsonValue::as_str);
@@ -94,17 +104,17 @@ impl Config {
                 }
             }
 
-            if let Some(n) = root.get("pollIntervalMs").and_then(JsonValue::as_i64)
+            if let Some(n) = get_i64("pollIntervalMs")
                 && n > 0
             {
                 config.poll_interval_ms = u32::try_from(n).unwrap_or(u32::MAX);
             }
-            if let Some(n) = root.get("fetchTimeoutMs").and_then(JsonValue::as_i64)
+            if let Some(n) = get_i64("fetchTimeoutMs")
                 && n > 0
             {
                 config.fetch_timeout_ms = u32::try_from(n).unwrap_or(u32::MAX);
             }
-            if let Some(n) = root.get("maxApiRows").and_then(JsonValue::as_i64)
+            if let Some(n) = get_i64("maxApiRows")
                 && n > 0
             {
                 config.max_api_rows = u32::try_from(n).unwrap_or(u32::MAX);

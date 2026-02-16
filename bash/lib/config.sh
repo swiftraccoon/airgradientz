@@ -25,10 +25,10 @@ load_config() {
         config=$(< "${config_file}")
 
         AGTZ_PORT=$(jq -r '.ports.bash // empty' <<< "${config}")
-        AGTZ_POLL_INTERVAL_MS=$(jq -r '.pollIntervalMs // empty' <<< "${config}")
-        AGTZ_FETCH_TIMEOUT_MS=$(jq -r '.fetchTimeoutMs // empty' <<< "${config}")
-        AGTZ_MAX_API_ROWS=$(jq -r '.maxApiRows // empty' <<< "${config}")
-        AGTZ_DEVICES_JSON=$(jq -c '.devices // []' <<< "${config}")
+        AGTZ_POLL_INTERVAL_MS=$(jq -r '.pollIntervalMs // .defaults.pollIntervalMs // empty' <<< "${config}")
+        AGTZ_FETCH_TIMEOUT_MS=$(jq -r '.fetchTimeoutMs // .defaults.fetchTimeoutMs // empty' <<< "${config}")
+        AGTZ_MAX_API_ROWS=$(jq -r '.maxApiRows // .defaults.maxApiRows // empty' <<< "${config}")
+        AGTZ_DEVICES_JSON=$(jq -c '.devices // .defaults.devices // []' <<< "${config}")
 
         log "Loaded config from ${config_file}"
     else

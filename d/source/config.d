@@ -1,5 +1,6 @@
 module config;
 
+import std.json : JSONValue;
 import std.process : environment;
 import std.conv : to;
 
@@ -72,8 +73,33 @@ private void loadConfigFile(ref Config c) {
     if (root.type != JSONType.object)
         return;
 
-    // Devices
-    if (auto devicesVal = "devices" in root) {
+    // Apply defaults first (lower priority)
+    if (auto defaultsVal = "defaults" in root) {
+        if (defaultsVal.type == JSONType.object)
+            applyConfigValues(c, *defaultsVal);
+    }
+
+    // Apply top-level overrides (higher priority)
+    applyConfigValues(c, root);
+
+    // Port from ports.d
+    if (auto portsVal = "ports" in root) {
+        if (portsVal.type == JSONType.object) {
+            if (auto dPort = "d" in *portsVal) {
+                if (dPort.type == JSONType.integer || dPort.type == JSONType.uinteger) {
+                    auto n = dPort.get!long;
+                    if (n > 0 && n <= 65535)
+                        c.port = cast(ushort) n;
+                }
+            }
+        }
+    }
+}
+
+private void applyConfigValues(ref Config c, ref const JSONValue obj) {
+    import std.json : JSONType, JSONValue;
+
+    if (auto devicesVal = "devices" in obj) {
         if (devicesVal.type == JSONType.array) {
             DeviceConfig[] parsed;
             foreach (ref dev; devicesVal.array) {
@@ -91,21 +117,7 @@ private void loadConfigFile(ref Config c) {
         }
     }
 
-    // Port from ports.d
-    if (auto portsVal = "ports" in root) {
-        if (portsVal.type == JSONType.object) {
-            if (auto dPort = "d" in *portsVal) {
-                if (dPort.type == JSONType.integer || dPort.type == JSONType.uinteger) {
-                    auto n = dPort.get!long;
-                    if (n > 0 && n <= 65535)
-                        c.port = cast(ushort) n;
-                }
-            }
-        }
-    }
-
-    // Scalar fields
-    if (auto v = "pollIntervalMs" in root) {
+    if (auto v = "pollIntervalMs" in obj) {
         if (v.type == JSONType.integer || v.type == JSONType.uinteger) {
             auto n = v.get!long;
             if (n > 0)
@@ -113,7 +125,7 @@ private void loadConfigFile(ref Config c) {
         }
     }
 
-    if (auto v = "fetchTimeoutMs" in root) {
+    if (auto v = "fetchTimeoutMs" in obj) {
         if (v.type == JSONType.integer || v.type == JSONType.uinteger) {
             auto n = v.get!long;
             if (n > 0)
@@ -121,7 +133,7 @@ private void loadConfigFile(ref Config c) {
         }
     }
 
-    if (auto v = "maxApiRows" in root) {
+    if (auto v = "maxApiRows" in obj) {
         if (v.type == JSONType.integer || v.type == JSONType.uinteger) {
             auto n = v.get!long;
             if (n > 0)

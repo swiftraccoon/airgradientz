@@ -72,7 +72,13 @@ defmodule Airgradientz.Config do
   end
 
   defp apply_json(config, json) do
+    defaults = Map.get(json, "defaults", %{})
+
     config
+    |> maybe_put_devices(defaults)
+    |> maybe_put_positive_int(:poll_interval_ms, defaults, "pollIntervalMs")
+    |> maybe_put_positive_int(:fetch_timeout_ms, defaults, "fetchTimeoutMs")
+    |> maybe_put_positive_int(:max_api_rows, defaults, "maxApiRows")
     |> maybe_put_port(json)
     |> maybe_put_devices(json)
     |> maybe_put_positive_int(:poll_interval_ms, json, "pollIntervalMs")

@@ -39,6 +39,7 @@ type configFile struct {
 	FetchTimeoutMs *int           `json:"fetchTimeoutMs"`
 	MaxAPIRows     *int           `json:"maxApiRows"`
 	Devices        []DeviceConfig `json:"devices"`
+	Defaults       *configFile    `json:"defaults"`
 }
 
 func LoadConfig() Config {
@@ -81,11 +82,21 @@ func safeUint16(v int) (uint16, bool) {
 }
 
 func applyConfigFile(cfg *Config, cf *configFile) {
+	// Apply defaults first (lower priority)
+	if cf.Defaults != nil {
+		applyConfigValues(cfg, cf.Defaults)
+	}
+	// Apply top-level overrides (higher priority)
+	applyConfigValues(cfg, cf)
+
 	if p, ok := cf.Ports["go"]; ok {
 		if port, valid := safeUint16(p); valid {
 			cfg.Port = port
 		}
 	}
+}
+
+func applyConfigValues(cfg *Config, cf *configFile) {
 	if len(cf.Devices) > 0 {
 		cfg.Devices = cf.Devices
 	}

@@ -42,10 +42,27 @@ const defaults = {
   shutdownTimeoutMs: 5_000,
 };
 
-// Merge: defaults < config file < env vars
+// Merge: defaults < config file defaults < config file top-level < env vars
 const merged = { ...defaults };
 
 if (fileConfig) {
+  const fileDefs = fileConfig.defaults || {};
+
+  // Apply file defaults first (lower priority)
+  if (Array.isArray(fileDefs.devices) && fileDefs.devices.length > 0) {
+    merged.devices = fileDefs.devices;
+  }
+  if (typeof fileDefs.pollIntervalMs === 'number' && fileDefs.pollIntervalMs > 0) {
+    merged.pollIntervalMs = fileDefs.pollIntervalMs;
+  }
+  if (typeof fileDefs.fetchTimeoutMs === 'number' && fileDefs.fetchTimeoutMs > 0) {
+    merged.fetchTimeoutMs = fileDefs.fetchTimeoutMs;
+  }
+  if (typeof fileDefs.maxApiRows === 'number' && fileDefs.maxApiRows > 0) {
+    merged.maxApiRows = fileDefs.maxApiRows;
+  }
+
+  // Apply top-level overrides (higher priority)
   if (Array.isArray(fileConfig.devices) && fileConfig.devices.length > 0) {
     merged.devices = fileConfig.devices;
   }
