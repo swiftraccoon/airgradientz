@@ -127,6 +127,43 @@ static char *serialize(const JsonValue *v)
     return s;
 }
 
+/* Helper: read an entire file into a heap-allocated string */
+static char *read_file(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f) return NULL;
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    if (len <= 0) { fclose(f); return NULL; }
+    fseek(f, 0, SEEK_SET);
+    char *buf = (char *)malloc((size_t)len + 1);
+    if (!buf) { fclose(f); return NULL; }
+    size_t n = fread(buf, 1, (size_t)len, f);
+    fclose(f);
+    buf[n] = '\0';
+    return buf;
+}
+
+/* Helper: load a named fixture from ../test-fixtures.json */
+static JsonValue *load_fixture(const char *name)
+{
+    char *content = read_file("../test-fixtures.json");
+    if (!content) return NULL;
+    JsonError err;
+    JsonValue *root = json_parse(content, strlen(content), &err);
+    free(content);
+    if (!root) return NULL;
+    const JsonValue *fixture = json_get(root, name);
+    if (!fixture) { json_free(root); return NULL; }
+    /* Serialize and re-parse to get an independent copy */
+    StrBuf sb = strbuf_new();
+    json_serialize(fixture, &sb);
+    JsonValue *result = json_parse(strbuf_cstr(&sb), sb.len, &err);
+    strbuf_free(&sb);
+    json_free(root);
+    return result;
+}
+
 /* ================================================================
  * StrBuf tests
  * ================================================================ */
@@ -648,18 +685,7 @@ static void test_json_accessors_wrong_type(void)
 
 static void test_airgradient_indoor_fixture(void)
 {
-    const char *input =
-        "{\"wifi\":-51,\"serialno\":\"84fce602549c\",\"rco2\":489,"
-        "\"pm01\":23.83,\"pm02\":41.67,\"pm10\":54.5,"
-        "\"pm003Count\":5006.5,\"pm02Compensated\":31.18,"
-        "\"atmp\":20.78,\"atmpCompensated\":20.78,"
-        "\"rhum\":32.19,\"rhumCompensated\":32.19,"
-        "\"tvocIndex\":423,\"tvocRaw\":35325.92,"
-        "\"noxIndex\":1,\"noxRaw\":21638.25,"
-        "\"boot\":138,\"bootCount\":138,\"ledMode\":\"off\","
-        "\"firmware\":\"3.6.0\",\"model\":\"I-9PSL\"}";
-
-    JsonValue *v = must_parse(input);
+    JsonValue *v = load_fixture("indoorFull");
     ASSERT_NOT_NULL(v);
 
     bool ok;
@@ -675,16 +701,19 @@ static void test_airgradient_indoor_fixture(void)
 
 static void test_airgradient_null_fields(void)
 {
-    const char *input =
-        "{\"wifi\":-59,\"serialno\":\"84fce602549c\","
-        "\"rco2\":null,\"pm01\":null,\"pm02\":null,\"pm10\":null,"
-        "\"atmp\":null,\"model\":\"I-9PSL\"}";
-
-    JsonValue *v = must_parse(input);
+    JsonValue *v = load_fixture("afterBoot");
     ASSERT_NOT_NULL(v);
 
     ASSERT(json_is_null(json_get(v, "rco2")));
     ASSERT(json_is_null(json_get(v, "pm01")));
+    ASSERT(json_is_null(json_get(v, "pm02")));
+    ASSERT(json_is_null(json_get(v, "pm10")));
+    ASSERT(json_is_null(json_get(v, "atmp")));
+    ASSERT(json_is_null(json_get(v, "atmpCompensated")));
+    ASSERT(json_is_null(json_get(v, "rhum")));
+    ASSERT(json_is_null(json_get(v, "rhumCompensated")));
+    ASSERT(json_is_null(json_get(v, "tvocIndex")));
+    ASSERT(json_is_null(json_get(v, "noxIndex")));
     bool ok;
     ASSERT_INT_EQ(json_as_i64(json_get(v, "wifi"), &ok), -59);
     ASSERT(ok);
@@ -693,10 +722,7 @@ static void test_airgradient_null_fields(void)
 
 static void test_airgradient_zero_compensated(void)
 {
-    const char *input =
-        "{\"pm02Compensated\":0,\"atmpCompensated\":0,\"rhumCompensated\":0}";
-
-    JsonValue *v = must_parse(input);
+    JsonValue *v = load_fixture("zeroCompensated");
     ASSERT_NOT_NULL(v);
 
     bool ok;
@@ -704,6 +730,9 @@ static void test_airgradient_zero_compensated(void)
     ASSERT(ok);
     ASSERT_DBL_EQ(json_as_f64(json_get(v, "atmpCompensated"), &ok), 0.0);
     ASSERT_DBL_EQ(json_as_f64(json_get(v, "rhumCompensated"), &ok), 0.0);
+    ASSERT_INT_EQ(json_as_i64(json_get(v, "rco2"), &ok), 400);
+    ASSERT_INT_EQ(json_as_i64(json_get(v, "pm01"), &ok), 5);
+    ASSERT_INT_EQ(json_as_i64(json_get(v, "pm02"), &ok), 10);
     json_free(v);
 }
 
@@ -729,24 +758,12 @@ static sqlite3 *setup_test_db(void)
 
 static JsonValue *indoor_fixture(void)
 {
-    return must_parse(
-        "{\"wifi\":-51,\"serialno\":\"84fce602549c\",\"rco2\":489,"
-        "\"pm01\":23.83,\"pm02\":41.67,\"pm10\":54.5,"
-        "\"pm02Compensated\":31.18,\"atmp\":20.78,\"atmpCompensated\":20.78,"
-        "\"rhum\":32.19,\"rhumCompensated\":32.19,"
-        "\"tvocIndex\":423,\"noxIndex\":1,\"model\":\"I-9PSL\"}"
-    );
+    return load_fixture("indoorFull");
 }
 
 static JsonValue *outdoor_fixture(void)
 {
-    return must_parse(
-        "{\"wifi\":-42,\"serialno\":\"ecda3b1d09d8\",\"rco2\":440,"
-        "\"pm01\":23.17,\"pm02\":35.33,\"pm10\":39.17,"
-        "\"pm02Compensated\":23.72,\"atmp\":9.8,\"atmpCompensated\":6.27,"
-        "\"rhum\":35,\"rhumCompensated\":51.41,"
-        "\"tvocIndex\":231.08,\"noxIndex\":1,\"model\":\"O-1PST\"}"
-    );
+    return load_fixture("outdoorFull");
 }
 
 static void test_db_insert_and_query(void)
@@ -815,11 +832,7 @@ static void test_db_null_fields(void)
     sqlite3 *db = setup_test_db();
     ASSERT_NOT_NULL(db);
 
-    JsonValue *data = must_parse(
-        "{\"wifi\":-59,\"serialno\":\"84fce602549c\","
-        "\"rco2\":null,\"pm01\":null,\"pm02\":null,\"pm10\":null,"
-        "\"atmp\":null,\"model\":\"I-9PSL\"}"
-    );
+    JsonValue *data = load_fixture("afterBoot");
     ASSERT_NOT_NULL(data);
     db_insert_reading(db, "192.168.1.1", data);
     json_free(data);
@@ -830,6 +843,14 @@ static void test_db_null_fields(void)
     ASSERT_INT_EQ(rl.count, 1);
     ASSERT(!rl.items[0].has_rco2);
     ASSERT(!rl.items[0].has_pm01);
+    ASSERT(!rl.items[0].has_pm02);
+    ASSERT(!rl.items[0].has_pm10);
+    ASSERT(!rl.items[0].has_atmp);
+    ASSERT(!rl.items[0].has_atmp_compensated);
+    ASSERT(!rl.items[0].has_rhum);
+    ASSERT(!rl.items[0].has_rhum_compensated);
+    ASSERT(!rl.items[0].has_tvoc_index);
+    ASSERT(!rl.items[0].has_nox_index);
     ASSERT(rl.items[0].has_wifi);
     ASSERT_INT_EQ(rl.items[0].wifi, -59);
     reading_list_free(&rl);
@@ -841,11 +862,7 @@ static void test_db_zero_compensated_values(void)
     sqlite3 *db = setup_test_db();
     ASSERT_NOT_NULL(db);
 
-    JsonValue *data = must_parse(
-        "{\"wifi\":-45,\"serialno\":\"84fce602549c\","
-        "\"pm02Compensated\":0,\"atmpCompensated\":0,\"rhumCompensated\":0,"
-        "\"model\":\"I-9PSL\"}"
-    );
+    JsonValue *data = load_fixture("zeroCompensated");
     ASSERT_NOT_NULL(data);
     db_insert_reading(db, "192.168.1.1", data);
     json_free(data);
@@ -860,6 +877,10 @@ static void test_db_zero_compensated_values(void)
     ASSERT_DBL_EQ(rl.items[0].atmp_compensated, 0.0);
     ASSERT(rl.items[0].has_rhum_compensated);
     ASSERT_DBL_EQ(rl.items[0].rhum_compensated, 0.0);
+    ASSERT(rl.items[0].has_rco2);
+    ASSERT_INT_EQ(rl.items[0].rco2, 400);
+    ASSERT(rl.items[0].has_pm02);
+    ASSERT_DBL_EQ(rl.items[0].pm02, 10.0);
     reading_list_free(&rl);
     sqlite3_close(db);
 }

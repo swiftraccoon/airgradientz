@@ -1,49 +1,11 @@
 defmodule Airgradientz.DBTest do
   use ExUnit.Case, async: false
 
-  @indoor_data %{
-    "wifi" => -47,
-    "serialno" => "abcdef123456",
-    "model" => "I-9PSL",
-    "pm01" => 3,
-    "pm02" => 5,
-    "pm10" => 7,
-    "pm02Compensated" => 6,
-    "rco2" => 450,
-    "atmp" => 22.5,
-    "atmpCompensated" => 23.1,
-    "rhum" => 45.0,
-    "rhumCompensated" => 44.2,
-    "tvocIndex" => 120,
-    "noxIndex" => 15
-  }
-
-  @outdoor_data %{
-    "wifi" => -55,
-    "serialno" => "outdoor123",
-    "model" => "O-1PST",
-    "pm01" => 10,
-    "pm02" => 15,
-    "pm10" => 20,
-    "rco2" => 400,
-    "atmp" => 18.3,
-    "rhum" => 60.0
-  }
-
-  @null_fields_data %{
-    "wifi" => -40,
-    "serialno" => "boot123",
-    "model" => "I-9PSL"
-  }
-
-  @zero_compensated_data %{
-    "wifi" => -45,
-    "serialno" => "zero123",
-    "model" => "I-9PSL",
-    "pm02Compensated" => 0,
-    "atmpCompensated" => 0,
-    "rhumCompensated" => 0
-  }
+  @fixtures Jason.decode!(File.read!(Path.join([__DIR__, "..", "..", "test-fixtures.json"])))
+  @indoor_data Map.get(@fixtures, "indoorFull")
+  @outdoor_data Map.get(@fixtures, "outdoorFull")
+  @null_fields_data Map.get(@fixtures, "afterBoot")
+  @zero_compensated_data Map.get(@fixtures, "zeroCompensated")
 
   @no_serial_data %{
     "wifi" => -30,
@@ -81,11 +43,11 @@ defmodule Airgradientz.DBTest do
     assert length(readings) == 1
     r = hd(readings)
     assert r.device_type == "indoor"
-    assert r.device_id == "abcdef123456"
+    assert r.device_id == "84fce602549c"
     assert r.device_ip == "192.168.1.1"
-    assert r.pm02 == 5
-    assert r.rco2 == 450
-    assert r.atmp == 22.5
+    assert r.pm02 == 41.67
+    assert r.rco2 == 489
+    assert r.atmp == 20.78
   end
 
   test "device type classification" do
@@ -109,7 +71,7 @@ defmodule Airgradientz.DBTest do
     assert r.pm02 == nil
     assert r.rco2 == nil
     assert r.atmp == nil
-    assert r.wifi == -40
+    assert r.wifi == -59
   end
 
   test "zero compensated values are not null" do
@@ -140,14 +102,14 @@ defmodule Airgradientz.DBTest do
 
     readings =
       Airgradientz.DB.query_readings(%{
-        device: "abcdef123456",
+        device: "84fce602549c",
         from: 0,
         to: now + 1000,
         limit: 100
       })
 
     assert length(readings) == 1
-    assert hd(readings).device_id == "abcdef123456"
+    assert hd(readings).device_id == "84fce602549c"
   end
 
   test "query with device=all returns all" do
@@ -190,7 +152,7 @@ defmodule Airgradientz.DBTest do
     assert length(devices) == 2
 
     ids = devices |> Enum.map(& &1.device_id) |> Enum.sort()
-    assert ids == ["abcdef123456", "outdoor123"]
+    assert ids == ["84fce602549c", "ecda3b1d09d8"]
   end
 
   test "getReadingsCount" do

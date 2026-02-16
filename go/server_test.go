@@ -64,8 +64,8 @@ func TestReadingsEndpoint(t *testing.T) {
 	}
 
 	reading := arr[0].(map[string]any)
-	if reading["device_id"] != "abc123" {
-		t.Errorf("device_id = %v", reading["device_id"])
+	if reading["device_id"] != testDeviceID {
+		t.Errorf("device_id = %v, want %v", reading["device_id"], testDeviceID)
 	}
 	if reading["device_type"] != "indoor" {
 		t.Errorf("device_type = %v", reading["device_type"])
@@ -82,7 +82,7 @@ func TestReadingsWithDeviceFilter(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	rr := doGet(h, "/api/readings?device=abc123")
+	rr := doGet(h, "/api/readings?device="+testDeviceID)
 	result := parseJSON(t, rr).([]any)
 	if len(result) != 1 {
 		t.Fatalf("expected 1 filtered reading, got %d", len(result))

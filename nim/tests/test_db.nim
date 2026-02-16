@@ -1,5 +1,5 @@
 import unittest
-import std/[json, algorithm]
+import std/[json, algorithm, os]
 import sqlite3_wrapper
 import db
 
@@ -9,49 +9,11 @@ proc openTestDb(): Sqlite3 =
   check dbInitialize(dbHandle)
   result = dbHandle
 
-let indoorData = %*{
-  "wifi": -47,
-  "serialno": "abcdef123456",
-  "model": "I-9PSL",
-  "pm01": 3,
-  "pm02": 5,
-  "pm10": 7,
-  "pm02Compensated": 6,
-  "rco2": 450,
-  "atmp": 22.5,
-  "atmpCompensated": 23.1,
-  "rhum": 45.0,
-  "rhumCompensated": 44.2,
-  "tvocIndex": 120,
-  "noxIndex": 15
-}
-
-let outdoorData = %*{
-  "wifi": -55,
-  "serialno": "outdoor123",
-  "model": "O-1PST",
-  "pm01": 10,
-  "pm02": 15,
-  "pm10": 20,
-  "rco2": 400,
-  "atmp": 18.3,
-  "rhum": 60.0
-}
-
-let nullFieldsData = %*{
-  "wifi": -40,
-  "serialno": "boot123",
-  "model": "I-9PSL"
-}
-
-let zeroCompensatedData = %*{
-  "wifi": -45,
-  "serialno": "zero123",
-  "model": "I-9PSL",
-  "pm02Compensated": 0,
-  "atmpCompensated": 0,
-  "rhumCompensated": 0
-}
+let fixtures = parseJson(readFile(parentDir(currentSourcePath()) / ".." / ".." / "test-fixtures.json"))
+let indoorData = fixtures["indoorFull"]
+let outdoorData = fixtures["outdoorFull"]
+let nullFieldsData = fixtures["afterBoot"]
+let zeroCompensatedData = fixtures["zeroCompensated"]
 
 let noSerialData = %*{
   "wifi": -30,
@@ -74,12 +36,12 @@ suite "DB operations":
 
     check readings.len == 1
     check readings[0].deviceType == "indoor"
-    check readings[0].deviceId == "abcdef123456"
+    check readings[0].deviceId == "84fce602549c"
     check readings[0].deviceIp == "192.168.1.1"
     check readings[0].hasPm02
-    check readings[0].pm02 == 5.0
+    check readings[0].pm02 == 41.67
     check readings[0].hasRco2
-    check readings[0].rco2 == 450
+    check readings[0].rco2 == 489
 
   test "device type classification":
     let testDb = openTestDb()
@@ -117,7 +79,7 @@ suite "DB operations":
     check not readings[0].hasRco2
     check not readings[0].hasAtmp
     check readings[0].hasWifi
-    check readings[0].wifi == -40
+    check readings[0].wifi == -59
 
   test "zero compensated values are not null":
     let testDb = openTestDb()
@@ -161,11 +123,11 @@ suite "DB operations":
 
     let now = nowMillis()
     let readings = queryReadings(testDb, ReadingQuery(
-      device: "abcdef123456", fromTs: 0, toTs: now + 1000, limit: 100
+      device: "84fce602549c", fromTs: 0, toTs: now + 1000, limit: 100
     ))
 
     check readings.len == 1
-    check readings[0].deviceId == "abcdef123456"
+    check readings[0].deviceId == "84fce602549c"
 
   test "query with device=all returns all":
     let testDb = openTestDb()
@@ -221,7 +183,7 @@ suite "DB operations":
     for d in devices:
       ids.add d.deviceId
     ids.sort()
-    check ids == @["abcdef123456", "outdoor123"]
+    check ids == @["84fce602549c", "ecda3b1d09d8"]
 
   test "getReadingsCount":
     let testDb = openTestDb()
@@ -265,12 +227,12 @@ suite "JSON conversion":
     check readings.len == 1
     let j = readingToJson(readings[0])
 
-    check j["device_id"].getStr() == "abcdef123456"
+    check j["device_id"].getStr() == "84fce602549c"
     check j["device_type"].getStr() == "indoor"
     check j["device_ip"].getStr() == "10.0.0.1"
-    check j["pm02"].getFloat() == 5.0
-    check j["rco2"].getInt() == 450
-    check j["atmp"].getFloat() == 22.5
+    check j["pm02"].getFloat() == 41.67
+    check j["rco2"].getInt() == 489
+    check j["atmp"].getFloat() == 20.78
 
   test "readingToJson with null fields":
     let testDb = openTestDb()
@@ -290,7 +252,7 @@ suite "JSON conversion":
     check j["pm02"].kind == JNull
     check j["rco2"].kind == JNull
     check j["atmp"].kind == JNull
-    check j["wifi"].getInt() == -40
+    check j["wifi"].getInt() == -59
 
   test "deviceSummaryToJson":
     let testDb = openTestDb()
@@ -302,7 +264,7 @@ suite "JSON conversion":
     check devices.len == 1
     let j = deviceSummaryToJson(devices[0])
 
-    check j["device_id"].getStr() == "abcdef123456"
+    check j["device_id"].getStr() == "84fce602549c"
     check j["device_type"].getStr() == "indoor"
     check j["device_ip"].getStr() == "10.0.0.1"
     check j["reading_count"].getInt() == 1

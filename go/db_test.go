@@ -2,12 +2,44 @@ package main
 
 import (
 	"database/sql"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 )
 
-const testDeviceID = "abc123"
+var testDeviceID string
+
+var (
+	indoorFull      map[string]any
+	outdoorFull     map[string]any
+	afterBoot       map[string]any
+	zeroCompensated map[string]any
+)
+
+func TestMain(m *testing.M) {
+	data, err := os.ReadFile("../test-fixtures.json")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "failed to read test-fixtures.json: %v\n", err)
+		os.Exit(1)
+	}
+
+	var fixtures map[string]map[string]any
+	if err := json.Unmarshal(data, &fixtures); err != nil {
+		fmt.Fprintf(os.Stderr, "failed to parse test-fixtures.json: %v\n", err)
+		os.Exit(1)
+	}
+
+	indoorFull = fixtures["indoorFull"]
+	outdoorFull = fixtures["outdoorFull"]
+	afterBoot = fixtures["afterBoot"]
+	zeroCompensated = fixtures["zeroCompensated"]
+
+	testDeviceID, _ = indoorFull["serialno"].(string)
+
+	os.Exit(m.Run())
+}
 
 func openTestDB(t *testing.T) *sql.DB {
 	t.Helper()
@@ -19,54 +51,6 @@ func openTestDB(t *testing.T) *sql.DB {
 	}
 	t.Cleanup(func() { db.Close() })
 	return db
-}
-
-var indoorFull = map[string]any{
-	"serialno":        testDeviceID,
-	"model":           "I-9PSL",
-	"pm01":            float64(5),
-	"pm02":            float64(12),
-	"pm10":            float64(18),
-	"pm02Compensated": float64(10),
-	"rco2":            float64(450),
-	"atmp":            float64(22.5),
-	"atmpCompensated": float64(21.0),
-	"rhum":            float64(55.0),
-	"rhumCompensated": float64(53.0),
-	"tvocIndex":       float64(100),
-	"noxIndex":        float64(1),
-	"wifi":            float64(-42),
-}
-
-var outdoorFull = map[string]any{
-	"serialno":        "xyz789",
-	"model":           "O-1PST",
-	"pm01":            float64(8),
-	"pm02":            float64(15),
-	"pm10":            float64(22),
-	"pm02Compensated": float64(14),
-	"atmp":            float64(18.5),
-	"atmpCompensated": float64(17.0),
-	"rhum":            float64(65.0),
-	"rhumCompensated": float64(63.0),
-	"wifi":            float64(-55),
-}
-
-var afterBoot = map[string]any{
-	"serialno": "boot1",
-	"model":    "I-9PSL",
-}
-
-var zeroCompensated = map[string]any{
-	"serialno":        "zero1",
-	"model":           "I-9PSL",
-	"pm02":            float64(0),
-	"pm02Compensated": float64(0),
-	"rco2":            float64(0),
-	"atmp":            float64(0),
-	"atmpCompensated": float64(0),
-	"rhum":            float64(0),
-	"rhumCompensated": float64(0),
 }
 
 func TestInsertAndQueryReading(t *testing.T) {
@@ -99,14 +83,14 @@ func TestInsertAndQueryReading(t *testing.T) {
 	if r.DeviceIP != "192.168.1.1" {
 		t.Errorf("device_ip = %q, want %q", r.DeviceIP, "192.168.1.1")
 	}
-	if !r.PM02.Valid || r.PM02.Float64 != 12 {
-		t.Errorf("pm02 = %v, want 12", r.PM02)
+	if !r.PM02.Valid || r.PM02.Float64 != 41.67 {
+		t.Errorf("pm02 = %v, want 41.67", r.PM02)
 	}
-	if !r.RCO2.Valid || r.RCO2.Int64 != 450 {
-		t.Errorf("rco2 = %v, want 450", r.RCO2)
+	if !r.RCO2.Valid || r.RCO2.Int64 != 489 {
+		t.Errorf("rco2 = %v, want 489", r.RCO2)
 	}
-	if !r.ATMP.Valid || r.ATMP.Float64 != 22.5 {
-		t.Errorf("atmp = %v, want 22.5", r.ATMP)
+	if !r.ATMP.Valid || r.ATMP.Float64 != 20.78 {
+		t.Errorf("atmp = %v, want 20.78", r.ATMP)
 	}
 }
 
@@ -192,8 +176,8 @@ func TestNullFieldsAfterBoot(t *testing.T) {
 	if r.NOXIndex.Valid {
 		t.Error("nox_index should be NULL after boot")
 	}
-	if r.Wifi.Valid {
-		t.Error("wifi should be NULL after boot")
+	if !r.Wifi.Valid || r.Wifi.Int64 != -59 {
+		t.Errorf("wifi = %v, want -59", r.Wifi)
 	}
 }
 
@@ -212,17 +196,20 @@ func TestZeroCompensatedValues(t *testing.T) {
 	}
 	r := readings[0]
 
-	if !r.PM02.Valid || r.PM02.Float64 != 0 {
-		t.Errorf("pm02 should be 0 (valid), got %v", r.PM02)
+	if !r.PM02.Valid || r.PM02.Float64 != 10 {
+		t.Errorf("pm02 = %v, want 10", r.PM02)
 	}
 	if !r.PM02Compensated.Valid || r.PM02Compensated.Float64 != 0 {
 		t.Errorf("pm02_compensated should be 0 (valid), got %v", r.PM02Compensated)
 	}
-	if !r.RCO2.Valid || r.RCO2.Int64 != 0 {
-		t.Errorf("rco2 should be 0 (valid), got %v", r.RCO2)
+	if !r.RCO2.Valid || r.RCO2.Int64 != 400 {
+		t.Errorf("rco2 = %v, want 400", r.RCO2)
 	}
-	if !r.ATMP.Valid || r.ATMP.Float64 != 0 {
-		t.Errorf("atmp should be 0 (valid), got %v", r.ATMP)
+	if !r.ATMPCompensated.Valid || r.ATMPCompensated.Float64 != 0 {
+		t.Errorf("atmp_compensated should be 0 (valid), got %v", r.ATMPCompensated)
+	}
+	if !r.RHUMCompensated.Valid || r.RHUMCompensated.Float64 != 0 {
+		t.Errorf("rhum_compensated should be 0 (valid), got %v", r.RHUMCompensated)
 	}
 }
 
@@ -247,7 +234,7 @@ func TestDeviceFiltering(t *testing.T) {
 			t.Fatalf("expected 1, got %d", len(readings))
 		}
 		if readings[0].DeviceID != testDeviceID {
-			t.Errorf("device_id = %q, want abc123", readings[0].DeviceID)
+			t.Errorf("device_id = %q, want %q", readings[0].DeviceID, testDeviceID)
 		}
 	})
 
@@ -391,7 +378,7 @@ func TestGetDevices(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Error("device abc123 not found")
+		t.Errorf("device %s not found", testDeviceID)
 	}
 }
 
