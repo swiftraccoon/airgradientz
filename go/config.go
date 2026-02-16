@@ -75,7 +75,7 @@ func LoadConfig() Config {
 // safeUint16 converts an int to uint16, returning (value, true) if in range.
 func safeUint16(v int) (uint16, bool) {
 	if v > 0 && v <= math.MaxUint16 {
-		return uint16(v), true //nolint:gosec // bounds checked above
+		return uint16(v), true
 	}
 	return 0, false
 }
