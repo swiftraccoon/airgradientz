@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
-	"math"
 	"net"
 	"net/http"
 	"os"
@@ -120,10 +119,9 @@ func (h *handler) handleReadings(w http.ResponseWriter, r *http.Request) {
 	device := r.URL.Query().Get("device")
 
 	rawLimit := parseInt64Param(r, "limit", int64(h.cfg.MaxAPIRows))
-	requestedLimit := min(int(min(rawLimit, math.MaxInt)), h.cfg.MaxAPIRows)
 	effectiveLimit := h.cfg.MaxAPIRows
-	if requestedLimit > 0 && requestedLimit < h.cfg.MaxAPIRows {
-		effectiveLimit = requestedLimit
+	if rawLimit > 0 && rawLimit < int64(h.cfg.MaxAPIRows) {
+		effectiveLimit = int(rawLimit)
 	}
 
 	q := ReadingQuery{
