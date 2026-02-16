@@ -8,14 +8,14 @@ on:
 
 jobs:
   c:
-    name: C (gcc + cppcheck)
+    name: C (gcc-14 + cppcheck)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Install cppcheck
-        run: sudo apt-get update && sudo apt-get install -y cppcheck
+      - name: Install gcc-14 and cppcheck
+        run: sudo apt-get update && sudo apt-get install -y gcc-14 cppcheck
       - name: GCC strict build
-        run: make -C c clean all
+        run: make -C c clean all CC=gcc-14
       - name: cppcheck
         run: |
           cppcheck --enable=all --suppress=missingIncludeSystem \
@@ -63,9 +63,10 @@ jobs:
           go-version-file: go/go.mod
       - name: go vet
         run: cd go && go vet ./...
-      - uses: golangci/golangci-lint-action@v6
-        with:
-          working-directory: go
+      - name: Install golangci-lint
+        run: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
+      - name: golangci-lint
+        run: cd go && golangci-lint run
 
   elixir:
     name: Elixir (credo + dialyxir + mix audit)
@@ -125,9 +126,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: jiro4989/setup-nim-action@v2
-        with:
-          nim-version: "2.2.x"
+      - name: Install Nim
+        run: |
+          curl -sSf https://nim-lang.org/choosenim/init.sh | bash -s -- -y
+          echo "$HOME/.nimble/bin" >> "$GITHUB_PATH"
       - name: Nim check
         run: cd nim && nim check --path:src --hints:off --warnings:on src/airgradientz.nim
 

@@ -184,8 +184,8 @@ handle_static() {
     ct=$(content_type_for "${resolved}")
 
     local is_binary=0
-    # shellcheck disable=SC2310  # set -e disabled in && is intentional
-    is_binary_type "${ct}" && is_binary=1 || true
+    # shellcheck disable=SC2310  # set -e disabled in if-condition is intentional
+    if is_binary_type "${ct}"; then is_binary=1; fi
 
     if (( is_binary )); then
         send_file_binary "${resolved}" "${ct}"
@@ -197,8 +197,8 @@ handle_static() {
 # --- Main: read request, route, respond ---
 
 read_ok=0
-# shellcheck disable=SC2310  # set -e disabled in && is intentional
-read_request && read_ok=1 || true
+# shellcheck disable=SC2310  # set -e disabled in if-condition is intentional
+if read_request; then read_ok=1; fi
 if (( ! read_ok )); then
     send_error "400 Bad Request" "Bad request"
     exit 0

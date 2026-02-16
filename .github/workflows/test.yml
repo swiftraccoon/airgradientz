@@ -12,8 +12,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Install gcc-14
+        run: sudo apt-get update && sudo apt-get install -y gcc-14
       - name: Build and test
-        run: make -C c test
+        run: make -C c test CC=gcc-14
 
   nodejs:
     name: Node.js tests
@@ -78,9 +80,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: jiro4989/setup-nim-action@v2
-        with:
-          nim-version: "2.2.x"
+      - name: Install Nim
+        run: |
+          curl -sSf https://nim-lang.org/choosenim/init.sh | bash -s -- -y
+          echo "$HOME/.nimble/bin" >> "$GITHUB_PATH"
       - name: Run tests
         run: |
           cd nim && nim c -r --path:src --threads:on --mm:orc \

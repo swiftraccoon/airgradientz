@@ -40,8 +40,8 @@ NCAT_PID=""
 
 cleanup() {
     log "Shutting down..."
-    [[ -n "${POLLER_PID}" ]] && kill "${POLLER_PID}" 2>/dev/null || true
-    [[ -n "${NCAT_PID}" ]] && kill "${NCAT_PID}" 2>/dev/null || true
+    if [[ -n "${POLLER_PID}" ]]; then kill "${POLLER_PID}" 2>/dev/null || true; fi
+    if [[ -n "${NCAT_PID}" ]]; then kill "${NCAT_PID}" 2>/dev/null || true; fi
     wait 2>/dev/null || true
     rm -rf "${RUN_DIR}"
     log "Stopped"
