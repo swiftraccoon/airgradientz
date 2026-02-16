@@ -155,6 +155,20 @@ fi
 echo "Running asm tests..."
 echo ""
 
+# Load shared test fixtures
+FIXTURE_FILE="../test-fixtures.json"
+if [[ ! -f "${FIXTURE_FILE}" ]]; then
+    FIXTURE_FILE="../../test-fixtures.json"
+fi
+INDOOR_SERIAL=$(jq -r '.indoorFull.serialno' "${FIXTURE_FILE}")
+INDOOR_PM02=$(jq -r '.indoorFull.pm02' "${FIXTURE_FILE}")
+INDOOR_RCO2=$(jq -r '.indoorFull.rco2' "${FIXTURE_FILE}")
+INDOOR_ATMP=$(jq -r '.indoorFull.atmp' "${FIXTURE_FILE}")
+OUTDOOR_SERIAL=$(jq -r '.outdoorFull.serialno' "${FIXTURE_FILE}")
+OUTDOOR_PM02=$(jq -r '.outdoorFull.pm02' "${FIXTURE_FILE}")
+OUTDOOR_RCO2=$(jq -r '.outdoorFull.rco2' "${FIXTURE_FILE}")
+OUTDOOR_ATMP=$(jq -r '.outdoorFull.atmp' "${FIXTURE_FILE}")
+
 # ═══════════════════════════════════════════════════════════════════
 # API STATS
 # ═══════════════════════════════════════════════════════════════════
@@ -211,9 +225,9 @@ echo ""
 
 echo "--- Readings with data ---"
 
-insert_reading "abc123" "indoor" "192.168.1.1" 12 450 22.5
-insert_reading "abc123" "indoor" "192.168.1.1" 15 460 22.8
-insert_reading "xyz789" "outdoor" "192.168.1.2" 8 0 18.5
+insert_reading "${INDOOR_SERIAL}" "indoor" "192.168.1.1" "${INDOOR_PM02}" "${INDOOR_RCO2}" "${INDOOR_ATMP}"
+insert_reading "${INDOOR_SERIAL}" "indoor" "192.168.1.1" 15 460 22.8
+insert_reading "${OUTDOOR_SERIAL}" "outdoor" "192.168.1.2" "${OUTDOOR_PM02}" "${OUTDOOR_RCO2}" "${OUTDOOR_ATMP}"
 sleep 0.1
 
 body=$(curl -sf "${BASE}/api/readings")
@@ -221,7 +235,7 @@ count=$(jq 'length' <<< "${body}")
 assert_eq "readings returns 3" "3" "${count}"
 
 # Readings are ORDER BY timestamp DESC, so last inserted is first
-assert_json_field "reading has device_id" "${body}" '.[0].device_id' "xyz789"
+assert_json_field "reading has device_id" "${body}" '.[0].device_id' "${OUTDOOR_SERIAL}"
 assert_json_not_null "reading has timestamp" "${body}" '.[0].timestamp'
 assert_json_not_null "reading has id" "${body}" '.[0].id'
 
@@ -234,13 +248,13 @@ echo ""
 echo "--- Query parameters ---"
 
 # Device filter
-body=$(curl -sf "${BASE}/api/readings?device=abc123")
+body=$(curl -sf "${BASE}/api/readings?device=${INDOOR_SERIAL}")
 count=$(jq 'length' <<< "${body}")
-assert_eq "filter device=abc123" "2" "${count}"
+assert_eq "filter indoor device" "2" "${count}"
 
-body=$(curl -sf "${BASE}/api/readings?device=xyz789")
+body=$(curl -sf "${BASE}/api/readings?device=${OUTDOOR_SERIAL}")
 count=$(jq 'length' <<< "${body}")
-assert_eq "filter device=xyz789" "1" "${count}"
+assert_eq "filter outdoor device" "1" "${count}"
 
 body=$(curl -sf "${BASE}/api/readings?device=nonexistent")
 assert_json_length "filter nonexistent device" "${body}" "0"
@@ -395,6 +409,132 @@ else
     ERRORS+=("FAIL: requests_served should be > 0, got ${requests}")
     echo "  FAIL: requests_served > 0" >&2
 fi
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════
+# SQL DRIFT VALIDATION (source-level checks against queries.sql)
+# ═══════════════════════════════════════════════════════════════════
+
+echo "--- SQL drift tests ---"
+
+QUERIES_FILE="${SCRIPT_DIR}/../queries.sql"
+ASM_STRINGS="${SCRIPT_DIR}/src/strings.asm"
+
+# Extract a named query from queries.sql: collects all non-comment, non-empty
+# lines between "-- name: <name>" and the next "-- name:" (or EOF), strips
+# leading/trailing whitespace, joins into one line, and removes trailing ";".
+extract_query() {
+    local name="$1" file="$2"
+    local in_block=false
+    local result=""
+    while IFS= read -r line; do
+        if [[ "${line}" == "-- name: ${name}" ]]; then
+            in_block=true
+            continue
+        elif [[ "${line}" == "-- name: "* ]]; then
+            if ${in_block}; then break; fi
+            continue
+        fi
+        if ${in_block}; then
+            [[ "${line}" == "--"* ]] && continue
+            local trimmed
+            trimmed=$(echo "${line}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            [[ -z "${trimmed}" ]] && continue
+            if [[ -n "${result}" ]]; then
+                result="${result} ${trimmed}"
+            else
+                result="${trimmed}"
+            fi
+        fi
+    done < "${file}"
+    result="${result%%;}"
+    printf '%s' "${result}"
+}
+
+# Concatenate all db lines from strings.asm for a given label into one string.
+# NASM syntax: db `...`, or db `...`, 0
+extract_asm_sql() {
+    local label="$1" file="$2"
+    local in_block=false
+    local result=""
+    while IFS= read -r line; do
+        if [[ "${line}" =~ ^"${label}": ]]; then
+            in_block=true
+            continue
+        fi
+        if ${in_block}; then
+            # Stop at next label or non-db line (but allow blank lines between db lines)
+            if [[ "${line}" =~ ^[a-zA-Z_\.] ]] && [[ "${line}" != *"db "* ]]; then
+                break
+            fi
+            if [[ "${line}" == *"db "* ]]; then
+                # Extract content between backticks
+                local content
+                content=$(echo "${line}" | sed "s/.*db \`//;s/\`.*//")
+                result="${result}${content}"
+            fi
+        fi
+    done < "${file}"
+    printf '%s' "${result}"
+}
+
+# --- Validate INSERT column list ---
+
+canonical_insert=$(extract_query "insert_reading" "${QUERIES_FILE}")
+# Extract just the column names from canonical INSERT (between "(" and ")")
+canonical_insert_cols=$(echo "${canonical_insert}" | sed 's/.*INSERT INTO readings (//;s/).*//' | tr -s '[:space:],' ' ' | sed 's/^ //;s/ $//')
+
+asm_insert=$(extract_asm_sql "sql_insert_reading" "${ASM_STRINGS}")
+asm_insert_cols=$(echo "${asm_insert}" | sed 's/.*INSERT INTO readings (//;s/).*//' | tr -s '[:space:],' ' ' | sed 's/^ //;s/ $//')
+
+assert_eq "insert columns match queries.sql" "${canonical_insert_cols}" "${asm_insert_cols}"
+
+# --- Validate reading columns in json_object keys ---
+
+canonical_cols=$(extract_query "reading_columns" "${QUERIES_FILE}")
+# Normalize to space-separated, no commas
+canonical_col_list=$(echo "${canonical_cols}" | tr ',' '\n' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//' | sort)
+
+# Extract json_object keys from sql_readings_json (the column names used in SELECT)
+asm_readings=$(extract_asm_sql "sql_readings_json" "${ASM_STRINGS}")
+# json_object uses 'key',column pairs — extract the column names (unquoted ones)
+asm_reading_cols=$(echo "${asm_readings}" | grep -oP "'[^']+'" | tr -d "'" | sort)
+
+# Compare: canonical should have id + the 16 data columns; ASM json_object has the same set
+for col in ${canonical_col_list}; do
+    assert_contains "readings json_object has column '${col}'" "${asm_reading_cols}" "${col}"
+done
+
+# --- Validate latest query uses JOIN with GROUP BY device_id ---
+
+asm_latest=$(extract_asm_sql "sql_latest_json" "${ASM_STRINGS}")
+assert_contains "latest query INNER JOIN" "${asm_latest}" "INNER JOIN"
+assert_contains "latest query GROUP BY device_id" "${asm_latest}" "GROUP BY device_id"
+
+# --- Validate devices query structure ---
+
+asm_devices=$(extract_asm_sql "sql_devices_json" "${ASM_STRINGS}")
+assert_contains "devices query GROUP BY device_id" "${asm_devices}" "GROUP BY device_id"
+assert_contains "devices query COUNT(*)" "${asm_devices}" "COUNT(*)"
+assert_contains "devices query MIN(timestamp)" "${asm_devices}" "MIN(timestamp)"
+assert_contains "devices query MAX(timestamp)" "${asm_devices}" "MAX(timestamp)"
+
+# --- Validate count query ---
+
+canonical_count=$(extract_query "count_readings" "${QUERIES_FILE}")
+asm_count=$(extract_asm_sql "sql_count_readings" "${ASM_STRINGS}")
+# Strip trailing semicolons for comparison
+asm_count_norm="${asm_count%%;}"
+assert_eq "count query matches queries.sql" "${canonical_count}" "${asm_count_norm}"
+
+# --- Validate devices query has same columns as queries.sql ---
+
+canonical_devices=$(extract_query "select_devices" "${QUERIES_FILE}")
+# Check key columns from canonical: device_id, device_type, device_ip, last_seen, reading_count
+assert_contains "devices query has device_id" "${asm_devices}" "device_id"
+assert_contains "devices query has device_type" "${asm_devices}" "device_type"
+assert_contains "devices query has device_ip" "${asm_devices}" "device_ip"
 
 echo ""
 

@@ -1,4 +1,4 @@
-import std/[json, times]
+import std/[json, times, tables, strutils]
 import sqlite3_wrapper
 
 type
@@ -50,6 +50,76 @@ proc nowMillis*(): int64 =
   let t = getTime()
   return t.toUnix() * 1000 + int64(t.nanosecond div 1_000_000)
 
+const QueryCols = "id, timestamp, device_id, device_type, device_ip, " &
+  "pm01, pm02, pm10, pm02_compensated, rco2, " &
+  "atmp, atmp_compensated, rhum, rhum_compensated, " &
+  "tvoc_index, nox_index, wifi"
+
+# --- Shared queries.sql loading ---
+
+proc parseQueriesSql(content: string): Table[string, string] =
+  result = initTable[string, string]()
+  var name = ""
+  var lines: seq[string] = @[]
+  for line in content.splitLines():
+    if line.startsWith("-- name: "):
+      if name.len > 0:
+        result[name] = lines.join("\n").strip().strip(chars = {';'})
+      name = line[9..^1].strip()
+      lines = @[]
+    elif not line.startsWith("--") and line.strip().len > 0:
+      lines.add(line.strip())
+  if name.len > 0:
+    result[name] = lines.join("\n").strip().strip(chars = {';'})
+
+proc convertPlaceholders(sql: string): string =
+  ## Replace :name placeholders with ?N (1-based positional) for SQLite.
+  result = ""
+  var n = 1
+  var i = 0
+  while i < sql.len:
+    if sql[i] == ':' and i + 1 < sql.len and sql[i + 1] in {'a'..'z'}:
+      var j = i + 1
+      while j < sql.len and sql[j] in {'a'..'z', '0'..'9', '_'}:
+        inc j
+      result.add "?" & $n
+      inc n
+      i = j
+    else:
+      result.add sql[i]
+      inc i
+
+var queriesLoaded = false
+var loadedQueryCols = ""
+var loadedInsertSql = ""
+var loadedLatestSql = ""
+var loadedDevicesSql = ""
+var loadedCountSql = ""
+
+proc ensureQueriesLoaded() =
+  if queriesLoaded: return
+  queriesLoaded = true
+  try:
+    let content = readFile("../queries.sql")
+    let queries = parseQueriesSql(content)
+    if "reading_columns" in queries:
+      loadedQueryCols = queries["reading_columns"].replace("\n", " ").strip()
+    if "insert_reading" in queries:
+      loadedInsertSql = convertPlaceholders(queries["insert_reading"])
+    if "select_latest" in queries:
+      loadedLatestSql = queries["select_latest"]
+    if "select_devices" in queries:
+      loadedDevicesSql = queries["select_devices"]
+    if "count_readings" in queries:
+      loadedCountSql = queries["count_readings"]
+  except IOError:
+    stderr.writeLine "[db] queries.sql not found, using defaults"
+
+proc getQueryCols(): string =
+  if loadedQueryCols.len > 0: loadedQueryCols else: QueryCols
+
+# --- End shared queries.sql loading ---
+
 proc dbInitialize*(db: Sqlite3): bool =
   let pragmas = "PRAGMA journal_mode = WAL;" &
                 "PRAGMA busy_timeout = 5000;" &
@@ -75,6 +145,8 @@ proc dbInitialize*(db: Sqlite3): bool =
     stderr.writeLine "[db] schema error: " & (if errmsg != nil: $errmsg else: "unknown")
     if errmsg != nil: sqlite3_free(errmsg)
     return false
+
+  ensureQueriesLoaded()
 
   return true
 
@@ -129,15 +201,10 @@ proc rowToReading(stmt: Sqlite3Stmt): Reading =
   result.hasWifi = not colIsNull(stmt, 16)
   if result.hasWifi: result.wifi = sqlite3_column_int64(stmt, 16)
 
-const QueryCols = "id, timestamp, device_id, device_type, device_ip, " &
-  "pm01, pm02, pm10, pm02_compensated, rco2, " &
-  "atmp, atmp_compensated, rhum, rhum_compensated, " &
-  "tvoc_index, nox_index, wifi"
-
 proc queryReadings*(db: Sqlite3, q: ReadingQuery): seq[Reading] =
   let wantDevice = q.device.len > 0 and q.device != "all"
 
-  var sql = "SELECT " & QueryCols & " FROM readings WHERE "
+  var sql = "SELECT " & getQueryCols() & " FROM readings WHERE "
   if wantDevice:
     sql.add "device_id = ?3 AND "
   sql.add "timestamp >= ?1 AND timestamp <= ?2 ORDER BY timestamp ASC"
@@ -171,16 +238,17 @@ proc queryReadings*(db: Sqlite3, q: ReadingQuery): seq[Reading] =
   discard sqlite3_finalize(stmt)
 
 proc getLatestReadings*(db: Sqlite3): seq[Reading] =
-  let sql = "SELECT r.id, r.timestamp, r.device_id, r.device_type, r.device_ip, " &
-    "r.pm01, r.pm02, r.pm10, r.pm02_compensated, r.rco2, " &
-    "r.atmp, r.atmp_compensated, r.rhum, r.rhum_compensated, " &
-    "r.tvoc_index, r.nox_index, r.wifi " &
-    "FROM readings r " &
-    "INNER JOIN (" &
-    "    SELECT device_id, MAX(id) as max_id " &
-    "    FROM readings " &
-    "    GROUP BY device_id" &
-    ") latest ON r.id = latest.max_id"
+  let sql = if loadedLatestSql.len > 0: loadedLatestSql
+    else: "SELECT r.id, r.timestamp, r.device_id, r.device_type, r.device_ip, " &
+      "r.pm01, r.pm02, r.pm10, r.pm02_compensated, r.rco2, " &
+      "r.atmp, r.atmp_compensated, r.rhum, r.rhum_compensated, " &
+      "r.tvoc_index, r.nox_index, r.wifi " &
+      "FROM readings r " &
+      "INNER JOIN (" &
+      "    SELECT device_id, MAX(id) as max_id " &
+      "    FROM readings " &
+      "    GROUP BY device_id" &
+      ") latest ON r.id = latest.max_id"
 
   var stmt: Sqlite3Stmt
   let rc = sqlite3_prepare_v2(db, sql.cstring, -1.cint, addr stmt, nil)
@@ -194,9 +262,10 @@ proc getLatestReadings*(db: Sqlite3): seq[Reading] =
   discard sqlite3_finalize(stmt)
 
 proc getDevices*(db: Sqlite3): seq[DeviceSummary] =
-  let sql = "SELECT device_id, device_type, device_ip, " &
-    "MAX(timestamp) as last_seen, COUNT(*) as reading_count " &
-    "FROM readings GROUP BY device_id ORDER BY device_type"
+  let sql = if loadedDevicesSql.len > 0: loadedDevicesSql
+    else: "SELECT device_id, device_type, device_ip, " &
+      "MAX(timestamp) as last_seen, COUNT(*) as reading_count " &
+      "FROM readings GROUP BY device_id ORDER BY device_type"
 
   var stmt: Sqlite3Stmt
   let rc = sqlite3_prepare_v2(db, sql.cstring, -1.cint, addr stmt, nil)
@@ -216,7 +285,8 @@ proc getDevices*(db: Sqlite3): seq[DeviceSummary] =
   discard sqlite3_finalize(stmt)
 
 proc getReadingsCount*(db: Sqlite3): int64 =
-  let sql = "SELECT COUNT(*) FROM readings"
+  let sql = if loadedCountSql.len > 0: loadedCountSql
+    else: "SELECT COUNT(*) FROM readings"
   var stmt: Sqlite3Stmt
   let rc = sqlite3_prepare_v2(db, sql.cstring, -1.cint, addr stmt, nil)
   if rc != SQLITE_OK: return 0
@@ -264,17 +334,18 @@ proc insertReading*(db: Sqlite3, ip: string, data: JsonNode): bool =
 
   let rawJson = $data
 
-  let sql = "INSERT INTO readings (" &
-    "    timestamp, device_id, device_type, device_ip," &
-    "    pm01, pm02, pm10, pm02_compensated," &
-    "    rco2, atmp, atmp_compensated, rhum, rhum_compensated," &
-    "    tvoc_index, nox_index, wifi, raw_json" &
-    ") VALUES (" &
-    "    ?1, ?2, ?3, ?4," &
-    "    ?5, ?6, ?7, ?8," &
-    "    ?9, ?10, ?11, ?12, ?13," &
-    "    ?14, ?15, ?16, ?17" &
-    ")"
+  let sql = if loadedInsertSql.len > 0: loadedInsertSql
+    else: "INSERT INTO readings (" &
+      "    timestamp, device_id, device_type, device_ip," &
+      "    pm01, pm02, pm10, pm02_compensated," &
+      "    rco2, atmp, atmp_compensated, rhum, rhum_compensated," &
+      "    tvoc_index, nox_index, wifi, raw_json" &
+      ") VALUES (" &
+      "    ?1, ?2, ?3, ?4," &
+      "    ?5, ?6, ?7, ?8," &
+      "    ?9, ?10, ?11, ?12, ?13," &
+      "    ?14, ?15, ?16, ?17" &
+      ")"
 
   var stmt: Sqlite3Stmt
   var rc = sqlite3_prepare_v2(db, sql.cstring, -1.cint, addr stmt, nil)

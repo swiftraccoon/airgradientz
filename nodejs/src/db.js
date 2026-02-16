@@ -14,27 +14,36 @@ const schemaPath = path.join(__dirname, '..', '..', 'schema.sql');
 const schema = fs.readFileSync(schemaPath, 'utf8');
 db.exec(schema);
 
-// Columns returned by query endpoints (excludes raw_json to keep responses small)
-const QUERY_COLS = [
-  'id', 'timestamp', 'device_id', 'device_type', 'device_ip',
-  'pm01', 'pm02', 'pm10', 'pm02_compensated', 'rco2',
-  'atmp', 'atmp_compensated', 'rhum', 'rhum_compensated',
-  'tvoc_index', 'nox_index', 'wifi',
-].join(', ');
+// Load named queries from shared queries.sql
+function parseQueriesSql(content) {
+  const queries = new Map();
+  let name = null;
+  let lines = [];
+  for (const line of content.split('\n')) {
+    const m = line.match(/^-- name: (\S+)/);
+    if (m) {
+      if (name) {
+        queries.set(name, lines.join('\n').trim().replace(/;$/, ''));
+      }
+      name = m[1];
+      lines = [];
+    } else if (!line.startsWith('--') && line.trim()) {
+      lines.push(line.trim());
+    }
+  }
+  if (name) {
+    queries.set(name, lines.join('\n').trim().replace(/;$/, ''));
+  }
+  return queries;
+}
 
-const insertStmt = db.prepare(`
-  INSERT INTO readings (
-    timestamp, device_id, device_type, device_ip,
-    pm01, pm02, pm10, pm02_compensated,
-    rco2, atmp, atmp_compensated, rhum, rhum_compensated,
-    tvoc_index, nox_index, wifi, raw_json
-  ) VALUES (
-    @timestamp, @device_id, @device_type, @device_ip,
-    @pm01, @pm02, @pm10, @pm02_compensated,
-    @rco2, @atmp, @atmp_compensated, @rhum, @rhum_compensated,
-    @tvoc_index, @nox_index, @wifi, @raw_json
-  )
-`);
+const queriesPath = path.join(__dirname, '..', '..', 'queries.sql');
+const queries = parseQueriesSql(fs.readFileSync(queriesPath, 'utf8'));
+
+// Column list from shared queries.sql (multiline -> single line)
+const QUERY_COLS = queries.get('reading_columns').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
+
+const insertStmt = db.prepare(queries.get('insert_reading').replace(/:([a-z_]+)/g, '@$1'));
 
 // Pre-prepared statements for all query variants (avoids per-request prepare leak)
 const queryStmts = Object.freeze({
@@ -44,26 +53,9 @@ const queryStmts = Object.freeze({
   oneDevRangeLimit: db.prepare(`SELECT ${QUERY_COLS} FROM readings WHERE device_id = @device AND timestamp >= @from AND timestamp <= @to ORDER BY timestamp ASC LIMIT @limit`),
 });
 
-const devicesStmt = db.prepare(`
-  SELECT device_id, device_type, device_ip,
-         MAX(timestamp) as last_seen,
-         COUNT(*) as reading_count
-  FROM readings
-  GROUP BY device_id
-  ORDER BY device_type
-`);
+const devicesStmt = db.prepare(queries.get('select_devices'));
 
-const QUERY_COLS_ALIASED = QUERY_COLS.split(', ').map(c => `r.${c}`).join(', ');
-
-const latestStmt = db.prepare(`
-  SELECT ${QUERY_COLS_ALIASED}
-  FROM readings r
-  INNER JOIN (
-    SELECT device_id, MAX(id) as max_id
-    FROM readings
-    GROUP BY device_id
-  ) latest ON r.id = latest.max_id
-`);
+const latestStmt = db.prepare(queries.get('select_latest'));
 
 function insertReading(deviceIp, data) {
   const model = data.model || '';
@@ -122,10 +114,10 @@ function getLatestReadings() {
   return latestStmt.all();
 }
 
-const countStmt = db.prepare('SELECT COUNT(*) as count FROM readings');
+const countStmt = db.prepare(queries.get('count_readings'));
 
 function getReadingsCount() {
-  return countStmt.get().count;
+  return Object.values(countStmt.get())[0];
 }
 
 function checkpoint() {

@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	_ "github.com/mattn/go-sqlite3"
@@ -48,16 +50,140 @@ type ReadingQuery struct {
 	Limit  int
 }
 
-const queryCols = `id, timestamp, device_id, device_type, device_ip,
-	pm01, pm02, pm10, pm02_compensated, rco2,
-	atmp, atmp_compensated, rhum, rhum_compensated,
-	tvoc_index, nox_index, wifi`
+// Package-level SQL loaded from queries.sql (or hardcoded fallbacks).
+var (
+	queryCols string
+	insertSQL string
+	latestSQL string
+	devicesSQL string
+	countSQL  string
+
+	loadQueriesOnce sync.Once
+)
+
+var placeholderRe = regexp.MustCompile(`:[a-z][a-z0-9_]*`)
+
+func loadQueries() {
+	loadQueriesOnce.Do(func() {
+		content, err := os.ReadFile("../queries.sql")
+		if err != nil {
+			log.Printf("[db] queries.sql not found (%v), using defaults", err)
+			setDefaultQueries()
+			return
+		}
+		queries := parseQueriesSQL(string(content))
+
+		if v, ok := queries["reading_columns"]; ok {
+			queryCols = v
+		} else {
+			queryCols = defaultQueryCols
+		}
+
+		if v, ok := queries["insert_reading"]; ok {
+			insertSQL = convertPlaceholders(v)
+		} else {
+			insertSQL = defaultInsertSQL
+		}
+
+		if v, ok := queries["select_latest"]; ok {
+			latestSQL = v
+		} else {
+			latestSQL = defaultLatestSQL
+		}
+
+		if v, ok := queries["select_devices"]; ok {
+			devicesSQL = v
+		} else {
+			devicesSQL = defaultDevicesSQL
+		}
+
+		if v, ok := queries["count_readings"]; ok {
+			countSQL = v
+		} else {
+			countSQL = defaultCountSQL
+		}
+
+		log.Printf("[db] loaded %d queries from queries.sql", len(queries))
+	})
+}
+
+func setDefaultQueries() {
+	queryCols = defaultQueryCols
+	insertSQL = defaultInsertSQL
+	latestSQL = defaultLatestSQL
+	devicesSQL = defaultDevicesSQL
+	countSQL = defaultCountSQL
+}
+
+const defaultQueryCols = `id, timestamp, device_id, device_type, device_ip,
+pm01, pm02, pm10, pm02_compensated, rco2,
+atmp, atmp_compensated, rhum, rhum_compensated,
+tvoc_index, nox_index, wifi`
+
+const defaultInsertSQL = `INSERT INTO readings (
+	timestamp, device_id, device_type, device_ip,
+	pm01, pm02, pm10, pm02_compensated,
+	rco2, atmp, atmp_compensated, rhum, rhum_compensated,
+	tvoc_index, nox_index, wifi, raw_json
+) VALUES (
+	?, ?, ?, ?,
+	?, ?, ?, ?,
+	?, ?, ?, ?, ?,
+	?, ?, ?, ?
+)`
+
+const defaultLatestSQL = `SELECT r.id, r.timestamp, r.device_id, r.device_type, r.device_ip,
+	r.pm01, r.pm02, r.pm10, r.pm02_compensated, r.rco2,
+	r.atmp, r.atmp_compensated, r.rhum, r.rhum_compensated,
+	r.tvoc_index, r.nox_index, r.wifi
+	FROM readings r
+	INNER JOIN (
+		SELECT device_id, MAX(id) as max_id
+		FROM readings GROUP BY device_id
+	) latest ON r.id = latest.max_id`
+
+const defaultDevicesSQL = `SELECT device_id, device_type, device_ip,
+	MAX(timestamp) as last_seen, COUNT(*) as reading_count
+	FROM readings GROUP BY device_id ORDER BY device_type`
+
+const defaultCountSQL = `SELECT COUNT(*) FROM readings`
+
+func parseQueriesSQL(content string) map[string]string {
+	queries := make(map[string]string)
+	var name string
+	var lines []string
+
+	for _, line := range strings.Split(content, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "-- name: ") {
+			if name != "" {
+				queries[name] = strings.TrimRight(strings.TrimSpace(strings.Join(lines, "\n")), ";")
+			}
+			name = strings.TrimSpace(strings.TrimPrefix(trimmed, "-- name: "))
+			lines = nil
+		} else if strings.HasPrefix(trimmed, "--") || trimmed == "" {
+			// skip comments and blank lines
+		} else {
+			lines = append(lines, trimmed)
+		}
+	}
+	if name != "" {
+		queries[name] = strings.TrimRight(strings.TrimSpace(strings.Join(lines, "\n")), ";")
+	}
+	return queries
+}
+
+func convertPlaceholders(sql string) string {
+	return placeholderRe.ReplaceAllString(sql, "?")
+}
 
 func NowMillis() int64 {
 	return time.Now().UnixMilli()
 }
 
 func OpenDB(dbPath string) (*sql.DB, error) {
+	loadQueries()
+
 	dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=1"
 	db, err := sql.Open("sqlite3", dsn)
 	if err != nil {
@@ -92,18 +218,6 @@ func InsertReading(db *sql.DB, ip string, data map[string]any) error {
 	if err != nil {
 		return fmt.Errorf("marshal raw json: %w", err)
 	}
-
-	const insertSQL = `INSERT INTO readings (
-		timestamp, device_id, device_type, device_ip,
-		pm01, pm02, pm10, pm02_compensated,
-		rco2, atmp, atmp_compensated, rhum, rhum_compensated,
-		tvoc_index, nox_index, wifi, raw_json
-	) VALUES (
-		?, ?, ?, ?,
-		?, ?, ?, ?,
-		?, ?, ?, ?, ?,
-		?, ?, ?, ?
-	)`
 
 	_, err = db.Exec(insertSQL,
 		NowMillis(), serial, deviceType, ip,
@@ -154,16 +268,6 @@ func QueryReadings(db *sql.DB, q ReadingQuery) ([]Reading, error) {
 }
 
 func GetLatestReadings(db *sql.DB) ([]Reading, error) {
-	const latestSQL = `SELECT r.id, r.timestamp, r.device_id, r.device_type, r.device_ip,
-		r.pm01, r.pm02, r.pm10, r.pm02_compensated, r.rco2,
-		r.atmp, r.atmp_compensated, r.rhum, r.rhum_compensated,
-		r.tvoc_index, r.nox_index, r.wifi
-		FROM readings r
-		INNER JOIN (
-			SELECT device_id, MAX(id) as max_id
-			FROM readings GROUP BY device_id
-		) latest ON r.id = latest.max_id`
-
 	rows, err := db.Query(latestSQL)
 	if err != nil {
 		return nil, fmt.Errorf("get latest readings: %w", err)
@@ -174,10 +278,6 @@ func GetLatestReadings(db *sql.DB) ([]Reading, error) {
 }
 
 func GetDevices(db *sql.DB) ([]DeviceSummary, error) {
-	const devicesSQL = `SELECT device_id, device_type, device_ip,
-		MAX(timestamp) as last_seen, COUNT(*) as reading_count
-		FROM readings GROUP BY device_id ORDER BY device_type`
-
 	rows, err := db.Query(devicesSQL)
 	if err != nil {
 		return nil, fmt.Errorf("get devices: %w", err)
@@ -198,7 +298,7 @@ func GetDevices(db *sql.DB) ([]DeviceSummary, error) {
 
 func GetReadingsCount(db *sql.DB) (int64, error) {
 	var count int64
-	err := db.QueryRow("SELECT COUNT(*) FROM readings").Scan(&count)
+	err := db.QueryRow(countSQL).Scan(&count)
 	return count, err
 }
 

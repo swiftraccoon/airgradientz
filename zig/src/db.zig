@@ -38,6 +38,146 @@ pub const ReadingQuery = struct {
     limit: i64,
 };
 
+// ---- loaded queries from queries.sql ----
+
+var loaded_query_cols: ?[]const u8 = null;
+var loaded_insert_sql: ?[:0]const u8 = null;
+var loaded_latest_sql: ?[:0]const u8 = null;
+var loaded_devices_sql: ?[:0]const u8 = null;
+var loaded_count_sql: ?[:0]const u8 = null;
+
+fn loadQueries() void {
+    const allocator = std.heap.page_allocator;
+
+    const content = readQueriesFile(allocator) orelse {
+        std.log.warn("[db] queries.sql not found, using defaults", .{});
+        return;
+    };
+
+    parseQueriesSql(allocator, content);
+}
+
+fn readQueriesFile(allocator: std.mem.Allocator) ?[]const u8 {
+    const paths = [_][]const u8{ "../queries.sql", "./queries.sql" };
+    for (&paths) |path| {
+        const file = std.fs.cwd().openFile(path, .{}) catch continue;
+        defer file.close();
+        const stat = file.stat() catch continue;
+        if (stat.size == 0 or stat.size > 65536) continue;
+        const buf = allocator.alloc(u8, stat.size) catch continue;
+        const n = file.readAll(buf) catch continue;
+        return buf[0..n];
+    }
+    return null;
+}
+
+fn parseQueriesSql(allocator: std.mem.Allocator, content: []const u8) void {
+    var name: ?[]const u8 = null;
+    var lines_buf: [32][]const u8 = undefined;
+    var line_count: usize = 0;
+
+    var line_iter = std.mem.splitScalar(u8, content, '\n');
+    while (line_iter.next()) |line| {
+        const trimmed = std.mem.trim(u8, line, " \t\r");
+
+        if (std.mem.startsWith(u8, trimmed, "-- name: ")) {
+            // Save previous query
+            if (name) |n| {
+                saveQuery(allocator, n, lines_buf[0..line_count]);
+            }
+            name = trimmed[9..];
+            line_count = 0;
+        } else if (!std.mem.startsWith(u8, trimmed, "--") and trimmed.len > 0) {
+            if (line_count < lines_buf.len) {
+                lines_buf[line_count] = trimmed;
+                line_count += 1;
+            }
+        }
+    }
+    // Save last query
+    if (name) |n| {
+        saveQuery(allocator, n, lines_buf[0..line_count]);
+    }
+}
+
+fn saveQuery(allocator: std.mem.Allocator, name: []const u8, lines: []const []const u8) void {
+    if (lines.len == 0) return;
+
+    // Join lines with newline
+    var total_len: usize = 0;
+    for (lines) |l| {
+        if (total_len > 0) total_len += 1; // newline
+        total_len += l.len;
+    }
+
+    const joined = allocator.alloc(u8, total_len) catch return;
+    var pos: usize = 0;
+    for (lines) |l| {
+        if (pos > 0) {
+            joined[pos] = '\n';
+            pos += 1;
+        }
+        @memcpy(joined[pos .. pos + l.len], l);
+        pos += l.len;
+    }
+
+    // Strip trailing semicolons and whitespace
+    var end = pos;
+    while (end > 0 and (joined[end - 1] == ';' or joined[end - 1] == ' ' or joined[end - 1] == '\n')) {
+        end -= 1;
+    }
+
+    const sql = joined[0..end];
+
+    if (std.mem.eql(u8, name, "reading_columns")) {
+        loaded_query_cols = sql;
+    } else if (std.mem.eql(u8, name, "insert_reading")) {
+        loaded_insert_sql = convertPlaceholders(allocator, sql);
+    } else if (std.mem.eql(u8, name, "select_latest")) {
+        loaded_latest_sql = allocNullTerminated(allocator, sql);
+    } else if (std.mem.eql(u8, name, "select_devices")) {
+        loaded_devices_sql = allocNullTerminated(allocator, sql);
+    } else if (std.mem.eql(u8, name, "count_readings")) {
+        loaded_count_sql = allocNullTerminated(allocator, sql);
+    }
+}
+
+fn allocNullTerminated(allocator: std.mem.Allocator, s: []const u8) ?[:0]const u8 {
+    const buf = allocator.allocSentinel(u8, s.len, 0) catch return null;
+    @memcpy(buf[0..s.len], s);
+    return buf[0..s.len :0];
+}
+
+fn convertPlaceholders(allocator: std.mem.Allocator, sql: []const u8) ?[:0]const u8 {
+    var buf: [4096]u8 = [_]u8{0} ** 4096;
+    var out: usize = 0;
+    var n: u32 = 1;
+    var i: usize = 0;
+
+    while (i < sql.len) {
+        if (sql[i] == ':' and i + 1 < sql.len and std.ascii.isAlphabetic(sql[i + 1])) {
+            // Skip :name
+            i += 1;
+            while (i < sql.len and (std.ascii.isAlphanumeric(sql[i]) or sql[i] == '_')) {
+                i += 1;
+            }
+            const written = std.fmt.bufPrint(buf[out..], "?{d}", .{n}) catch break;
+            out += written.len;
+            n += 1;
+        } else {
+            if (out < buf.len) {
+                buf[out] = sql[i];
+                out += 1;
+            }
+            i += 1;
+        }
+    }
+
+    const result = allocator.allocSentinel(u8, out, 0) catch return null;
+    @memcpy(result[0..out], buf[0..out]);
+    return result[0..out :0];
+}
+
 pub fn nowMillis() i64 {
     const ts = std.posix.clock_gettime(.REALTIME) catch {
         std.log.err("[db] clock_gettime failed, using epoch", .{});
@@ -47,6 +187,8 @@ pub fn nowMillis() i64 {
 }
 
 pub fn initialize(db: SqliteDb) !void {
+    loadQueries();
+
     const pragmas =
         "PRAGMA journal_mode = WAL;" ++
         "PRAGMA busy_timeout = 5000;" ++
@@ -163,7 +305,7 @@ pub fn insertReading(db: SqliteDb, ip: []const u8, data: std.json.Value, raw_jso
 
     const serial = extractStr(data, "serialno") orelse "unknown";
 
-    const sql =
+    const fallback_insert_sql =
         "INSERT INTO readings (" ++
         "    timestamp, device_id, device_type, device_ip," ++
         "    pm01, pm02, pm10, pm02_compensated," ++
@@ -175,6 +317,7 @@ pub fn insertReading(db: SqliteDb, ip: []const u8, data: std.json.Value, raw_jso
         "    ?9, ?10, ?11, ?12, ?13," ++
         "    ?14, ?15, ?16, ?17" ++
         ")";
+    const sql: [*:0]const u8 = if (loaded_insert_sql) |q| q.ptr else fallback_insert_sql.ptr;
 
     var stmt: ?*c.sqlite3_stmt = null;
     var rc = c.sqlite3_prepare_v2(db, sql, -1, &stmt, null);
@@ -272,7 +415,8 @@ pub fn queryReadings(allocator: std.mem.Allocator, db: SqliteDb, q: ReadingQuery
     var fbs = std.io.fixedBufferStream(&sql_buf);
     const writer = fbs.writer();
 
-    writer.print("SELECT {s} FROM readings WHERE ", .{query_cols}) catch return error.SqliteError;
+    const cols = loaded_query_cols orelse query_cols;
+    writer.print("SELECT {s} FROM readings WHERE ", .{cols}) catch return error.SqliteError;
 
     if (want_device) {
         writer.writeAll("device_id = ?3 AND ") catch return error.SqliteError;
@@ -330,7 +474,7 @@ pub fn queryReadings(allocator: std.mem.Allocator, db: SqliteDb, q: ReadingQuery
 }
 
 pub fn getLatestReadings(allocator: std.mem.Allocator, db: SqliteDb) ![]Reading {
-    const sql =
+    const fallback_latest_sql =
         "SELECT r.id, r.timestamp, r.device_id, r.device_type, r.device_ip, " ++
         "r.pm01, r.pm02, r.pm10, r.pm02_compensated, r.rco2, " ++
         "r.atmp, r.atmp_compensated, r.rhum, r.rhum_compensated, " ++
@@ -341,6 +485,7 @@ pub fn getLatestReadings(allocator: std.mem.Allocator, db: SqliteDb) ![]Reading 
         "    FROM readings " ++
         "    GROUP BY device_id" ++
         ") latest ON r.id = latest.max_id";
+    const sql: [*:0]const u8 = if (loaded_latest_sql) |q| q.ptr else fallback_latest_sql.ptr;
 
     var stmt: ?*c.sqlite3_stmt = null;
     var rc = c.sqlite3_prepare_v2(db, sql, -1, &stmt, null);
@@ -362,13 +507,14 @@ pub fn getLatestReadings(allocator: std.mem.Allocator, db: SqliteDb) ![]Reading 
 }
 
 pub fn getDevices(allocator: std.mem.Allocator, db: SqliteDb) ![]DeviceSummary {
-    const sql =
+    const fallback_devices_sql =
         "SELECT device_id, device_type, device_ip, " ++
         "       MAX(timestamp) as last_seen, " ++
         "       COUNT(*) as reading_count " ++
         "FROM readings " ++
         "GROUP BY device_id " ++
         "ORDER BY device_type";
+    const sql: [*:0]const u8 = if (loaded_devices_sql) |q| q.ptr else fallback_devices_sql.ptr;
 
     var stmt: ?*c.sqlite3_stmt = null;
     var rc = c.sqlite3_prepare_v2(db, sql, -1, &stmt, null);
@@ -408,7 +554,8 @@ pub fn checkpoint(db: SqliteDb) !void {
 }
 
 pub fn getReadingsCount(db: SqliteDb) !i64 {
-    const sql = "SELECT COUNT(*) FROM readings";
+    const fallback_count_sql = "SELECT COUNT(*) FROM readings";
+    const sql: [*:0]const u8 = if (loaded_count_sql) |q| q.ptr else fallback_count_sql.ptr;
     var stmt: ?*c.sqlite3_stmt = null;
     var rc = c.sqlite3_prepare_v2(db, sql, -1, &stmt, null);
     if (rc != c.SQLITE_OK) {
@@ -496,18 +643,15 @@ fn testOpenDb() !SqliteDb {
     return db;
 }
 
-const test_indoor_json =
-    \\{"wifi":-47,"serialno":"abcdef123456","model":"I-9PSL","pm01":3,"pm02":5,"pm10":7,"pm02Compensated":6,"rco2":450,"atmp":22.5,"atmpCompensated":23.1,"rhum":45.0,"rhumCompensated":44.2,"tvocIndex":120,"noxIndex":15}
-;
-const test_outdoor_json =
-    \\{"wifi":-55,"serialno":"outdoor123","model":"O-1PST","pm01":10,"pm02":15,"pm10":20,"rco2":400,"atmp":18.3,"rhum":60.0}
-;
-const test_null_json =
-    \\{"wifi":-40,"serialno":"boot123","model":"I-9PSL"}
-;
-const test_zero_json =
-    \\{"wifi":-45,"serialno":"zero123","model":"I-9PSL","pm02Compensated":0,"atmpCompensated":0,"rhumCompensated":0}
-;
+fn loadFixtureJson(allocator: std.mem.Allocator, name: []const u8) ![]const u8 {
+    const content = try std.fs.cwd().readFileAlloc(allocator, "../test-fixtures.json", 1_048_576);
+    defer allocator.free(content);
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+    defer parsed.deinit();
+    const fixture = parsed.value.object.get(name) orelse return error.FixtureNotFound;
+    return std.json.Stringify.valueAlloc(allocator, fixture, .{});
+}
+
 const test_no_serial_json =
     \\{"wifi":-30,"model":"I-9PSL","pm02":5}
 ;
@@ -527,7 +671,9 @@ test "insert and query indoor reading" {
     const db = try testOpenDb();
     defer closeDb(db);
 
-    try testParseAndInsert(db, "192.168.1.1", test_indoor_json);
+    const fixture = try loadFixtureJson(testing.allocator, "indoorFull");
+    defer testing.allocator.free(fixture);
+    try testParseAndInsert(db, "192.168.1.1", fixture);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -542,19 +688,23 @@ test "insert and query indoor reading" {
 
     try testing.expectEqual(@as(usize, 1), readings.len);
     try testing.expectEqualStrings("indoor", readings[0].device_type);
-    try testing.expectEqualStrings("abcdef123456", readings[0].device_id);
+    try testing.expectEqualStrings("84fce602549c", readings[0].device_id);
     try testing.expectEqualStrings("192.168.1.1", readings[0].device_ip);
-    try testing.expectEqual(@as(?f64, 5.0), readings[0].pm02);
-    try testing.expectEqual(@as(?i64, 450), readings[0].rco2);
-    try testing.expectEqual(@as(?f64, 22.5), readings[0].atmp);
+    try testing.expectEqual(@as(?f64, 41.67), readings[0].pm02);
+    try testing.expectEqual(@as(?i64, 489), readings[0].rco2);
+    try testing.expectEqual(@as(?f64, 20.78), readings[0].atmp);
 }
 
 test "device type classification" {
     const db = try testOpenDb();
     defer closeDb(db);
 
-    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
-    try testParseAndInsert(db, "10.0.0.2", test_outdoor_json);
+    const indoor = try loadFixtureJson(testing.allocator, "indoorFull");
+    defer testing.allocator.free(indoor);
+    const outdoor = try loadFixtureJson(testing.allocator, "outdoorFull");
+    defer testing.allocator.free(outdoor);
+    try testParseAndInsert(db, "10.0.0.1", indoor);
+    try testParseAndInsert(db, "10.0.0.2", outdoor);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -583,7 +733,9 @@ test "null fields handling" {
     const db = try testOpenDb();
     defer closeDb(db);
 
-    try testParseAndInsert(db, "10.0.0.1", test_null_json);
+    const fixture = try loadFixtureJson(testing.allocator, "afterBoot");
+    defer testing.allocator.free(fixture);
+    try testParseAndInsert(db, "10.0.0.1", fixture);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -601,14 +753,16 @@ test "null fields handling" {
     try testing.expectEqual(@as(?f64, null), readings[0].pm02);
     try testing.expectEqual(@as(?i64, null), readings[0].rco2);
     try testing.expectEqual(@as(?f64, null), readings[0].atmp);
-    try testing.expectEqual(@as(?i64, -40), readings[0].wifi);
+    try testing.expectEqual(@as(?i64, -59), readings[0].wifi);
 }
 
 test "zero compensated values are not null" {
     const db = try testOpenDb();
     defer closeDb(db);
 
-    try testParseAndInsert(db, "10.0.0.1", test_zero_json);
+    const fixture = try loadFixtureJson(testing.allocator, "zeroCompensated");
+    defer testing.allocator.free(fixture);
+    try testParseAndInsert(db, "10.0.0.1", fixture);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -652,30 +806,38 @@ test "query with device filter" {
     const db = try testOpenDb();
     defer closeDb(db);
 
-    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
-    try testParseAndInsert(db, "10.0.0.2", test_outdoor_json);
+    const indoor = try loadFixtureJson(testing.allocator, "indoorFull");
+    defer testing.allocator.free(indoor);
+    const outdoor = try loadFixtureJson(testing.allocator, "outdoorFull");
+    defer testing.allocator.free(outdoor);
+    try testParseAndInsert(db, "10.0.0.1", indoor);
+    try testParseAndInsert(db, "10.0.0.2", outdoor);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
     const alloc = arena.allocator();
 
     const readings = try queryReadings(alloc, db, .{
-        .device = "abcdef123456",
+        .device = "84fce602549c",
         .from = 0,
         .to = nowMillis() + 1000,
         .limit = 100,
     });
 
     try testing.expectEqual(@as(usize, 1), readings.len);
-    try testing.expectEqualStrings("abcdef123456", readings[0].device_id);
+    try testing.expectEqualStrings("84fce602549c", readings[0].device_id);
 }
 
 test "query with device=all returns all" {
     const db = try testOpenDb();
     defer closeDb(db);
 
-    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
-    try testParseAndInsert(db, "10.0.0.2", test_outdoor_json);
+    const indoor = try loadFixtureJson(testing.allocator, "indoorFull");
+    defer testing.allocator.free(indoor);
+    const outdoor = try loadFixtureJson(testing.allocator, "outdoorFull");
+    defer testing.allocator.free(outdoor);
+    try testParseAndInsert(db, "10.0.0.1", indoor);
+    try testParseAndInsert(db, "10.0.0.2", outdoor);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -695,8 +857,12 @@ test "query with limit" {
     const db = try testOpenDb();
     defer closeDb(db);
 
-    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
-    try testParseAndInsert(db, "10.0.0.2", test_outdoor_json);
+    const indoor = try loadFixtureJson(testing.allocator, "indoorFull");
+    defer testing.allocator.free(indoor);
+    const outdoor = try loadFixtureJson(testing.allocator, "outdoorFull");
+    defer testing.allocator.free(outdoor);
+    try testParseAndInsert(db, "10.0.0.1", indoor);
+    try testParseAndInsert(db, "10.0.0.2", outdoor);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -716,10 +882,14 @@ test "getLatestReadings returns one per device" {
     const db = try testOpenDb();
     defer closeDb(db);
 
-    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
-    try testParseAndInsert(db, "10.0.0.2", test_outdoor_json);
+    const indoor = try loadFixtureJson(testing.allocator, "indoorFull");
+    defer testing.allocator.free(indoor);
+    const outdoor = try loadFixtureJson(testing.allocator, "outdoorFull");
+    defer testing.allocator.free(outdoor);
+    try testParseAndInsert(db, "10.0.0.1", indoor);
+    try testParseAndInsert(db, "10.0.0.2", outdoor);
     // Insert second indoor reading
-    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
+    try testParseAndInsert(db, "10.0.0.1", indoor);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -733,9 +903,13 @@ test "getDevices returns unique devices" {
     const db = try testOpenDb();
     defer closeDb(db);
 
-    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
-    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
-    try testParseAndInsert(db, "10.0.0.2", test_outdoor_json);
+    const indoor = try loadFixtureJson(testing.allocator, "indoorFull");
+    defer testing.allocator.free(indoor);
+    const outdoor = try loadFixtureJson(testing.allocator, "outdoorFull");
+    defer testing.allocator.free(outdoor);
+    try testParseAndInsert(db, "10.0.0.1", indoor);
+    try testParseAndInsert(db, "10.0.0.1", indoor);
+    try testParseAndInsert(db, "10.0.0.2", outdoor);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -749,8 +923,12 @@ test "getReadingsCount" {
     const db = try testOpenDb();
     defer closeDb(db);
 
-    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
-    try testParseAndInsert(db, "10.0.0.2", test_outdoor_json);
+    const indoor = try loadFixtureJson(testing.allocator, "indoorFull");
+    defer testing.allocator.free(indoor);
+    const outdoor = try loadFixtureJson(testing.allocator, "outdoorFull");
+    defer testing.allocator.free(outdoor);
+    try testParseAndInsert(db, "10.0.0.1", indoor);
+    try testParseAndInsert(db, "10.0.0.2", outdoor);
 
     const count = try getReadingsCount(db);
     try testing.expectEqual(@as(i64, 2), count);
@@ -778,7 +956,9 @@ test "readingToJson includes all fields" {
     const db = try testOpenDb();
     defer closeDb(db);
 
-    try testParseAndInsert(db, "10.0.0.1", test_indoor_json);
+    const fixture = try loadFixtureJson(testing.allocator, "indoorFull");
+    defer testing.allocator.free(fixture);
+    try testParseAndInsert(db, "10.0.0.1", fixture);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();
@@ -802,7 +982,9 @@ test "readingToJson with null fields" {
     const db = try testOpenDb();
     defer closeDb(db);
 
-    try testParseAndInsert(db, "10.0.0.1", test_null_json);
+    const fixture = try loadFixtureJson(testing.allocator, "afterBoot");
+    defer testing.allocator.free(fixture);
+    try testParseAndInsert(db, "10.0.0.1", fixture);
 
     var arena = std.heap.ArenaAllocator.init(testing.allocator);
     defer arena.deinit();

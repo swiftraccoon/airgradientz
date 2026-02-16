@@ -7,6 +7,14 @@ import std.typecons : Nullable;
 
 import d2sqlite3 : Database, Statement, Row;
 
+// Package-level SQL loaded from queries.sql (or hardcoded fallbacks).
+private string loadedQueryCols;
+private string loadedInsertSQL;
+private string loadedLatestSQL;
+private string loadedDevicesSQL;
+private string loadedCountSQL;
+private bool queriesLoaded = false;
+
 long nowMillis() {
     import core.time : convert;
     auto t = Clock.currStdTime(); // hnsecs since Jan 1, 1 AD
@@ -15,11 +23,149 @@ long nowMillis() {
     return (t - hnsecsSinceUnixEpoch) / 10_000;
 }
 
+private void loadQueries() {
+    if (queriesLoaded) return;
+    queriesLoaded = true;
+
+    import std.file : readText;
+    import std.stdio : stderr;
+
+    string content;
+    try {
+        content = readText("../queries.sql");
+    } catch (Exception e) {
+        stderr.writefln("[db] queries.sql not found (%s), using defaults", e.msg);
+        setDefaultQueries();
+        return;
+    }
+
+    auto queries = parseQueriesSQL(content);
+
+    if (auto p = "reading_columns" in queries)
+        loadedQueryCols = *p;
+    else
+        loadedQueryCols = DEFAULT_QUERY_COLS;
+
+    if (auto p = "insert_reading" in queries)
+        loadedInsertSQL = convertPlaceholders(*p);
+    else
+        loadedInsertSQL = DEFAULT_INSERT_SQL;
+
+    if (auto p = "select_latest" in queries)
+        loadedLatestSQL = *p;
+    else
+        loadedLatestSQL = DEFAULT_LATEST_SQL;
+
+    if (auto p = "select_devices" in queries)
+        loadedDevicesSQL = *p;
+    else
+        loadedDevicesSQL = DEFAULT_DEVICES_SQL;
+
+    if (auto p = "count_readings" in queries)
+        loadedCountSQL = *p;
+    else
+        loadedCountSQL = DEFAULT_COUNT_SQL;
+
+    stderr.writefln("[db] loaded %d queries from queries.sql", queries.length);
+}
+
+private void setDefaultQueries() {
+    loadedQueryCols = DEFAULT_QUERY_COLS;
+    loadedInsertSQL = DEFAULT_INSERT_SQL;
+    loadedLatestSQL = DEFAULT_LATEST_SQL;
+    loadedDevicesSQL = DEFAULT_DEVICES_SQL;
+    loadedCountSQL = DEFAULT_COUNT_SQL;
+}
+
+private enum DEFAULT_QUERY_COLS = "id, timestamp, device_id, device_type, device_ip, " ~
+    "pm01, pm02, pm10, pm02_compensated, rco2, " ~
+    "atmp, atmp_compensated, rhum, rhum_compensated, " ~
+    "tvoc_index, nox_index, wifi";
+
+private enum DEFAULT_INSERT_SQL = "INSERT INTO readings (" ~
+    "timestamp, device_id, device_type, device_ip, " ~
+    "pm01, pm02, pm10, pm02_compensated, " ~
+    "rco2, atmp, atmp_compensated, rhum, rhum_compensated, " ~
+    "tvoc_index, nox_index, wifi, raw_json" ~
+    ") VALUES (" ~
+    "?, ?, ?, ?, " ~
+    "?, ?, ?, ?, " ~
+    "?, ?, ?, ?, ?, " ~
+    "?, ?, ?, ?" ~
+    ")";
+
+private enum DEFAULT_LATEST_SQL = "SELECT r.id, r.timestamp, r.device_id, r.device_type, r.device_ip, " ~
+    "r.pm01, r.pm02, r.pm10, r.pm02_compensated, r.rco2, " ~
+    "r.atmp, r.atmp_compensated, r.rhum, r.rhum_compensated, " ~
+    "r.tvoc_index, r.nox_index, r.wifi " ~
+    "FROM readings r " ~
+    "INNER JOIN (" ~
+    " SELECT device_id, MAX(id) AS max_id" ~
+    " FROM readings" ~
+    " GROUP BY device_id" ~
+    ") latest ON r.id = latest.max_id";
+
+private enum DEFAULT_DEVICES_SQL = "SELECT device_id, device_type, device_ip, " ~
+    "MAX(timestamp) AS last_seen, " ~
+    "COUNT(*) AS reading_count " ~
+    "FROM readings " ~
+    "GROUP BY device_id " ~
+    "ORDER BY device_type";
+
+private enum DEFAULT_COUNT_SQL = "SELECT COUNT(*) FROM readings";
+
+package string[string] parseQueriesSQL(string content) {
+    import std.string : indexOf, strip, join;
+    import std.algorithm : startsWith;
+
+    string[string] queries;
+    string name;
+    string[] lines;
+
+    foreach (line; content.lineSplitter()) {
+        auto trimmed = line.strip();
+        if (trimmed.startsWith("-- name: ")) {
+            if (name.length > 0) {
+                auto body = lines.join("\n").strip();
+                if (body.length > 0 && body[$ - 1] == ';')
+                    body = body[0 .. $ - 1];
+                queries[name] = body;
+            }
+            name = trimmed["-- name: ".length .. $].strip();
+            lines = [];
+        } else if (trimmed.startsWith("--") || trimmed.length == 0) {
+            // skip comments and blank lines
+        } else {
+            lines ~= trimmed;
+        }
+    }
+    if (name.length > 0) {
+        auto body = lines.join("\n").strip();
+        if (body.length > 0 && body[$ - 1] == ';')
+            body = body[0 .. $ - 1];
+        queries[name] = body;
+    }
+    return queries;
+}
+
+private auto lineSplitter(string s) {
+    import std.algorithm : std_splitter = splitter;
+    return std_splitter(s, "\n");
+}
+
+package string convertPlaceholders(string sql) {
+    import std.regex : regex, replaceAll;
+    auto re = regex(`:[a-z][a-z0-9_]*`);
+    return sql.replaceAll(re, "?");
+}
+
 Database initDb(string path) {
     import std.stdio : stderr;
     import std.file : readText;
 
     stderr.writefln("[db] Opening database at %s", path);
+
+    loadQueries();
 
     auto db = Database(path);
     db.run("PRAGMA journal_mode = WAL;");
@@ -61,7 +207,7 @@ Database initDb(string path) {
 }
 
 long getReadingsCount(ref Database db) {
-    auto stmt = db.prepare("SELECT COUNT(*) FROM readings");
+    auto stmt = db.prepare(loadedCountSQL);
     foreach (row; stmt.execute()) {
         return row.peek!long(0);
     }
@@ -104,18 +250,7 @@ void insertReading(ref Database db, string ip, JSONValue data) {
 
     auto rawJson = data.toString();
 
-    auto stmt = db.prepare(
-        "INSERT INTO readings (
-            timestamp, device_id, device_type, device_ip,
-            pm01, pm02, pm10, pm02_compensated,
-            rco2, atmp, atmp_compensated, rhum, rhum_compensated,
-            tvoc_index, nox_index, wifi, raw_json
-        ) VALUES (
-            ?, ?, ?, ?,
-            ?, ?, ?, ?,
-            ?, ?, ?, ?, ?,
-            ?, ?, ?, ?
-        )");
+    auto stmt = db.prepare(loadedInsertSQL);
 
     stmt.bind(1, nowMillis());
     stmt.bind(2, serial);
@@ -197,10 +332,9 @@ private JSONValue nullableLongJson(Nullable!long v) {
     return v.isNull ? JSONValue(null) : JSONValue(v.get);
 }
 
-private enum QUERY_COLS = "id, timestamp, device_id, device_type, device_ip, " ~
-    "pm01, pm02, pm10, pm02_compensated, rco2, " ~
-    "atmp, atmp_compensated, rhum, rhum_compensated, " ~
-    "tvoc_index, nox_index, wifi";
+private string queryCols() {
+    return loadedQueryCols.length > 0 ? loadedQueryCols : DEFAULT_QUERY_COLS;
+}
 
 private Reading rowToReading(Row)(auto ref Row row) {
     Reading r;
@@ -229,13 +363,13 @@ Reading[] queryReadings(ref Database db, string device, long from, long to, uint
 
     string sql;
     if (!wantDevice && limit == 0)
-        sql = "SELECT " ~ QUERY_COLS ~ " FROM readings WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC";
+        sql = "SELECT " ~ queryCols() ~ " FROM readings WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC";
     else if (!wantDevice)
-        sql = "SELECT " ~ QUERY_COLS ~ " FROM readings WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC LIMIT ?";
+        sql = "SELECT " ~ queryCols() ~ " FROM readings WHERE timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC LIMIT ?";
     else if (limit == 0)
-        sql = "SELECT " ~ QUERY_COLS ~ " FROM readings WHERE device_id = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC";
+        sql = "SELECT " ~ queryCols() ~ " FROM readings WHERE device_id = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC";
     else
-        sql = "SELECT " ~ QUERY_COLS ~ " FROM readings WHERE device_id = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC LIMIT ?";
+        sql = "SELECT " ~ queryCols() ~ " FROM readings WHERE device_id = ? AND timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC LIMIT ?";
 
     auto stmt = db.prepare(sql);
 
@@ -284,13 +418,7 @@ struct DeviceSummary {
 }
 
 DeviceSummary[] getDevices(ref Database db) {
-    auto stmt = db.prepare(
-        "SELECT device_id, device_type, device_ip,
-                MAX(timestamp) as last_seen,
-                COUNT(*) as reading_count
-         FROM readings
-         GROUP BY device_id
-         ORDER BY device_type");
+    auto stmt = db.prepare(loadedDevicesSQL);
 
     DeviceSummary[] results;
     foreach (row; stmt.execute()) {
@@ -307,36 +435,13 @@ DeviceSummary[] getDevices(ref Database db) {
 }
 
 Reading[] getLatestReadings(ref Database db) {
-    import std.array : join;
-    import std.algorithm : map;
-    import std.range : array;
-
-    auto cols = QUERY_COLS
-        .splitter(", ")
-        .map!(c => "r." ~ c)
-        .array
-        .join(", ");
-
-    auto sql = "SELECT " ~ cols ~
-        " FROM readings r" ~
-        " INNER JOIN (" ~
-        "   SELECT device_id, MAX(id) as max_id" ~
-        "   FROM readings" ~
-        "   GROUP BY device_id" ~
-        " ) latest ON r.id = latest.max_id";
-
-    auto stmt = db.prepare(sql);
+    auto stmt = db.prepare(loadedLatestSQL);
     Reading[] results;
     foreach (row; stmt.execute()) {
         results ~= rowToReading(row);
     }
     stmt.reset();
     return results;
-}
-
-private auto splitter(string s, string sep) {
-    import std.algorithm : std_splitter = splitter;
-    return std_splitter(s, sep);
 }
 
 void checkpoint(ref Database db) {

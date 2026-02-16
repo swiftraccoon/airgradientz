@@ -181,6 +181,20 @@ setup_test_env
 echo "Running bash tests..."
 echo ""
 
+# Load shared test fixtures
+FIXTURE_FILE="../test-fixtures.json"
+if [[ ! -f "${FIXTURE_FILE}" ]]; then
+    FIXTURE_FILE="../../test-fixtures.json"
+fi
+INDOOR_SERIAL=$(jq -r '.indoorFull.serialno' "${FIXTURE_FILE}")
+INDOOR_PM02=$(jq -r '.indoorFull.pm02' "${FIXTURE_FILE}")
+INDOOR_RCO2=$(jq -r '.indoorFull.rco2' "${FIXTURE_FILE}")
+INDOOR_ATMP=$(jq -r '.indoorFull.atmp' "${FIXTURE_FILE}")
+OUTDOOR_SERIAL=$(jq -r '.outdoorFull.serialno' "${FIXTURE_FILE}")
+OUTDOOR_PM02=$(jq -r '.outdoorFull.pm02' "${FIXTURE_FILE}")
+OUTDOOR_RCO2=$(jq -r '.outdoorFull.rco2' "${FIXTURE_FILE}")
+OUTDOOR_ATMP=$(jq -r '.outdoorFull.atmp' "${FIXTURE_FILE}")
+
 # ═══════════════════════════════════════════════════════════════════
 # DB TESTS
 # ═══════════════════════════════════════════════════════════════════
@@ -203,15 +217,15 @@ count=$(get_readings_count)
 assert_eq "readings count empty db" "0" "${count}"
 
 # TestInsertAndQuery
-insert_test_reading "abc123" "indoor" "192.168.1.1" 12 450 22.5
+insert_test_reading "${INDOOR_SERIAL}" "indoor" "192.168.1.1" "${INDOOR_PM02}" "${INDOOR_RCO2}" "${INDOOR_ATMP}"
 result=$(query_readings "all" 0 "$(( $(now_ms) + 1000 ))" 100)
 assert_json_length "query returns 1 reading" "${result}" "1"
-assert_json_field "device_id is abc123" "${result}" '.[0].device_id' "abc123"
+assert_json_field "device_id is indoor serial" "${result}" '.[0].device_id' "${INDOOR_SERIAL}"
 assert_json_field "device_type is indoor" "${result}" '.[0].device_type' "indoor"
 assert_json_field "device_ip is correct" "${result}" '.[0].device_ip' "192.168.1.1"
-assert_json_field "pm02 is 12" "${result}" '.[0].pm02' "12"
-assert_json_field "rco2 is 450" "${result}" '.[0].rco2' "450"
-assert_json_field "atmp is 22.5" "${result}" '.[0].atmp' "22.5"
+assert_json_field "pm02 is indoor fixture" "${result}" '.[0].pm02' "${INDOOR_PM02}"
+assert_json_field "rco2 is indoor fixture" "${result}" '.[0].rco2' "${INDOOR_RCO2}"
+assert_json_field "atmp is indoor fixture" "${result}" '.[0].atmp' "${INDOOR_ATMP}"
 
 # TestGetReadingsCount (after insert)
 count=$(get_readings_count)
@@ -235,10 +249,10 @@ assert_json_field "zero rco2 is 0 not null" "${result}" '.[0].rco2' "0"
 assert_json_field "zero atmp is 0 not null" "${result}" '.[0].atmp' "0"
 
 # TestDeviceFiltering
-insert_test_reading "xyz789" "outdoor" "192.168.1.2" 15 0 18.5
+insert_test_reading "${OUTDOOR_SERIAL}" "outdoor" "192.168.1.2" "${OUTDOOR_PM02}" "${OUTDOOR_RCO2}" "${OUTDOOR_ATMP}"
 
-result=$(query_readings "abc123" 0 "$(( $(now_ms) + 1000 ))" 100)
-assert_json_length "filter by device abc123" "${result}" "1"
+result=$(query_readings "${INDOOR_SERIAL}" 0 "$(( $(now_ms) + 1000 ))" 100)
+assert_json_length "filter by indoor device" "${result}" "1"
 
 result=$(query_readings "all" 0 "$(( $(now_ms) + 1000 ))" 100)
 count=$(jq 'length' <<< "${result}")
@@ -261,7 +275,7 @@ assert_json_length "query limit 3" "${result}" "3"
 # TestGetLatestReadings
 result=$(get_latest_readings)
 count=$(jq 'length' <<< "${result}")
-# We have abc123, boot1, zero1, xyz789, limitdev → 5 unique devices
+# We have indoor, boot1, zero1, outdoor, limitdev → 5 unique devices
 assert_eq "latest readings one per device" "5" "${count}"
 
 # TestGetDevices
@@ -269,7 +283,7 @@ result=$(get_devices)
 count=$(jq 'length' <<< "${result}")
 assert_eq "devices returns unique devices" "5" "${count}"
 
-# Check reading_count for limitdev (5 inserts + any abc123 overlap)
+# Check reading_count for limitdev (5 inserts)
 limitdev_count=$(jq -r '.[] | select(.device_id == "limitdev") | .reading_count' <<< "${result}")
 assert_eq "limitdev reading_count" "5" "${limitdev_count}"
 
@@ -406,7 +420,7 @@ else
 fi
 
 # TestReadingsWithDeviceFilter
-response=$(do_handler_request GET "/api/readings?device=abc123")
+response=$(do_handler_request GET "/api/readings?device=${INDOOR_SERIAL}")
 body=$(get_body "${response}")
 filtered_count=$(jq 'length' <<< "${body}")
 assert_eq "device filter returns 1" "1" "${filtered_count}"
@@ -501,6 +515,102 @@ assert_eq "dotdot in middle returns 404" "404" "${status}"
 response=$(do_handler_request GET "/api/readings?limit=1")
 body=$(get_body "${response}")
 assert_not_contains "raw_json not in API response" "${body}" "raw_json"
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════
+# SQL DRIFT TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+echo "--- SQL drift tests ---"
+
+# Extract a named query from queries.sql
+# Usage: extract_query "query_name" < queries.sql
+extract_query() {
+    local name="$1"
+    local in_block=false
+    local result=""
+    while IFS= read -r line; do
+        if [[ "${line}" == "-- name: ${name}" ]]; then
+            in_block=true
+            continue
+        elif [[ "${line}" == "-- name: "* ]]; then
+            if ${in_block}; then
+                break
+            fi
+            continue
+        fi
+        if ${in_block}; then
+            # Skip comments
+            [[ "${line}" == "--"* ]] && continue
+            # Skip empty lines
+            local trimmed
+            trimmed=$(echo "${line}" | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+            [[ -z "${trimmed}" ]] && continue
+            if [[ -n "${result}" ]]; then
+                result="${result} ${trimmed}"
+            else
+                result="${trimmed}"
+            fi
+        fi
+    done
+    # Strip trailing semicolons
+    result="${result%%;}"
+    printf '%s' "${result}"
+}
+
+QUERIES_FILE="${SCRIPT_DIR}/../queries.sql"
+DB_SH_FILE="${SCRIPT_DIR}/lib/db.sh"
+DB_SH_CONTENTS=$(< "${DB_SH_FILE}")
+
+# 1. reading_columns match
+CANONICAL_COLS=$(extract_query "reading_columns" < "${QUERIES_FILE}")
+CANONICAL_COLS=$(echo "${CANONICAL_COLS}" | tr -s '[:space:]' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+DB_COLS=$(grep -A3 "^readonly QUERY_COLS=" "${DB_SH_FILE}" \
+    | tr -d "'" \
+    | sed "s/readonly QUERY_COLS=//" \
+    | tr '\n' ' ' \
+    | tr -s '[:space:]' ' ' \
+    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+assert_eq "reading_columns matches queries.sql" "${CANONICAL_COLS}" "${DB_COLS}"
+
+# 2. INSERT column list match
+CANONICAL_INSERT=$(extract_query "insert_reading" < "${QUERIES_FILE}")
+# Extract just the column list from "INSERT INTO readings ( cols ) VALUES ..."
+CANONICAL_INSERT_COLS=$(echo "${CANONICAL_INSERT}" | sed 's/INSERT INTO readings (//;s/) VALUES.*//' | tr -s '[:space:]' ' ' | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+# Verify poller.sh has INSERT INTO readings (the actual insert happens there)
+POLLER_FILE="${SCRIPT_DIR}/lib/poller.sh"
+POLLER_CONTENTS=$(< "${POLLER_FILE}")
+assert_contains "poller has INSERT INTO readings" "${POLLER_CONTENTS}" "INSERT INTO readings"
+
+# Extract INSERT columns from poller.sh and normalize
+POLLER_INSERT_COLS=$(echo "${POLLER_CONTENTS}" \
+    | sed -n '/INSERT INTO readings/,/) VALUES/p' \
+    | sed 's/.*INSERT INTO readings (//;s/) VALUES.*//' \
+    | tr '\n' ' ' \
+    | tr -s '[:space:]' ' ' \
+    | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')
+
+assert_eq "poller insert columns match queries.sql" "${CANONICAL_INSERT_COLS}" "${POLLER_INSERT_COLS}"
+
+# 3. SELECT devices query match
+assert_contains "devices query has GROUP BY device_id" "${DB_SH_CONTENTS}" "GROUP BY device_id"
+assert_contains "devices query has ORDER BY device_type" "${DB_SH_CONTENTS}" "ORDER BY device_type"
+assert_contains "devices query has MAX(timestamp)" "${DB_SH_CONTENTS}" "MAX(timestamp)"
+assert_contains "devices query has COUNT(*)" "${DB_SH_CONTENTS}" "COUNT(*)"
+
+# 4. SELECT latest pattern match — use full function body from db.sh
+LATEST_FUNC=$(sed -n '/^get_latest_readings/,/^}/p' "${DB_SH_FILE}")
+assert_contains "latest query has MAX(id) as max_id" "${LATEST_FUNC}" "MAX(id) as max_id"
+assert_contains "latest query has INNER JOIN" "${LATEST_FUNC}" "INNER JOIN"
+assert_contains "latest query has GROUP BY device_id" "${LATEST_FUNC}" "GROUP BY device_id"
+assert_contains "latest query joins on r.id = latest.max_id" "${LATEST_FUNC}" "r.id = latest.max_id"
+
+# 5. COUNT query match
+assert_contains "count query uses SELECT COUNT(*) FROM readings" "${DB_SH_CONTENTS}" "SELECT COUNT(*) FROM readings"
 
 echo ""
 

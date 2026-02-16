@@ -2,50 +2,71 @@ defmodule Airgradientz.DB do
   @moduledoc false
   use GenServer
 
-  @query_columns ~w(
-    id timestamp device_id device_type device_ip
-    pm01 pm02 pm10 pm02_compensated rco2
-    atmp atmp_compensated rhum rhum_compensated
-    tvoc_index nox_index wifi
+  # -- Compile-time: load and parse queries.sql --
+
+  @queries_path Path.join([__DIR__, "..", "..", "..", "queries.sql"])
+  @external_resource @queries_path
+
+  @queries (
+    File.read!(@queries_path)
+    |> String.split("\n")
+    |> Enum.reduce({%{}, nil, []}, fn line, {map, name, lines} ->
+      cond do
+        String.starts_with?(line, "-- name: ") ->
+          new_name = line |> String.trim_leading("-- name: ") |> String.trim()
+
+          map =
+            if name do
+              sql = lines |> Enum.reverse() |> Enum.join("\n") |> String.trim() |> String.trim_trailing(";")
+              Map.put(map, name, sql)
+            else
+              map
+            end
+
+          {map, new_name, []}
+
+        String.starts_with?(line, "--") ->
+          {map, name, lines}
+
+        String.trim(line) == "" ->
+          {map, name, lines}
+
+        true ->
+          {map, name, [String.trim(line) | lines]}
+      end
+    end)
+    |> then(fn {map, name, lines} ->
+      if name do
+        sql = lines |> Enum.reverse() |> Enum.join("\n") |> String.trim() |> String.trim_trailing(";")
+        Map.put(map, name, sql)
+      else
+        map
+      end
+    end)
   )
 
+  # Derive column list from loaded reading_columns
+  @reading_columns Map.fetch!(@queries, "reading_columns")
+  @query_columns @reading_columns |> String.split(~r/,\s*/) |> Enum.map(&String.trim/1)
   @query_cols Enum.join(@query_columns, ", ")
-  @query_cols_aliased Enum.map_join(@query_columns, ", ", &"r.#{&1}")
 
-  @insert_sql """
-  INSERT INTO readings (
-    timestamp, device_id, device_type, device_ip,
-    pm01, pm02, pm10, pm02_compensated,
-    rco2, atmp, atmp_compensated, rhum, rhum_compensated,
-    tvoc_index, nox_index, wifi, raw_json
-  ) VALUES (
-    ?1, ?2, ?3, ?4,
-    ?5, ?6, ?7, ?8,
-    ?9, ?10, ?11, ?12, ?13,
-    ?14, ?15, ?16, ?17
+  # Convert :name placeholders to ?N (1-based positional) for exqlite
+  @insert_sql (
+    (fn sql ->
+      Regex.scan(~r/:[a-z][a-z0-9_]*/, sql)
+      |> List.flatten()
+      |> Enum.with_index(1)
+      |> Enum.reduce(sql, fn {placeholder, idx}, acc ->
+        String.replace(acc, placeholder, "?#{idx}", global: false)
+      end)
+    end).(Map.fetch!(@queries, "insert_reading"))
   )
-  """
 
-  @devices_sql """
-  SELECT device_id, device_type, device_ip,
-         MAX(timestamp) as last_seen,
-         COUNT(*) as reading_count
-  FROM readings
-  GROUP BY device_id
-  ORDER BY device_type
-  """
+  @devices_sql Map.fetch!(@queries, "select_devices")
+  @latest_sql Map.fetch!(@queries, "select_latest")
+  @count_sql Map.fetch!(@queries, "count_readings")
 
-  @latest_sql """
-  SELECT #{@query_cols_aliased}
-  FROM readings r
-  INNER JOIN (
-    SELECT device_id, MAX(id) as max_id
-    FROM readings
-    GROUP BY device_id
-  ) latest ON r.id = latest.max_id
-  """
-
-  # Pre-built query SQL for all variants
+  # Pre-built query SQL for all variants (dynamic WHERE/LIMIT)
   @q_all_range "SELECT #{@query_cols} FROM readings WHERE timestamp >= ?1 AND timestamp <= ?2 ORDER BY timestamp ASC"
   @q_all_range_limit "SELECT #{@query_cols} FROM readings WHERE timestamp >= ?1 AND timestamp <= ?2 ORDER BY timestamp ASC LIMIT ?3"
   @q_dev_range "SELECT #{@query_cols} FROM readings WHERE device_id = ?1 AND timestamp >= ?2 AND timestamp <= ?3 ORDER BY timestamp ASC"
@@ -101,6 +122,7 @@ defmodule Airgradientz.DB do
     {:ok, insert_stmt} = Exqlite.Sqlite3.prepare(conn, @insert_sql)
     {:ok, devices_stmt} = Exqlite.Sqlite3.prepare(conn, @devices_sql)
     {:ok, latest_stmt} = Exqlite.Sqlite3.prepare(conn, @latest_sql)
+    {:ok, count_stmt} = Exqlite.Sqlite3.prepare(conn, @count_sql)
     {:ok, q_all_range} = Exqlite.Sqlite3.prepare(conn, @q_all_range)
     {:ok, q_all_range_limit} = Exqlite.Sqlite3.prepare(conn, @q_all_range_limit)
     {:ok, q_dev_range} = Exqlite.Sqlite3.prepare(conn, @q_dev_range)
@@ -112,6 +134,7 @@ defmodule Airgradientz.DB do
        insert_stmt: insert_stmt,
        devices_stmt: devices_stmt,
        latest_stmt: latest_stmt,
+       count_stmt: count_stmt,
        q_all_range: q_all_range,
        q_all_range_limit: q_all_range_limit,
        q_dev_range: q_dev_range,
@@ -223,11 +246,10 @@ defmodule Airgradientz.DB do
     {:reply, :ok, state}
   end
 
-  def handle_call(:get_readings_count, _from, %{conn: conn} = state) do
-    {:ok, stmt} = Exqlite.Sqlite3.prepare(conn, "SELECT COUNT(*) FROM readings")
+  def handle_call(:get_readings_count, _from, %{conn: conn, count_stmt: stmt} = state) do
     {:row, [count]} = Exqlite.Sqlite3.step(conn, stmt)
     :done = Exqlite.Sqlite3.step(conn, stmt)
-    Exqlite.Sqlite3.release(conn, stmt)
+    Exqlite.Sqlite3.reset(stmt)
     {:reply, count, state}
   end
 
@@ -238,13 +260,14 @@ defmodule Airgradientz.DB do
       insert_stmt: insert_stmt,
       devices_stmt: devices_stmt,
       latest_stmt: latest_stmt,
+      count_stmt: count_stmt,
       q_all_range: q1,
       q_all_range_limit: q2,
       q_dev_range: q3,
       q_dev_range_limit: q4
     } = state
 
-    for stmt <- [insert_stmt, devices_stmt, latest_stmt, q1, q2, q3, q4] do
+    for stmt <- [insert_stmt, devices_stmt, latest_stmt, count_stmt, q1, q2, q3, q4] do
       Exqlite.Sqlite3.release(conn, stmt)
     end
 

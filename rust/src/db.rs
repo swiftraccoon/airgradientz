@@ -1,3 +1,6 @@
+use std::collections::HashMap;
+use std::fmt::Write as _;
+use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use rusqlite::{params, Connection};
@@ -6,6 +9,64 @@ use crate::error::AppError;
 use crate::json::JsonValue;
 
 const SCHEMA: &str = include_str!("../../schema.sql");
+const QUERIES_RAW: &str = include_str!("../../queries.sql");
+
+fn parse_queries_sql(content: &str) -> HashMap<&str, String> {
+    let mut queries = HashMap::new();
+    let mut name: Option<&str> = None;
+    let mut lines: Vec<&str> = Vec::new();
+
+    for line in content.lines() {
+        if let Some(n) = line.strip_prefix("-- name: ") {
+            if let Some(prev_name) = name {
+                let sql = lines.join("\n");
+                let sql = sql.trim().trim_end_matches(';').to_string();
+                queries.insert(prev_name, sql);
+            }
+            name = Some(n.trim());
+            lines.clear();
+        } else if !line.starts_with("--") && !line.trim().is_empty() {
+            lines.push(line);
+        }
+    }
+    if let Some(prev_name) = name {
+        let sql = lines.join("\n");
+        let sql = sql.trim().trim_end_matches(';').to_string();
+        queries.insert(prev_name, sql);
+    }
+    queries
+}
+
+fn convert_placeholders(sql: &str) -> String {
+    let mut result = String::new();
+    let mut n = 1u32;
+    let mut chars = sql.chars().peekable();
+    while let Some(ch) = chars.next() {
+        if ch == ':'
+            && chars
+                .peek()
+                .is_some_and(|c| c.is_ascii_lowercase() || *c == '_')
+        {
+            while chars
+                .peek()
+                .is_some_and(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || *c == '_')
+            {
+                chars.next();
+            }
+            let _ = write!(result, "?{n}");
+            n += 1;
+        } else {
+            result.push(ch);
+        }
+    }
+    result
+}
+
+static QUERIES: LazyLock<HashMap<&str, String>> =
+    LazyLock::new(|| parse_queries_sql(QUERIES_RAW));
+
+static INSERT_SQL: LazyLock<String> =
+    LazyLock::new(|| convert_placeholders(&QUERIES["insert_reading"]));
 
 pub(crate) fn initialize(conn: &Connection) -> Result<(), AppError> {
     conn.execute_batch("PRAGMA journal_mode = WAL;")?;
@@ -18,7 +79,7 @@ pub(crate) fn initialize(conn: &Connection) -> Result<(), AppError> {
 }
 
 pub(crate) fn get_readings_count(conn: &Connection) -> Result<i64, rusqlite::Error> {
-    conn.query_row("SELECT COUNT(*) FROM readings", [], |row| row.get(0))
+    conn.query_row(&QUERIES["count_readings"], [], |row| row.get(0))
 }
 
 pub(crate) fn now_millis() -> i64 {
@@ -58,17 +119,7 @@ pub(crate) fn insert_reading(
     let raw_json = data.to_string();
 
     conn.execute(
-        "INSERT INTO readings (
-            timestamp, device_id, device_type, device_ip,
-            pm01, pm02, pm10, pm02_compensated,
-            rco2, atmp, atmp_compensated, rhum, rhum_compensated,
-            tvoc_index, nox_index, wifi, raw_json
-        ) VALUES (
-            ?1, ?2, ?3, ?4,
-            ?5, ?6, ?7, ?8,
-            ?9, ?10, ?11, ?12, ?13,
-            ?14, ?15, ?16, ?17
-        )",
+        &INSERT_SQL,
         params![
             now_millis(),
             serial,
@@ -177,11 +228,13 @@ fn row_to_reading(row: &rusqlite::Row<'_>) -> rusqlite::Result<Reading> {
     })
 }
 
-const QUERY_COLS: &str =
-    "id, timestamp, device_id, device_type, device_ip, \
-     pm01, pm02, pm10, pm02_compensated, rco2, \
-     atmp, atmp_compensated, rhum, rhum_compensated, \
-     tvoc_index, nox_index, wifi";
+static QUERY_COLS: LazyLock<String> = LazyLock::new(|| {
+    QUERIES["reading_columns"]
+        .lines()
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join(" ")
+});
 
 pub(crate) fn query_readings(
     conn: &Connection,
@@ -189,18 +242,19 @@ pub(crate) fn query_readings(
 ) -> Result<Vec<Reading>, AppError> {
     let want_device = q.device.as_ref().is_some_and(|d| d != "all");
 
+    let cols = &*QUERY_COLS;
     let sql = match (want_device, q.limit) {
         (false, None) => format!(
-            "SELECT {QUERY_COLS} FROM readings WHERE timestamp >= ?1 AND timestamp <= ?2 ORDER BY timestamp ASC"
+            "SELECT {cols} FROM readings WHERE timestamp >= ?1 AND timestamp <= ?2 ORDER BY timestamp ASC"
         ),
         (false, Some(_)) => format!(
-            "SELECT {QUERY_COLS} FROM readings WHERE timestamp >= ?1 AND timestamp <= ?2 ORDER BY timestamp ASC LIMIT ?3"
+            "SELECT {cols} FROM readings WHERE timestamp >= ?1 AND timestamp <= ?2 ORDER BY timestamp ASC LIMIT ?3"
         ),
         (true, None) => format!(
-            "SELECT {QUERY_COLS} FROM readings WHERE device_id = ?3 AND timestamp >= ?1 AND timestamp <= ?2 ORDER BY timestamp ASC"
+            "SELECT {cols} FROM readings WHERE device_id = ?3 AND timestamp >= ?1 AND timestamp <= ?2 ORDER BY timestamp ASC"
         ),
         (true, Some(_)) => format!(
-            "SELECT {QUERY_COLS} FROM readings WHERE device_id = ?3 AND timestamp >= ?1 AND timestamp <= ?2 ORDER BY timestamp ASC LIMIT ?4"
+            "SELECT {cols} FROM readings WHERE device_id = ?3 AND timestamp >= ?1 AND timestamp <= ?2 ORDER BY timestamp ASC LIMIT ?4"
         ),
     };
 
@@ -253,14 +307,7 @@ impl DeviceSummary {
 }
 
 pub(crate) fn get_devices(conn: &Connection) -> Result<Vec<DeviceSummary>, AppError> {
-    let mut stmt = conn.prepare(
-        "SELECT device_id, device_type, device_ip,
-                MAX(timestamp) as last_seen,
-                COUNT(*) as reading_count
-         FROM readings
-         GROUP BY device_id
-         ORDER BY device_type",
-    )?;
+    let mut stmt = conn.prepare(&QUERIES["select_devices"])?;
 
     let devices = stmt
         .query_map([], |row| {
@@ -278,23 +325,7 @@ pub(crate) fn get_devices(conn: &Connection) -> Result<Vec<DeviceSummary>, AppEr
 }
 
 pub(crate) fn get_latest_readings(conn: &Connection) -> Result<Vec<Reading>, AppError> {
-    let cols_aliased = QUERY_COLS
-        .split(", ")
-        .map(|c| format!("r.{c}"))
-        .collect::<Vec<_>>()
-        .join(", ");
-
-    let sql = format!(
-        "SELECT {cols_aliased}
-         FROM readings r
-         INNER JOIN (
-             SELECT device_id, MAX(id) as max_id
-             FROM readings
-             GROUP BY device_id
-         ) latest ON r.id = latest.max_id"
-    );
-
-    let mut stmt = conn.prepare(&sql)?;
+    let mut stmt = conn.prepare(&QUERIES["select_latest"])?;
     let readings = stmt
         .query_map([], row_to_reading)?
         .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -318,12 +349,20 @@ mod tests {
         conn
     }
 
+    fn load_fixtures() -> JsonValue {
+        let content = std::fs::read_to_string("../test-fixtures.json")
+            .expect("test-fixtures.json must be readable");
+        parse(&content).expect("test-fixtures.json must be valid JSON")
+    }
+
     fn indoor_fixture() -> JsonValue {
-        parse(r#"{"wifi":-51,"serialno":"84fce602549c","rco2":489,"pm01":23.83,"pm02":41.67,"pm10":54.5,"pm02Compensated":31.18,"atmp":20.78,"atmpCompensated":20.78,"rhum":32.19,"rhumCompensated":32.19,"tvocIndex":423,"noxIndex":1,"model":"I-9PSL"}"#).unwrap()
+        let fixtures = load_fixtures();
+        fixtures.get("indoorFull").unwrap().clone()
     }
 
     fn outdoor_fixture() -> JsonValue {
-        parse(r#"{"wifi":-42,"serialno":"ecda3b1d09d8","rco2":440,"pm01":23.17,"pm02":35.33,"pm10":39.17,"pm02Compensated":23.72,"atmp":9.8,"atmpCompensated":6.27,"rhum":35,"rhumCompensated":51.41,"tvocIndex":231.08,"noxIndex":1,"model":"O-1PST"}"#).unwrap()
+        let fixtures = load_fixtures();
+        fixtures.get("outdoorFull").unwrap().clone()
     }
 
     #[test]
@@ -363,9 +402,8 @@ mod tests {
     #[test]
     fn test_null_fields() {
         let conn = setup_db();
-        let data = parse(
-            r#"{"wifi":-59,"serialno":"84fce602549c","rco2":null,"pm01":null,"pm02":null,"pm10":null,"atmp":null,"model":"I-9PSL"}"#,
-        ).unwrap();
+        let fixtures = load_fixtures();
+        let data = fixtures.get("afterBoot").unwrap().clone();
         insert_reading(&conn, "192.168.1.1", &data).unwrap();
 
         let readings = query_readings(
@@ -382,9 +420,8 @@ mod tests {
     #[test]
     fn test_zero_compensated_values() {
         let conn = setup_db();
-        let data = parse(
-            r#"{"wifi":-45,"serialno":"84fce602549c","pm02Compensated":0,"atmpCompensated":0,"rhumCompensated":0,"model":"I-9PSL"}"#,
-        ).unwrap();
+        let fixtures = load_fixtures();
+        let data = fixtures.get("zeroCompensated").unwrap().clone();
         insert_reading(&conn, "192.168.1.1", &data).unwrap();
 
         let readings = query_readings(
@@ -464,6 +501,48 @@ mod tests {
         ).unwrap();
 
         assert_eq!(readings[0].device_id, "unknown");
+    }
+
+    #[test]
+    fn test_parse_queries_sql() {
+        let queries = parse_queries_sql(QUERIES_RAW);
+        assert!(queries.contains_key("insert_reading"));
+        assert!(queries.contains_key("reading_columns"));
+        assert!(queries.contains_key("select_latest"));
+        assert!(queries.contains_key("select_devices"));
+        assert!(queries.contains_key("count_readings"));
+        assert!(queries["insert_reading"].starts_with("INSERT INTO readings"));
+        assert!(queries["count_readings"].starts_with("SELECT COUNT(*)"));
+        // Semicolons are stripped
+        assert!(!queries["count_readings"].ends_with(';'));
+        assert!(!queries["insert_reading"].ends_with(';'));
+    }
+
+    #[test]
+    fn test_convert_placeholders() {
+        assert_eq!(
+            convert_placeholders(":a, :b, :c"),
+            "?1, ?2, ?3"
+        );
+        assert_eq!(
+            convert_placeholders("WHERE device_id = :device AND timestamp >= :from"),
+            "WHERE device_id = ?1 AND timestamp >= ?2"
+        );
+        // No placeholders
+        assert_eq!(convert_placeholders("SELECT * FROM t"), "SELECT * FROM t");
+        // Underscore in name
+        assert_eq!(
+            convert_placeholders(":tvoc_index, :nox_index"),
+            "?1, ?2"
+        );
+    }
+
+    #[test]
+    fn test_insert_sql_converted() {
+        // INSERT_SQL should have ?N placeholders, not :name
+        assert!(!INSERT_SQL.contains(":timestamp"));
+        assert!(INSERT_SQL.contains("?1"));
+        assert!(INSERT_SQL.contains("?17"));
     }
 
     #[test]

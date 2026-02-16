@@ -9,6 +9,149 @@
 #include "config.h"
 #include "strbuf.h"
 
+/* ---- loaded queries from queries.sql ---- */
+
+static char *loaded_query_cols;
+static char *loaded_insert_sql;
+static char *loaded_latest_sql;
+static char *loaded_devices_sql;
+static char *loaded_count_sql;
+
+/* Convert :name placeholders to ?N (1-based positional).
+   Caller owns the returned string (strdup'd). */
+static char *convert_placeholders(const char *sql)
+{
+    char buf[4096];
+    size_t out = 0;
+    int n = 1;
+    const char *p = sql;
+
+    while (*p && out < sizeof(buf) - 10) {
+        if (*p == ':' && p[1] >= 'a' && p[1] <= 'z') {
+            /* Skip :name */
+            p++;
+            while (*p && ((*p >= 'a' && *p <= 'z') || (*p >= 'A' && *p <= 'Z') ||
+                          (*p >= '0' && *p <= '9') || *p == '_'))
+                p++;
+            int wrote = snprintf(buf + out, sizeof(buf) - out, "?%d", n++);
+            if (wrote > 0) out += (size_t)wrote;
+        } else {
+            buf[out++] = *p++;
+        }
+    }
+    buf[out] = '\0';
+    return strdup(buf);
+}
+
+/* Store a parsed query by name into the appropriate static variable. */
+static void store_query(const char *name, const char *body)
+{
+    if (strcmp(name, "reading_columns") == 0)
+        loaded_query_cols = strdup(body);
+    else if (strcmp(name, "insert_reading") == 0)
+        loaded_insert_sql = convert_placeholders(body);
+    else if (strcmp(name, "select_latest") == 0)
+        loaded_latest_sql = strdup(body);
+    else if (strcmp(name, "select_devices") == 0)
+        loaded_devices_sql = strdup(body);
+    else if (strcmp(name, "count_readings") == 0)
+        loaded_count_sql = strdup(body);
+}
+
+/* Parse queries.sql content into named queries.
+   Returns number of queries found. All strings are strdup'd into statics. */
+static int parse_queries_sql(const char *content)
+{
+    int count = 0;
+    const char *p = content;
+    char current_name[64] = {0};
+    char query_buf[4096] = {0};
+    size_t query_len = 0;
+
+    while (*p) {
+        /* Find end of line */
+        const char *eol = strchr(p, '\n');
+        if (!eol) eol = p + strlen(p);
+        size_t line_len = (size_t)(eol - p);
+
+        if (line_len > 9 && strncmp(p, "-- name: ", 9) == 0) {
+            /* Save previous query if any */
+            if (current_name[0] && query_len > 0) {
+                /* Trim trailing whitespace and semicolons */
+                while (query_len > 0 && (query_buf[query_len - 1] == ';' ||
+                       query_buf[query_len - 1] == '\n' ||
+                       query_buf[query_len - 1] == ' '))
+                    query_len--;
+                query_buf[query_len] = '\0';
+                store_query(current_name, query_buf);
+                count++;
+            }
+
+            /* Extract new name */
+            const char *name_start = p + 9;
+            size_t name_len = (size_t)(eol - name_start);
+            if (name_len >= sizeof(current_name))
+                name_len = sizeof(current_name) - 1;
+            /* Trim trailing whitespace from name */
+            while (name_len > 0 && (name_start[name_len - 1] == ' ' ||
+                                    name_start[name_len - 1] == '\r'))
+                name_len--;
+            memcpy(current_name, name_start, name_len);
+            current_name[name_len] = '\0';
+            query_buf[0] = '\0';
+            query_len = 0;
+        } else if (strncmp(p, "--", 2) != 0) {
+            /* Non-comment line — add to query buffer */
+            const char *trimmed = p;
+            while (trimmed < eol && (*trimmed == ' ' || *trimmed == '\t'))
+                trimmed++;
+            size_t trimmed_len = (size_t)(eol - trimmed);
+            /* Trim trailing whitespace */
+            while (trimmed_len > 0 && (trimmed[trimmed_len - 1] == ' ' ||
+                                       trimmed[trimmed_len - 1] == '\r'))
+                trimmed_len--;
+
+            if (trimmed_len > 0) {
+                if (query_len > 0)
+                    query_buf[query_len++] = '\n';
+                if (query_len + trimmed_len < sizeof(query_buf) - 1) {
+                    memcpy(query_buf + query_len, trimmed, trimmed_len);
+                    query_len += trimmed_len;
+                    query_buf[query_len] = '\0';
+                }
+            }
+        }
+
+        p = (*eol) ? eol + 1 : eol;
+    }
+
+    /* Save last query */
+    if (current_name[0] && query_len > 0) {
+        while (query_len > 0 && (query_buf[query_len - 1] == ';' ||
+               query_buf[query_len - 1] == '\n' ||
+               query_buf[query_len - 1] == ' '))
+            query_len--;
+        query_buf[query_len] = '\0';
+        store_query(current_name, query_buf);
+        count++;
+    }
+
+    return count;
+}
+
+/* Load queries from ../queries.sql. Called from db_initialize. */
+static void load_queries(void)
+{
+    char *content = config_read_file("../queries.sql");
+    if (!content) {
+        fprintf(stderr, "[db] queries.sql not found, using defaults\n");
+        return;
+    }
+    int n = parse_queries_sql(content);
+    free(content);
+    fprintf(stderr, "[db] loaded %d queries from queries.sql\n", n);
+}
+
 /* ---- pool allocator stats ---- */
 
 static atomic_uint_fast64_t pool_alloc_count;
@@ -140,6 +283,10 @@ static bool extract_i64(const JsonValue *data, const char *key, int64_t *out)
 
 int db_initialize(sqlite3 *db)
 {
+    /* Load shared queries (idempotent — only parses on first call) */
+    if (!loaded_query_cols && !loaded_insert_sql)
+        load_queries();
+
     const char *pragmas =
         "PRAGMA journal_mode = WAL;"
         "PRAGMA busy_timeout = 5000;"
@@ -205,7 +352,7 @@ int db_insert_reading(sqlite3 *db, const char *ip, const JsonValue *data)
     StrBuf raw = strbuf_new();
     json_serialize(data, &raw);
 
-    const char *sql =
+    const char *sql = loaded_insert_sql ? loaded_insert_sql :
         "INSERT INTO readings ("
         "    timestamp, device_id, device_type, device_ip,"
         "    pm01, pm02, pm10, pm02_compensated,"
@@ -335,7 +482,8 @@ int db_query_readings(sqlite3 *db, const ReadingQuery *q, ReadingList *out)
     bool want_device = q->device && strcmp(q->device, "all") != 0;
 
     StrBuf sql = strbuf_new();
-    strbuf_appendf(&sql, "SELECT %s FROM readings WHERE ", QUERY_COLS);
+    strbuf_appendf(&sql, "SELECT %s FROM readings WHERE ",
+                   loaded_query_cols ? loaded_query_cols : QUERY_COLS);
 
     if (want_device) {
         strbuf_append_cstr(&sql, "device_id = ?3 AND ");
@@ -396,7 +544,7 @@ int db_get_devices(sqlite3 *db, DeviceSummaryList *out)
     atomic_fetch_add(&pool_alloc_count, 1);
     atomic_fetch_add(&pool_bytes_used, est_devices * sizeof(DeviceSummary) + est_devices * 96);
 
-    const char *sql =
+    const char *sql = loaded_devices_sql ? loaded_devices_sql :
         "SELECT device_id, device_type, device_ip, "
         "       MAX(timestamp) as last_seen, "
         "       COUNT(*) as reading_count "
@@ -440,7 +588,7 @@ int db_get_latest_readings(sqlite3 *db, ReadingList *out)
 {
     reading_list_init_pooled(out, 16, 16 * 96);
 
-    const char *sql =
+    const char *sql = loaded_latest_sql ? loaded_latest_sql :
         "SELECT r.id, r.timestamp, r.device_id, r.device_type, r.device_ip, "
         "r.pm01, r.pm02, r.pm10, r.pm02_compensated, r.rco2, "
         "r.atmp, r.atmp_compensated, r.rhum, r.rhum_compensated, "
@@ -469,7 +617,8 @@ int db_get_latest_readings(sqlite3 *db, ReadingList *out)
 
 int64_t db_get_readings_count(sqlite3 *db)
 {
-    const char *sql = "SELECT COUNT(*) FROM readings";
+    const char *sql = loaded_count_sql ? loaded_count_sql :
+        "SELECT COUNT(*) FROM readings";
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) return -1;
