@@ -32,7 +32,7 @@ JsonValue *json_null(void)
     return v;
 }
 
-JsonValue *json_bool(bool b)
+static JsonValue *json_bool(bool b)
 {
     JsonValue *v = xmalloc(sizeof(*v));
     v->type = JSON_BOOL;

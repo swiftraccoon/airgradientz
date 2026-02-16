@@ -34,7 +34,6 @@ struct JsonValue {
 
 /* Constructors */
 JsonValue *json_null(void);
-JsonValue *json_bool(bool v);
 JsonValue *json_number(double v);
 JsonValue *json_from_i64(int64_t n);
 JsonValue *json_string(const char *s);

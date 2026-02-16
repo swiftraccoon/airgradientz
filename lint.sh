@@ -4,17 +4,29 @@ set -euo pipefail
 cd "$(dirname "$0")"
 
 ALL_IMPLS=(c nodejs rust zig d elixir nim go bash asm)
+STRICT=false
 
 usage() {
-    echo "Usage: $0 [impl...]"
+    echo "Usage: $0 [--strict] [impl...]"
     echo "  No args: lint all implementations"
+    echo "  --strict: fail if any tool is missing (matches CI)"
     echo "  Impls: ${ALL_IMPLS[*]}"
 }
 
-if [[ $# -eq 0 ]]; then
+# Parse --strict flag
+args=()
+for arg in "$@"; do
+    case "$arg" in
+        --strict) STRICT=true ;;
+        --help|-h) usage; exit 0 ;;
+        *) args+=("$arg") ;;
+    esac
+done
+
+if [[ ${#args[@]} -eq 0 ]]; then
     impls=("${ALL_IMPLS[@]}")
 else
-    impls=("$@")
+    impls=("${args[@]}")
 fi
 
 failed=()
@@ -36,6 +48,19 @@ run_lint() {
     fi
 }
 
+# In strict mode, a missing tool is a failure, not a skip.
+skip_tool() {
+    local tool="$1"
+    local install_hint="$2"
+    if $STRICT; then
+        echo "  FAIL (--strict): $tool not found ($install_hint)" >&2
+        return 1
+    else
+        echo "  SKIP: $tool not found ($install_hint)"
+        return 0
+    fi
+}
+
 for impl in "${impls[@]}"; do
     if [[ ! -d "$impl" ]]; then
         echo "error: unknown implementation '$impl'" >&2
@@ -54,19 +79,20 @@ for impl in "${impls[@]}"; do
                     impl_ok=false
                 fi
             else
-                echo "  SKIP: gcc not found"
+                if ! skip_tool "gcc" "install: sudo dnf install gcc"; then impl_ok=false; fi
             fi
             # cppcheck (static analysis)
             if has_tool cppcheck; then
                 if ! run_lint "cppcheck" cppcheck --enable=all --suppress=missingIncludeSystem \
                     --suppress=unusedFunction --suppress=unmatchedSuppression \
-                    --suppress=checkersReport --error-exitcode=1 \
+                    --suppress=checkersReport --suppress=normalCheckLevelMaxBranches \
+                    --error-exitcode=1 \
                     --std=c11 -DSQLITE_THREADSAFE=2 --inline-suppr \
                     -I c/ c/src/; then
                     impl_ok=false
                 fi
             else
-                echo "  SKIP: cppcheck not found (install: sudo dnf install cppcheck)"
+                if ! skip_tool "cppcheck" "install: sudo dnf install cppcheck"; then impl_ok=false; fi
             fi
             ;;
         nodejs)
@@ -75,7 +101,7 @@ for impl in "${impls[@]}"; do
                     impl_ok=false
                 fi
             else
-                echo "  SKIP: eslint not available (run: cd nodejs && npm install)"
+                if ! skip_tool "eslint" "run: cd nodejs && npm install"; then impl_ok=false; fi
             fi
             # npm audit (dependency vulnerabilities)
             if has_tool npm; then
@@ -96,10 +122,10 @@ for impl in "${impls[@]}"; do
                         impl_ok=false
                     fi
                 else
-                    echo "  SKIP: cargo-audit not found (install: cargo install cargo-audit)"
+                    if ! skip_tool "cargo-audit" "install: cargo install cargo-audit"; then impl_ok=false; fi
                 fi
             else
-                echo "  SKIP: cargo not found"
+                if ! skip_tool "cargo" "install: rustup"; then impl_ok=false; fi
             fi
             ;;
         zig)
@@ -109,7 +135,7 @@ for impl in "${impls[@]}"; do
                     impl_ok=false
                 fi
             else
-                echo "  SKIP: zig not found"
+                if ! skip_tool "zig" "install: https://ziglang.org/download/"; then impl_ok=false; fi
             fi
             ;;
         d)
@@ -125,10 +151,10 @@ for impl in "${impls[@]}"; do
                         impl_ok=false
                     fi
                 else
-                    echo "  SKIP: dscanner not found (install: dub fetch dscanner && dub run dscanner)"
+                    if ! skip_tool "dscanner" "install: dub fetch dscanner && dub run dscanner"; then impl_ok=false; fi
                 fi
             else
-                echo "  SKIP: D toolchain not found (run: d/setup.sh)"
+                if ! skip_tool "D toolchain" "run: d/setup.sh"; then impl_ok=false; fi
             fi
             ;;
         elixir)
@@ -139,7 +165,7 @@ for impl in "${impls[@]}"; do
                         impl_ok=false
                     fi
                 else
-                    echo "  SKIP: credo not installed (run: cd elixir && mix deps.get)"
+                    if ! skip_tool "credo" "run: cd elixir && mix deps.get"; then impl_ok=false; fi
                 fi
                 # dialyxir (type checking)
                 if [[ -d elixir/deps/dialyxir ]]; then
@@ -147,7 +173,7 @@ for impl in "${impls[@]}"; do
                         impl_ok=false
                     fi
                 else
-                    echo "  SKIP: dialyxir not installed (run: cd elixir && mix deps.get)"
+                    if ! skip_tool "dialyxir" "run: cd elixir && mix deps.get"; then impl_ok=false; fi
                 fi
                 # mix_audit (dependency vulnerabilities)
                 if [[ -d elixir/deps/mix_audit ]]; then
@@ -156,7 +182,7 @@ for impl in "${impls[@]}"; do
                     fi
                 fi
             else
-                echo "  SKIP: mix not found"
+                if ! skip_tool "mix" "install: https://elixir-lang.org/install.html"; then impl_ok=false; fi
             fi
             ;;
         nim)
@@ -167,7 +193,7 @@ for impl in "${impls[@]}"; do
                     impl_ok=false
                 fi
             else
-                echo "  SKIP: nim not found"
+                if ! skip_tool "nim" "install: curl -sSf https://nim-lang.org/choosenim/init.sh | bash"; then impl_ok=false; fi
             fi
             ;;
         go)
@@ -182,10 +208,10 @@ for impl in "${impls[@]}"; do
                         impl_ok=false
                     fi
                 else
-                    echo "  SKIP: golangci-lint not found (install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest)"
+                    if ! skip_tool "golangci-lint" "install: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; then impl_ok=false; fi
                 fi
             else
-                echo "  SKIP: go not found"
+                if ! skip_tool "go" "install: https://go.dev/dl/"; then impl_ok=false; fi
             fi
             ;;
         bash)
@@ -195,7 +221,7 @@ for impl in "${impls[@]}"; do
                     impl_ok=false
                 fi
             else
-                echo "  SKIP: shellcheck not found (install: sudo dnf install ShellCheck)"
+                if ! skip_tool "shellcheck" "install: sudo dnf install ShellCheck"; then impl_ok=false; fi
             fi
             ;;
         asm)
@@ -211,7 +237,7 @@ for impl in "${impls[@]}"; do
                     impl_ok=false
                 fi
             else
-                echo "  SKIP: nasm not found"
+                if ! skip_tool "nasm" "install: sudo dnf install nasm"; then impl_ok=false; fi
             fi
             ;;
         *)

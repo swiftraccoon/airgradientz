@@ -23,7 +23,8 @@ jobs:
         run: |
           cppcheck --enable=all --suppress=missingIncludeSystem \
             --suppress=unusedFunction --suppress=unmatchedSuppression \
-            --suppress=checkersReport --error-exitcode=1 \
+            --suppress=checkersReport --suppress=normalCheckLevelMaxBranches \
+            --error-exitcode=1 \
             --std=c11 -DSQLITE_THREADSAFE=2 --inline-suppr \
             -I c/ c/src/
 
