@@ -18,7 +18,8 @@
     "nim": 3015,
     "go": 3016,
     "bash": 3017,
-    "asm": 3018
+    "asm": 3018,
+    "haskell": 3019
   },
   "devices": [
     { "ip": "192.168.88.6", "label": "outdoor" },

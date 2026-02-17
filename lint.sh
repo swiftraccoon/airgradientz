@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-ALL_IMPLS=(c nodejs rust zig d elixir nim go bash asm)
+ALL_IMPLS=(c nodejs rust zig d elixir nim go bash asm haskell)
 STRICT=true
 
 usage() {
@@ -245,6 +245,17 @@ for impl in "${impls[@]}"; do
                 fi
             else
                 if ! skip_tool "nasm" "install: sudo dnf install nasm"; then impl_ok=false; fi
+            fi
+            ;;
+        haskell)
+            # GHC with -Werror (build is the lint)
+            ghcup_cabal="$HOME/.ghcup/bin/cabal"
+            if [[ -x "$ghcup_cabal" ]]; then
+                if ! run_lint "cabal-build" bash -c "export PATH=\"\$HOME/.ghcup/bin:\$PATH\" && cd haskell && cabal build --project-file=cabal.project 2>&1"; then
+                    impl_ok=false
+                fi
+            else
+                if ! skip_tool "cabal" "install: ghcup install cabal"; then impl_ok=false; fi
             fi
             ;;
         *)

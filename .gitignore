@@ -42,6 +42,9 @@ go/airgradientz
 # Bash
 bash/run/
 
+# Haskell
+haskell/dist-newstyle/
+
 # Assembly
 asm/airgradientz
 asm/sqlite3.o

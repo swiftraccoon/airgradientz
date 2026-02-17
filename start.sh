@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-ALL_IMPLS=(c nodejs rust zig d elixir nim go bash asm)
+ALL_IMPLS=(c nodejs rust zig d elixir nim go bash asm haskell)
 
 if [[ $# -ne 1 ]]; then
     echo "Usage: $0 <impl>"

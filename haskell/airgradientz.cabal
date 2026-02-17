@@ -1,0 +1,53 @@
+cabal-version: 3.0
+name:          airgradientz
+version:       0.1.0
+build-type:    Simple
+
+common warnings
+  ghc-options:
+    -Wall -Wextra -Wcompat -Widentities -Wincomplete-record-updates
+    -Wincomplete-uni-patterns -Wpartial-fields -Wredundant-constraints
+    -Werror
+
+executable airgradientz
+  import:           warnings
+  main-is:          Main.hs
+  other-modules:    Config, DB, Server, Poller
+  hs-source-dirs:   src
+  default-language: GHC2021
+  ghc-options:      -threaded -rtsopts "-with-rtsopts=-N"
+  build-depends:
+    base         >= 4.18 && < 5,
+    aeson        >= 2.0,
+    bytestring,
+    containers,
+    direct-sqlite >= 2.3,
+    directory,
+    filepath,
+    network      >= 3.1,
+    text,
+    time,
+    unix
+
+test-suite tests
+  import:           warnings
+  type:             exitcode-stdio-1.0
+  main-is:          Spec.hs
+  other-modules:    Config, DB, Server, Poller
+  hs-source-dirs:   test, src
+  default-language: GHC2021
+  ghc-options:      -threaded
+  build-depends:
+    base         >= 4.18 && < 5,
+    aeson,
+    bytestring,
+    containers,
+    direct-sqlite >= 2.3,
+    directory,
+    filepath,
+    network      >= 3.1,
+    tasty        >= 1.4,
+    tasty-hunit  >= 0.10,
+    text,
+    time,
+    unix
