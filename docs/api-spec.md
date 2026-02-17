@@ -1,6 +1,6 @@
 # AirGradientz API Specification
 
-All 10 implementations expose identical JSON endpoints on their respective ports. All endpoints accept only GET requests (405 for other methods) and return `Content-Type: application/json`. All timestamps are Unix epoch milliseconds.
+All implementations expose identical JSON endpoints on their respective ports. All endpoints accept only GET requests (405 for other methods) and return `Content-Type: application/json`. All timestamps are Unix epoch milliseconds.
 
 ## GET /api/readings
 

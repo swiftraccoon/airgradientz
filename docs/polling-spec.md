@@ -1,6 +1,6 @@
 # Device Polling Specification
 
-Single source of truth for AirGradient device polling behavior across all 10 implementations.
+Single source of truth for AirGradient device polling behavior across all implementations.
 
 ## Polling Loop
 

@@ -3,7 +3,7 @@
 [![Lint](https://github.com/swiftraccoon/airgradientz/actions/workflows/lint.yml/badge.svg)](https://github.com/swiftraccoon/airgradientz/actions/workflows/lint.yml)
 [![Test](https://github.com/swiftraccoon/airgradientz/actions/workflows/test.yml/badge.svg)](https://github.com/swiftraccoon/airgradientz/actions/workflows/test.yml)
 
-Local dashboard for AirGradient air quality monitors. Ten independent implementations (C, Node.js, Rust, Zig, D, Elixir, Nim, Go, Bash, ASM) share one web UI and one JSON config.
+Local dashboard for AirGradient air quality monitors. Multiple independent implementations share one web UI and one JSON config.
 
 ## Architecture
 
@@ -17,6 +17,7 @@ Local dashboard for AirGradient air quality monitors. Ten independent implementa
 - `go/` — Go 1.25 (port 3016), `github.com/mattn/go-sqlite3` (CGo)
 - `bash/` — Pure Bash (port 3017), ncat + sqlite3 CLI + jq + curl
 - `asm/` — x86_64 NASM assembly (port 3018), links libc + vendored sqlite3.o
+- `haskell/` — Haskell/GHC 9.10 (port 3019), direct-sqlite + aeson
 - `airgradientz.json` — shared config (devices, poll interval, timeouts)
 - `schema.sql` — shared DB schema (single source of truth)
 - `c/public/` — canonical web UI (HTML/CSS/JS); all other impls symlink to it
@@ -35,7 +36,7 @@ Every implementation has a `build.sh` and `start.sh`. Root scripts orchestrate t
 ./build.sh                   # build all implementations
 ./build.sh c rust nim        # build specific ones
 ./start.sh c                 # start one implementation (exec's into it)
-./test.sh                    # run all tests (all 10 implementations)
+./test.sh                    # run all tests
 ./test.sh c                  # run specific tests
 ./lint.sh                    # lint all implementations
 ./lint.sh rust go            # lint specific ones
@@ -51,6 +52,7 @@ nim/build.sh && nim/start.sh    # Nim (port 3015)
 go/build.sh && go/start.sh      # Go (port 3016)
 bash/build.sh && bash/start.sh  # Bash (port 3017)
 asm/build.sh && asm/start.sh    # ASM (port 3018)
+haskell/build.sh && haskell/start.sh  # Haskell (port 3019)
 
 # Debug / direct commands
 cd c && make debug           # ASan + UBSan
@@ -83,6 +85,7 @@ Config file search order: `CONFIG_PATH` env, `./airgradientz.json`, `../airgradi
 - Go: 1.25, net/http (goroutine-per-connection), `github.com/mattn/go-sqlite3` (CGo)
 - Bash: ncat fork-per-connection, sqlite3 CLI, jq for JSON, shellcheck -o all clean
 - ASM: x86_64 NASM, epoll event loop, System V AMD64 ABI, links libc + sqlite3.o from `../c/sqlite3.c`
+- Haskell: GHC2021, `-Wall -Wextra -Werror`, direct-sqlite + aeson, custom HTTP server via network, MVar-synchronized DB
 - SQLite: WAL mode, bundled amalgamation (vendored in `c/sqlite3.c`)
 - Web UI: vanilla HTML/CSS/JS, no build step
 - All compiled impls except Go and Bash: single-threaded non-blocking I/O (no thread-per-connection, ASM uses poller thread for background polling)
@@ -113,6 +116,7 @@ All implementations have tests. Run `./test.sh` for all, or `./test.sh <impl>` f
 | Go | `go test` | `cd go && go test ./...` | 48 |
 | Bash | Custom test runner | `cd bash && bash tests/run_tests.sh` | 86 |
 | ASM | Custom test runner | `make -C asm test` | 54 |
+| Haskell | tasty + tasty-hunit | `cd haskell && cabal test --project-file=cabal.project` | 21 |
 
 ## Linting
 
@@ -130,6 +134,7 @@ Run `./lint.sh` for all, or `./lint.sh <impl>` for specific implementations. CI 
 | Nim | compiler hints/warnings | — |
 | D | LDC compiler | — |
 | ASM | NASM syntax check | — |
+| Haskell | GHC `-Wall -Wextra -Werror` | `haskell/cabal.project` |
 
 ## Gotchas
 
@@ -142,6 +147,7 @@ Run `./lint.sh` for all, or `./lint.sh <impl>` for specific implementations. CI 
 - D uses port 3014, Elixir uses port 3013 — verify `airgradientz.json` ports map if overriding
 - Bash requires ncat (nmap), sqlite3, jq, curl at runtime
 - ASM requires nasm assembler and gcc linker at build time
+- Haskell requires GHCup (GHC 9.10, cabal 3.14) — `~/.ghcup/bin` must be on PATH
 - Schema changes go in `schema.sql`, not in individual implementations
 - Query column lists come from `queries.sql` — keep in sync with `schema.sql`
 - Test suites should load `test-fixtures.json` for device payloads instead of hardcoding
