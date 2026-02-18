@@ -4,12 +4,12 @@
   // --- AQI Calculation (Task 18) ---
 
   var AQI_BREAKPOINTS = [
-    { aqiLo: 0,   aqiHi: 50,  pmLo: 0.0,   pmHi: 12.0,   category: 'Good',                       color: '#00e400' },
-    { aqiLo: 51,  aqiHi: 100, pmLo: 12.1,   pmHi: 35.4,   category: 'Moderate',                   color: '#ffff00' },
+    { aqiLo: 0,   aqiHi: 50,  pmLo: 0.0,   pmHi: 9.0,    category: 'Good',                       color: '#00e400' },
+    { aqiLo: 51,  aqiHi: 100, pmLo: 9.1,    pmHi: 35.4,   category: 'Moderate',                   color: '#ffff00' },
     { aqiLo: 101, aqiHi: 150, pmLo: 35.5,   pmHi: 55.4,   category: 'Unhealthy for Sensitive',    color: '#ff7e00' },
-    { aqiLo: 151, aqiHi: 200, pmLo: 55.5,   pmHi: 150.4,  category: 'Unhealthy',                  color: '#ff0000' },
-    { aqiLo: 201, aqiHi: 300, pmLo: 150.5,  pmHi: 250.4,  category: 'Very Unhealthy',             color: '#8f3f97' },
-    { aqiLo: 301, aqiHi: 500, pmLo: 250.5,  pmHi: 500.4,  category: 'Hazardous',                  color: '#7e0023' },
+    { aqiLo: 151, aqiHi: 200, pmLo: 55.5,   pmHi: 125.4,  category: 'Unhealthy',                  color: '#ff0000' },
+    { aqiLo: 201, aqiHi: 300, pmLo: 125.5,  pmHi: 225.4,  category: 'Very Unhealthy',             color: '#8f3f97' },
+    { aqiLo: 301, aqiHi: 500, pmLo: 225.5,  pmHi: 325.4,  category: 'Hazardous',                  color: '#7e0023' },
   ];
 
   function calculateAQI(pm25) {
@@ -431,7 +431,7 @@
     for (var i = 0; i < healthDevices.length; i++) {
       var d = healthDevices[i];
       // Look up device_id from the discovered devices list by matching label
-      var matchedDeviceId = findDeviceIdByLabel(d.label) || '';
+      var matchedDeviceId = findDeviceIdByIp(d.ip) || '';
       var badge = document.createElement('div');
       badge.className = 'device-badge';
       if (hiddenDevices[matchedDeviceId]) {
@@ -474,14 +474,10 @@
 
   // --- Device toggle (Task 19) ---
 
-  function findDeviceIdByLabel(label) {
-    var normalized = label.toLowerCase();
+  function findDeviceIdByIp(ip) {
     for (var i = 0; i < devices.length; i++) {
-      var d = devices[i];
-      // Health endpoint has "label", devices endpoint has "device_type"
-      var match = (d.label || d.device_type || '').toLowerCase();
-      if (match === normalized) {
-        return d.device_id;
+      if (devices[i].device_ip === ip) {
+        return devices[i].device_id;
       }
     }
     return null;
@@ -491,14 +487,7 @@
     var badge = e.target.closest('.device-badge');
     if (!badge) return;
 
-    // Find device_id from the badge - try dataset first, then label text
     var deviceId = badge.dataset.deviceId;
-    if (!deviceId) {
-      var spans = badge.querySelectorAll('span');
-      if (spans.length >= 2) {
-        deviceId = findDeviceIdByLabel(spans[1].textContent);
-      }
-    }
     if (!deviceId) return;
 
     // Toggle hidden state
@@ -526,11 +515,18 @@
   // --- Discover devices ---
 
   async function discoverDevices() {
-    var res = await fetch('/api/devices');
-    if (!res.ok) return;
-    var data = await res.json();
-    if (Array.isArray(data)) {
-      devices = data;
+    try {
+      var res = await fetch('/api/devices');
+      if (!res.ok) {
+        console.warn('Failed to discover devices:', res.status);
+        return;
+      }
+      var data = await res.json();
+      if (Array.isArray(data)) {
+        devices = data;
+      }
+    } catch (err) {
+      console.warn('Failed to discover devices:', err);
     }
   }
 

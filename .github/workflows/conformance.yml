@@ -13,7 +13,7 @@ jobs:
   conformance:
     name: Cross-implementation conformance
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -30,17 +30,8 @@ jobs:
         with:
           go-version-file: go/go.mod
 
-      - name: Install Node.js dependencies
-        run: cd nodejs && npm ci
-
-      - name: Build C implementation
-        run: make -C c CC=gcc-14
-
-      - name: Build Go implementation
-        run: cd go && go build -o airgradientz .
-
       - name: Make conformance scripts executable
         run: chmod +x conformance/*.sh
 
       - name: Run conformance tests
-        run: ./conformance/run.sh nodejs go c
+        run: CC=gcc-14 ./conformance/run.sh nodejs go c

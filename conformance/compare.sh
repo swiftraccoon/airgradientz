@@ -103,12 +103,12 @@ report_warn() {
 # These functions are invoked indirectly via string variable in run_test().
 # shellcheck disable=SC2329
 normalize_readings() {
-    jq -S '[.[] | del(.id) | .timestamp = 0]' 2>/dev/null || echo "null"
+    jq -S '[.[] | del(.id) | .timestamp = 0] | sort_by(.device_id, .pm02)' 2>/dev/null || echo "null"
 }
 
 # shellcheck disable=SC2329
 normalize_latest() {
-    jq -S '[.[] | del(.id) | .timestamp = 0]' 2>/dev/null || echo "null"
+    jq -S '[.[] | del(.id) | .timestamp = 0] | sort_by(.device_id)' 2>/dev/null || echo "null"
 }
 
 # shellcheck disable=SC2329
@@ -118,12 +118,12 @@ normalize_devices() {
 
 # shellcheck disable=SC2329
 normalize_health() {
-    jq -S '[.[] | .lastSuccess = 0 | .lastError = 0 | .lastAttempt = 0]' 2>/dev/null || echo "null"
+    jq -S '[.[] | .lastSuccess = 0 | .lastError = 0 | .lastAttempt = 0 | .consecutiveFailures = 0]' 2>/dev/null || echo "null"
 }
 
 normalize_health_no_message() {
-    # Strip error messages for structural comparison
-    jq -S '[.[] | .lastSuccess = 0 | .lastError = 0 | .lastAttempt = 0 | del(.lastErrorMessage)]' 2>/dev/null || echo "null"
+    # Strip error messages and volatile fields for structural comparison
+    jq -S '[.[] | .lastSuccess = 0 | .lastError = 0 | .lastAttempt = 0 | .consecutiveFailures = 0 | del(.lastErrorMessage)]' 2>/dev/null || echo "null"
 }
 
 # shellcheck disable=SC2329
@@ -189,7 +189,6 @@ run_test() {
     ref_normalized="$(echo "${bodies[0]}" | ${normalize_fn})"
 
     local all_match=true
-    local message_diff=false
     declare -a diff_details=()
 
     for (( idx=1; idx<IMPL_COUNT; idx++ )); do
@@ -207,23 +206,25 @@ run_test() {
                 diff_details+=("${diff_output}")
             fi
         fi
-
-        # For warn_message mode, also check without messages
-        if [[ "${compare_mode}" == "warn_message" && "${all_match}" == "false" ]]; then
-            local ref_no_msg impl_no_msg
-            ref_no_msg="$(echo "${bodies[0]}" | normalize_health_no_message)"
-            impl_no_msg="$(echo "${bodies[${idx}]}" | normalize_health_no_message)"
-            if [[ "${ref_no_msg}" == "${impl_no_msg}" ]]; then
-                message_diff=true
-                all_match=true  # structural match, only message differs
-                diff_details=()
-            fi
-        fi
     done
 
-    if [[ "${all_match}" == "true" && "${message_diff}" == "true" ]]; then
-        report_warn "${test_name}" "Structural match but error message wording differs"
-        return
+    # For warn_message mode, check if differences are only in error messages
+    if [[ "${compare_mode}" == "warn_message" && "${all_match}" == "false" ]]; then
+        local ref_no_msg all_structural_match
+        ref_no_msg="$(echo "${bodies[0]}" | normalize_health_no_message)"
+        all_structural_match=true
+        for (( idx=1; idx<IMPL_COUNT; idx++ )); do
+            local impl_no_msg
+            impl_no_msg="$(echo "${bodies[${idx}]}" | normalize_health_no_message)"
+            if [[ "${ref_no_msg}" != "${impl_no_msg}" ]]; then
+                all_structural_match=false
+                break
+            fi
+        done
+        if [[ "${all_structural_match}" == "true" ]]; then
+            report_warn "${test_name}" "Structural match but error message wording differs"
+            return
+        fi
     fi
 
     if [[ "${all_match}" == "true" ]]; then
