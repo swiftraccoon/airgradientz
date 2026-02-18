@@ -12,11 +12,12 @@ import (
 
 // Configuration default values.
 const (
-	defaultPort           = 3016
-	defaultPollIntervalMs = 15000
-	defaultFetchTimeoutMs = 5000
-	defaultMaxAPIRows     = 10000
-	maxConfigFileSize     = 1048576
+	defaultPort                 = 3016
+	defaultPollIntervalMs       = 15000
+	defaultFetchTimeoutMs       = 5000
+	defaultMaxAPIRows           = 10000
+	defaultDownsampleThreshold  = 10000
+	maxConfigFileSize           = 1048576
 )
 
 type DeviceConfig struct {
@@ -25,21 +26,23 @@ type DeviceConfig struct {
 }
 
 type Config struct {
-	DBPath         string
-	Devices        []DeviceConfig
-	PollIntervalMs int
-	FetchTimeoutMs int
-	MaxAPIRows     int
-	Port           uint16
+	DBPath              string
+	Devices             []DeviceConfig
+	PollIntervalMs      int
+	FetchTimeoutMs      int
+	MaxAPIRows          int
+	DownsampleThreshold int
+	Port                uint16
 }
 
 type configFile struct {
-	Ports          map[string]int `json:"ports"`
-	Defaults       *configFile    `json:"defaults"`
-	PollIntervalMs *int           `json:"pollIntervalMs"`
-	FetchTimeoutMs *int           `json:"fetchTimeoutMs"`
-	MaxAPIRows     *int           `json:"maxApiRows"`
-	Devices        []DeviceConfig `json:"devices"`
+	Ports               map[string]int `json:"ports"`
+	Defaults            *configFile    `json:"defaults"`
+	PollIntervalMs      *int           `json:"pollIntervalMs"`
+	FetchTimeoutMs      *int           `json:"fetchTimeoutMs"`
+	MaxAPIRows          *int           `json:"maxApiRows"`
+	DownsampleThreshold *int           `json:"downsampleThreshold"`
+	Devices             []DeviceConfig `json:"devices"`
 }
 
 func LoadConfig() Config {
@@ -50,9 +53,10 @@ func LoadConfig() Config {
 			{IP: "192.168.88.6", Label: "outdoor"},
 			{IP: "192.168.88.159", Label: "indoor"},
 		},
-		PollIntervalMs: defaultPollIntervalMs,
-		FetchTimeoutMs: defaultFetchTimeoutMs,
-		MaxAPIRows:     defaultMaxAPIRows,
+		PollIntervalMs:      defaultPollIntervalMs,
+		FetchTimeoutMs:      defaultFetchTimeoutMs,
+		MaxAPIRows:          defaultMaxAPIRows,
+		DownsampleThreshold: defaultDownsampleThreshold,
 	}
 
 	if content, path := findConfigFile(); content != nil {
@@ -108,6 +112,9 @@ func applyConfigValues(cfg *Config, cf *configFile) {
 	}
 	if cf.MaxAPIRows != nil && *cf.MaxAPIRows > 0 {
 		cfg.MaxAPIRows = *cf.MaxAPIRows
+	}
+	if cf.DownsampleThreshold != nil && *cf.DownsampleThreshold > 0 {
+		cfg.DownsampleThreshold = *cf.DownsampleThreshold
 	}
 }
 

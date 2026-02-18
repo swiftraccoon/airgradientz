@@ -97,6 +97,8 @@ func (h *handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		h.handleReadings(w, r)
 	case "/api/readings/latest":
 		h.handleReadingsLatest(w, r)
+	case "/api/readings/count":
+		h.handleReadingsCount(w, r)
 	case "/api/devices":
 		h.handleDevices(w, r)
 	case "/api/health":
@@ -118,6 +120,17 @@ func (h *handler) handleReadings(w http.ResponseWriter, r *http.Request) {
 	to := parseInt64Param(r, "to", now)
 	device := r.URL.Query().Get("device")
 
+	// Parse downsample parameter
+	var downsampleMs int64
+	if ds := r.URL.Query().Get("downsample"); ds != "" {
+		bucketMs, ok := DownsampleMap[ds]
+		if !ok {
+			writeError(w, http.StatusBadRequest, "invalid downsample value")
+			return
+		}
+		downsampleMs = bucketMs
+	}
+
 	rawLimit := parseInt64Param(r, "limit", int64(h.cfg.MaxAPIRows))
 	effectiveLimit := h.cfg.MaxAPIRows
 	if rawLimit > 0 && rawLimit < int64(h.cfg.MaxAPIRows) {
@@ -125,10 +138,11 @@ func (h *handler) handleReadings(w http.ResponseWriter, r *http.Request) {
 	}
 
 	q := ReadingQuery{
-		Device: device,
-		From:   from,
-		To:     to,
-		Limit:  effectiveLimit,
+		Device:       device,
+		From:         from,
+		To:           to,
+		Limit:        effectiveLimit,
+		DownsampleMs: downsampleMs,
 	}
 	if q.Device == "" {
 		q.Device = "all"
@@ -163,6 +177,23 @@ func (h *handler) handleReadingsLatest(w http.ResponseWriter, _ *http.Request) {
 	writeJSON(w, items)
 }
 
+func (h *handler) handleReadingsCount(w http.ResponseWriter, r *http.Request) {
+	now := NowMillis()
+
+	from := parseInt64Param(r, "from", 0)
+	to := parseInt64Param(r, "to", now)
+	device := r.URL.Query().Get("device")
+
+	count, err := GetFilteredCount(h.db, from, to, device)
+	if err != nil {
+		log.Printf("[api] get_filtered_count error: %v", err)
+		writeError(w, http.StatusInternalServerError, "Internal server error")
+		return
+	}
+
+	writeJSON(w, map[string]any{"count": count})
+}
+
 func (h *handler) handleDevices(w http.ResponseWriter, _ *http.Request) {
 	devices, err := GetDevices(h.db)
 	if err != nil {
@@ -189,8 +220,9 @@ func (h *handler) handleConfig(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	writeJSON(w, map[string]any{
-		"pollIntervalMs": h.cfg.PollIntervalMs,
-		"devices":        devices,
+		"pollIntervalMs":      h.cfg.PollIntervalMs,
+		"downsampleThreshold": h.cfg.DownsampleThreshold,
+		"devices":             devices,
 	})
 }
 

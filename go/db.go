@@ -44,10 +44,22 @@ type DeviceSummary struct {
 }
 
 type ReadingQuery struct {
-	Device string
-	From   int64
-	To     int64
-	Limit  int
+	Device       string
+	From         int64
+	To           int64
+	Limit        int
+	DownsampleMs int64
+}
+
+// DownsampleMap maps human-readable bucket names to millisecond durations.
+var DownsampleMap = map[string]int64{
+	"5m":  300000,
+	"10m": 600000,
+	"15m": 900000,
+	"30m": 1800000,
+	"1h":  3600000,
+	"1d":  86400000,
+	"1w":  604800000,
 }
 
 // Package-level SQL loaded from queries.sql (or hardcoded fallbacks).
@@ -237,6 +249,10 @@ func InsertReading(db *sql.DB, ip string, data map[string]any) error {
 }
 
 func QueryReadings(db *sql.DB, q ReadingQuery) ([]Reading, error) {
+	if q.DownsampleMs > 0 {
+		return queryDownsampled(db, q)
+	}
+
 	wantDevice := q.Device != "" && q.Device != "all"
 
 	var b strings.Builder
@@ -266,6 +282,49 @@ func QueryReadings(db *sql.DB, q ReadingQuery) ([]Reading, error) {
 	defer rows.Close()
 
 	return scanReadings(rows)
+}
+
+func queryDownsampled(db *sql.DB, q ReadingQuery) ([]Reading, error) {
+	wantDevice := q.Device != "" && q.Device != "all"
+	bucketMs := q.DownsampleMs
+
+	var b strings.Builder
+	var args []any
+
+	// bucket_ms is a trusted constant from DownsampleMap, safe to interpolate
+	fmt.Fprintf(&b, "SELECT (timestamp / %d) * %d AS timestamp, ", bucketMs, bucketMs)
+	b.WriteString("device_id, device_type, device_ip, ")
+	b.WriteString("AVG(pm01) AS pm01, AVG(pm02) AS pm02, AVG(pm10) AS pm10, ")
+	b.WriteString("AVG(pm02_compensated) AS pm02_compensated, ")
+	b.WriteString("CAST(AVG(rco2) AS INTEGER) AS rco2, ")
+	b.WriteString("AVG(atmp) AS atmp, AVG(atmp_compensated) AS atmp_compensated, ")
+	b.WriteString("AVG(rhum) AS rhum, AVG(rhum_compensated) AS rhum_compensated, ")
+	b.WriteString("AVG(tvoc_index) AS tvoc_index, AVG(nox_index) AS nox_index, ")
+	b.WriteString("CAST(AVG(wifi) AS INTEGER) AS wifi ")
+	b.WriteString("FROM readings WHERE ")
+
+	if wantDevice {
+		b.WriteString("device_id = ? AND ")
+		args = append(args, q.Device)
+	}
+
+	b.WriteString("timestamp >= ? AND timestamp <= ? ")
+	args = append(args, q.From, q.To)
+
+	fmt.Fprintf(&b, "GROUP BY (timestamp / %d), device_id ORDER BY timestamp ASC", bucketMs)
+
+	if q.Limit > 0 {
+		b.WriteString(" LIMIT ?")
+		args = append(args, q.Limit)
+	}
+
+	rows, err := db.Query(b.String(), args...)
+	if err != nil {
+		return nil, fmt.Errorf("query downsampled readings: %w", err)
+	}
+	defer rows.Close()
+
+	return scanDownsampledReadings(rows)
 }
 
 func GetLatestReadings(db *sql.DB) ([]Reading, error) {
@@ -303,14 +362,34 @@ func GetReadingsCount(db *sql.DB) (int64, error) {
 	return count, err
 }
 
+func GetFilteredCount(db *sql.DB, from, to int64, device string) (int64, error) {
+	wantDevice := device != "" && device != "all"
+
+	var b strings.Builder
+	var args []any
+
+	b.WriteString("SELECT COUNT(*) FROM readings WHERE ")
+
+	if wantDevice {
+		b.WriteString("device_id = ? AND ")
+		args = append(args, device)
+	}
+
+	b.WriteString("timestamp >= ? AND timestamp <= ?")
+	args = append(args, from, to)
+
+	var count int64
+	err := db.QueryRow(b.String(), args...).Scan(&count)
+	return count, err
+}
+
 func Checkpoint(db *sql.DB) error {
 	_, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
 	return err
 }
 
 func ReadingToJSON(r *Reading) map[string]any {
-	return map[string]any{
-		"id":               r.ID,
+	m := map[string]any{
 		"timestamp":        r.Timestamp,
 		"device_id":        r.DeviceID,
 		"device_type":      r.DeviceType,
@@ -328,6 +407,11 @@ func ReadingToJSON(r *Reading) map[string]any {
 		"nox_index":        nullFloat(r.NOXIndex),
 		"wifi":             nullInt(r.Wifi),
 	}
+	// Downsampled rows have ID=0 (no single row identity); omit id field.
+	if r.ID != 0 {
+		m["id"] = r.ID
+	}
+	return m
 }
 
 func DeviceSummaryToJSON(d *DeviceSummary) map[string]any {
@@ -362,6 +446,25 @@ func scanReadings(rows *sql.Rows) ([]Reading, error) {
 			&r.TVOCIndex, &r.NOXIndex, &r.Wifi,
 		); err != nil {
 			return nil, fmt.Errorf("scan reading: %w", err)
+		}
+		readings = append(readings, r)
+	}
+	return readings, rows.Err()
+}
+
+func scanDownsampledReadings(rows *sql.Rows) ([]Reading, error) {
+	var readings []Reading
+	for rows.Next() {
+		var r Reading
+		// Downsampled query omits id column; ID stays 0 (zero value).
+		if err := rows.Scan(
+			&r.Timestamp, &r.DeviceID, &r.DeviceType, &r.DeviceIP,
+			&r.PM01, &r.PM02, &r.PM10, &r.PM02Compensated,
+			&r.RCO2, &r.ATMP, &r.ATMPCompensated,
+			&r.RHUM, &r.RHUMCompensated,
+			&r.TVOCIndex, &r.NOXIndex, &r.Wifi,
+		); err != nil {
+			return nil, fmt.Errorf("scan downsampled reading: %w", err)
 		}
 		readings = append(readings, r)
 	}

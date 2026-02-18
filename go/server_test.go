@@ -13,11 +13,12 @@ func newTestHandler(t *testing.T) *handler {
 	db := openTestDB(t)
 
 	cfg := &Config{
-		Port:           3016,
-		Devices:        []DeviceConfig{{IP: "192.168.1.1", Label: "test-indoor"}},
-		PollIntervalMs: 15000,
-		FetchTimeoutMs: 5000,
-		MaxAPIRows:     10000,
+		Port:                3016,
+		Devices:             []DeviceConfig{{IP: "192.168.1.1", Label: "test-indoor"}},
+		PollIntervalMs:      15000,
+		FetchTimeoutMs:      5000,
+		MaxAPIRows:          10000,
+		DownsampleThreshold: 10000,
 	}
 
 	poller := NewPoller(db, cfg)
@@ -394,5 +395,116 @@ func TestRequestCounter(t *testing.T) {
 	served := result["requests_served"].(float64)
 	if served != 4 {
 		t.Errorf("requests_served = %v, want 4", served)
+	}
+}
+
+func TestReadingsCountEndpoint(t *testing.T) {
+	h := newTestHandler(t)
+
+	if err := InsertReading(h.db, "192.168.1.1", indoorFull); err != nil {
+		t.Fatal(err)
+	}
+	if err := InsertReading(h.db, "192.168.1.2", outdoorFull); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := doGet(h, "/api/readings/count")
+	if rr.Code != 200 {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	result := parseJSON(t, rr).(map[string]any)
+	count := result["count"].(float64)
+	if count != 2 {
+		t.Errorf("count = %v, want 2", count)
+	}
+}
+
+func TestReadingsCountWithDeviceFilter(t *testing.T) {
+	h := newTestHandler(t)
+
+	if err := InsertReading(h.db, "192.168.1.1", indoorFull); err != nil {
+		t.Fatal(err)
+	}
+	if err := InsertReading(h.db, "192.168.1.1", indoorFull); err != nil {
+		t.Fatal(err)
+	}
+	if err := InsertReading(h.db, "192.168.1.2", outdoorFull); err != nil {
+		t.Fatal(err)
+	}
+
+	rr := doGet(h, "/api/readings/count?device="+testDeviceID)
+	if rr.Code != 200 {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	result := parseJSON(t, rr).(map[string]any)
+	count := result["count"].(float64)
+	if count != 2 {
+		t.Errorf("count = %v, want 2", count)
+	}
+}
+
+func TestReadingsDownsampleEndpoint(t *testing.T) {
+	h := newTestHandler(t)
+
+	// Insert multiple readings
+	for range 3 {
+		if err := InsertReading(h.db, "192.168.1.1", indoorFull); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	rr := doGet(h, "/api/readings?downsample=1h")
+	if rr.Code != 200 {
+		t.Fatalf("status = %d, want 200", rr.Code)
+	}
+
+	result := parseJSON(t, rr).([]any)
+	// All readings in same hour bucket should produce 1 result
+	if len(result) != 1 {
+		t.Fatalf("expected 1 downsampled bucket, got %d", len(result))
+	}
+
+	reading := result[0].(map[string]any)
+	// Downsampled reading should NOT have an "id" field
+	if _, exists := reading["id"]; exists {
+		t.Error("downsampled reading should not have 'id' field")
+	}
+	// But should still have other fields
+	if reading["device_id"] != testDeviceID {
+		t.Errorf("device_id = %v, want %v", reading["device_id"], testDeviceID)
+	}
+}
+
+func TestReadingsInvalidDownsample(t *testing.T) {
+	h := newTestHandler(t)
+
+	rr := doGet(h, "/api/readings?downsample=invalid")
+	if rr.Code != 400 {
+		t.Fatalf("status = %d, want 400", rr.Code)
+	}
+
+	result := parseJSON(t, rr).(map[string]any)
+	if result["error"] != "invalid downsample value" {
+		t.Errorf("error = %v", result["error"])
+	}
+}
+
+func TestConfigIncludesDownsampleThreshold(t *testing.T) {
+	h := newTestHandler(t)
+
+	rr := doGet(h, "/api/config")
+	if rr.Code != 200 {
+		t.Fatalf("status = %d", rr.Code)
+	}
+
+	result := parseJSON(t, rr).(map[string]any)
+	threshold, ok := result["downsampleThreshold"]
+	if !ok {
+		t.Fatal("missing downsampleThreshold in config response")
+	}
+	if threshold != float64(10000) {
+		t.Errorf("downsampleThreshold = %v, want 10000", threshold)
 	}
 }

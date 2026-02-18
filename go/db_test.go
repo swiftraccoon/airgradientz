@@ -570,6 +570,152 @@ func TestNowMillis(t *testing.T) {
 	}
 }
 
+func TestDownsampledQuery(t *testing.T) {
+	db := openTestDB(t)
+
+	now := NowMillis()
+	bucketMs := int64(3600000) // 1h
+
+	// Insert 3 readings in the same 1-hour bucket and 1 in a different bucket.
+	for i := range 3 {
+		_, err := db.Exec(`INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, rco2, atmp, raw_json)
+			VALUES (?, 'dev1', 'indoor', '1.1.1.1', ?, ?, ?, '{}')`,
+			now-int64(i*1000), float64(10+i*10), int64(400+i*100), float64(20+i))
+		if err != nil {
+			t.Fatal(err)
+		}
+	}
+	// Different bucket (2 hours ago)
+	_, err := db.Exec(`INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, rco2, atmp, raw_json)
+		VALUES (?, 'dev1', 'indoor', '1.1.1.1', 100, 900, 30, '{}')`, now-2*bucketMs)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	readings, err := QueryReadings(db, ReadingQuery{
+		Device:       "all",
+		From:         0,
+		To:           now + 1000,
+		Limit:        100,
+		DownsampleMs: bucketMs,
+	})
+	if err != nil {
+		t.Fatalf("QueryReadings (downsampled): %v", err)
+	}
+
+	// Should produce 2 buckets
+	if len(readings) != 2 {
+		t.Fatalf("expected 2 downsampled buckets, got %d", len(readings))
+	}
+
+	// Downsampled rows must have ID == 0
+	for _, r := range readings {
+		if r.ID != 0 {
+			t.Errorf("downsampled reading should have ID=0, got %d", r.ID)
+		}
+	}
+
+	// Verify averages in the recent bucket (3 readings: pm02 = 10,20,30 => avg 20)
+	recentBucket := readings[1] // ordered ASC, recent is last
+	if !recentBucket.PM02.Valid || recentBucket.PM02.Float64 != 20 {
+		t.Errorf("expected avg pm02=20, got %v", recentBucket.PM02)
+	}
+}
+
+func TestDownsampledNoIDInJSON(t *testing.T) {
+	r := Reading{
+		ID:         0, // downsampled
+		Timestamp:  1700000000000,
+		DeviceID:   "dev1",
+		DeviceType: deviceTypeIndoor,
+		DeviceIP:   "1.1.1.1",
+		PM02:       sql.NullFloat64{Float64: 15, Valid: true},
+	}
+
+	j := ReadingToJSON(&r)
+	if _, exists := j["id"]; exists {
+		t.Error("downsampled reading (ID=0) should not have 'id' field in JSON")
+	}
+}
+
+func TestNonDownsampledHasIDInJSON(t *testing.T) {
+	r := Reading{
+		ID:         5,
+		Timestamp:  1700000000000,
+		DeviceID:   "dev1",
+		DeviceType: deviceTypeIndoor,
+		DeviceIP:   "1.1.1.1",
+	}
+
+	j := ReadingToJSON(&r)
+	if j["id"] != int64(5) {
+		t.Errorf("non-downsampled reading should have id=5, got %v", j["id"])
+	}
+}
+
+func TestGetFilteredCount(t *testing.T) {
+	db := openTestDB(t)
+
+	now := NowMillis()
+
+	// Insert readings with known timestamps
+	_, err := db.Exec(`INSERT INTO readings (timestamp, device_id, device_type, device_ip, raw_json)
+		VALUES (?, 'dev1', 'indoor', '1.1.1.1', '{}')`, now-10000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO readings (timestamp, device_id, device_type, device_ip, raw_json)
+		VALUES (?, 'dev1', 'indoor', '1.1.1.1', '{}')`, now-5000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO readings (timestamp, device_id, device_type, device_ip, raw_json)
+		VALUES (?, 'dev2', 'outdoor', '1.1.1.2', '{}')`, now-3000)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	t.Run("all devices", func(t *testing.T) {
+		count, err := GetFilteredCount(db, 0, now+1000, "all")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count != 3 {
+			t.Errorf("expected 3, got %d", count)
+		}
+	})
+
+	t.Run("single device", func(t *testing.T) {
+		count, err := GetFilteredCount(db, 0, now+1000, "dev1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count != 2 {
+			t.Errorf("expected 2, got %d", count)
+		}
+	})
+
+	t.Run("time range filter", func(t *testing.T) {
+		count, err := GetFilteredCount(db, now-7000, now+1000, "all")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count != 2 {
+			t.Errorf("expected 2, got %d", count)
+		}
+	})
+
+	t.Run("empty device means all", func(t *testing.T) {
+		count, err := GetFilteredCount(db, 0, now+1000, "")
+		if err != nil {
+			t.Fatal(err)
+		}
+		if count != 3 {
+			t.Errorf("expected 3, got %d", count)
+		}
+	})
+}
+
 func TestSchemaFileExists(t *testing.T) {
 	if _, err := os.Stat("../schema.sql"); os.IsNotExist(err) {
 		t.Fatal("../schema.sql must exist for DB initialization")
