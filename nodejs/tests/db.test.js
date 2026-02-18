@@ -195,6 +195,14 @@ describe('getDevices', () => {
     const ids = devices.map(d => d.device_id);
     assert.equal(ids.length, new Set(ids).size);
   });
+
+  it('does NOT contain first_seen field (regression)', () => {
+    const devices = db.getDevices();
+    assert.ok(devices.length > 0);
+    for (const d of devices) {
+      assert.equal('first_seen' in d, false, 'devices response should not have first_seen');
+    }
+  });
 });
 
 describe('getLatestReadings', () => {
@@ -213,6 +221,27 @@ describe('getLatestReadings', () => {
       assert.equal(reading.timestamp, maxTs,
         `Latest reading for ${reading.device_id} should have max timestamp`);
     }
+  });
+
+  it('selects by MAX(id) not MAX(timestamp) (regression)', () => {
+    // Insert two readings for same device with identical timestamp
+    const now = Date.now();
+    const Database = require('better-sqlite3');
+    const rawDb = new Database(dbPath);
+    rawDb.prepare(`
+      INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, rco2, raw_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(now, 'maxid_test', 'indoor', '10.0.0.99', 10.0, 400, '{}');
+    rawDb.prepare(`
+      INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, rco2, raw_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?)
+    `).run(now, 'maxid_test', 'indoor', '10.0.0.99', 99.0, 999, '{}');
+    rawDb.close();
+
+    const latest = db.getLatestReadings().find(r => r.device_id === 'maxid_test');
+    assert.ok(latest, 'maxid_test device should appear in latest');
+    assert.equal(latest.pm02, 99.0, 'Latest should be the second insert (higher id)');
+    assert.equal(latest.rco2, 999);
   });
 
   it('response does NOT include raw_json', () => {

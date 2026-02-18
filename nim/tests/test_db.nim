@@ -331,6 +331,64 @@ suite "Downsample":
     check j["pm02"].getFloat() == 15.0
 
 
+suite "Regression tests":
+  test "readings ordered by timestamp ASC":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    let now = nowMillis()
+    runSql(testDb, "INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, raw_json) VALUES (" &
+      $(now - 3000) & ", 'dev1', 'indoor', '1.1.1.1', 10.0, '{}')")
+    runSql(testDb, "INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, raw_json) VALUES (" &
+      $(now - 2000) & ", 'dev1', 'indoor', '1.1.1.1', 20.0, '{}')")
+    runSql(testDb, "INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, raw_json) VALUES (" &
+      $(now - 1000) & ", 'dev1', 'indoor', '1.1.1.1', 30.0, '{}')")
+
+    let readings = queryReadings(testDb, ReadingQuery(
+      device: "all", fromTs: 0, toTs: now + 1000, limit: 100
+    ))
+
+    check readings.len == 3
+    check readings[0].id < readings[1].id
+    check readings[1].id < readings[2].id
+    check readings[0].timestamp <= readings[1].timestamp
+    check readings[1].timestamp <= readings[2].timestamp
+
+  test "latest by MAX(id) not MAX(timestamp)":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    let now = nowMillis()
+    # Two readings for same device with same timestamp, different pm02
+    runSql(testDb, "INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, rco2, raw_json) VALUES (" &
+      $now & ", 'dev1', 'indoor', '1.1.1.1', 10.0, 400, '{}')")
+    runSql(testDb, "INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, rco2, raw_json) VALUES (" &
+      $now & ", 'dev1', 'indoor', '1.1.1.1', 99.0, 999, '{}')")
+
+    let latest = getLatestReadings(testDb)
+    check latest.len == 1
+    # Should be the second insert (higher id) with pm02=99
+    check latest[0].hasPm02
+    check latest[0].pm02 == 99.0
+    check latest[0].hasRco2
+    check latest[0].rco2 == 999
+
+  test "devices response does not contain first_seen":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    check insertReading(testDb, "10.0.0.1", indoorData)
+
+    let devices = getDevices(testDb)
+    check devices.len == 1
+    let j = deviceSummaryToJson(devices[0])
+
+    check not j.hasKey("first_seen")
+    check j.hasKey("device_id")
+    check j.hasKey("last_seen")
+    check j.hasKey("reading_count")
+
+
 suite "Filtered count":
   test "count all devices":
     let testDb = openTestDb()

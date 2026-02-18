@@ -234,10 +234,21 @@ body=$(curl -sf "${BASE}/api/readings")
 count=$(jq 'length' <<< "${body}")
 assert_eq "readings returns 3" "3" "${count}"
 
-# Readings are ORDER BY timestamp DESC, so last inserted is first
-assert_json_field "reading has device_id" "${body}" '.[0].device_id' "${OUTDOOR_SERIAL}"
+# Readings are ORDER BY timestamp ASC, so first inserted is first
+assert_json_field "reading has device_id" "${body}" '.[0].device_id' "${INDOOR_SERIAL}"
 assert_json_not_null "reading has timestamp" "${body}" '.[0].timestamp'
 assert_json_not_null "reading has id" "${body}" '.[0].id'
+
+# Verify ASC ordering: first reading should have lower id than last
+first_id=$(jq '.[0].id' <<< "${body}")
+last_id=$(jq '.[-1].id' <<< "${body}")
+if (( first_id < last_id )); then
+    PASS=$(( PASS + 1 ))
+else
+    FAIL=$(( FAIL + 1 ))
+    ERRORS+=("FAIL: readings ASC order: first id (${first_id}) should be < last id (${last_id})")
+    echo "  FAIL: readings ASC order" >&2
+fi
 
 echo ""
 
@@ -290,8 +301,11 @@ assert_eq "devices returns 2" "2" "${count}"
 # Check device fields
 assert_json_not_null "device has device_id" "${body}" '.[0].device_id'
 assert_json_not_null "device has reading_count" "${body}" '.[0].reading_count'
-assert_json_not_null "device has first_seen" "${body}" '.[0].first_seen'
 assert_json_not_null "device has last_seen" "${body}" '.[0].last_seen'
+
+# Verify devices response does NOT contain first_seen (not in API spec)
+has_first_seen=$(jq '.[0] | has("first_seen")' <<< "${body}")
+assert_eq "device does NOT have first_seen" "false" "${has_first_seen}"
 
 echo ""
 
@@ -330,6 +344,17 @@ assert_contains "index content-type" "${ct}" "text/html"
 
 ct=$(curl -si "${BASE}/style.css" 2>/dev/null | grep -i "^Content-Type:" | tr -d '\r\n')
 assert_contains "css content-type" "${ct}" "text/css"
+
+# Dashboard structure verification
+body=$(curl -sf "${BASE}/")
+assert_contains "HTML has charts section" "${body}" 'id="charts"'
+assert_contains "HTML has device-status" "${body}" 'id="device-status"'
+assert_contains "HTML has time-range nav" "${body}" 'id="time-range"'
+assert_contains "HTML has current-values" "${body}" 'id="current-values"'
+
+body=$(curl -sf "${BASE}/app.js")
+assert_contains "app.js exists and has fetchReadings" "${body}" "fetchReadings"
+assert_contains "app.js references /api/readings" "${body}" "/api/readings"
 
 echo ""
 
@@ -456,6 +481,12 @@ else
     echo "  FAIL: readings/count > 0" >&2
 fi
 
+# Count response should have ONLY "count" key (no extra fields)
+count_keys=$(jq 'keys | length' <<< "${body}")
+assert_eq "readings/count has exactly 1 key" "1" "${count_keys}"
+count_has_count=$(jq 'has("count")' <<< "${body}")
+assert_eq "readings/count has count key" "true" "${count_has_count}"
+
 # Count with device filter
 body=$(curl -sf "${BASE}/api/readings/count?device=${INDOOR_SERIAL}")
 device_count=$(jq '.count' <<< "${body}")
@@ -477,6 +508,41 @@ echo ""
 # ═══════════════════════════════════════════════════════════════════
 # SQL DRIFT VALIDATION (source-level checks against queries.sql)
 # ═══════════════════════════════════════════════════════════════════
+
+echo "--- Latest picks by MAX(id), not MAX(timestamp) ---"
+
+# Insert two readings for a new device with the SAME timestamp but different values
+test_ts=$(now_ms)
+sqlite3 "${DB_PATH}" "INSERT INTO readings (
+    timestamp, device_id, device_type, device_ip,
+    pm01, pm02, pm10, pm02_compensated,
+    rco2, atmp, atmp_compensated, rhum, rhum_compensated,
+    tvoc_index, nox_index, wifi, raw_json
+) VALUES (
+    ${test_ts}, 'latest-test', 'indoor', '192.168.1.99',
+    null, 100, null, null,
+    null, null, null, null, null,
+    null, null, null, '{}'
+);"
+sqlite3 "${DB_PATH}" "INSERT INTO readings (
+    timestamp, device_id, device_type, device_ip,
+    pm01, pm02, pm10, pm02_compensated,
+    rco2, atmp, atmp_compensated, rhum, rhum_compensated,
+    tvoc_index, nox_index, wifi, raw_json
+) VALUES (
+    ${test_ts}, 'latest-test', 'indoor', '192.168.1.99',
+    null, 999, null, null,
+    null, null, null, null, null,
+    null, null, null, '{}'
+);"
+sleep 0.1
+
+body=$(curl -sf "${BASE}/api/readings/latest")
+latest_pm02=$(jq '[.[] | select(.device_id == "latest-test")][0].pm02 | floor' <<< "${body}")
+# The second insert (pm02=999) has the higher id, so latest should pick it
+assert_eq "latest picks higher id (pm02=999)" "999" "${latest_pm02}"
+
+echo ""
 
 echo "--- SQL drift tests ---"
 
@@ -579,7 +645,6 @@ assert_contains "latest query GROUP BY device_id" "${asm_latest}" "GROUP BY devi
 asm_devices=$(extract_asm_sql "sql_devices_json" "${ASM_STRINGS}")
 assert_contains "devices query GROUP BY device_id" "${asm_devices}" "GROUP BY device_id"
 assert_contains "devices query COUNT(*)" "${asm_devices}" "COUNT(*)"
-assert_contains "devices query MIN(timestamp)" "${asm_devices}" "MIN(timestamp)"
 assert_contains "devices query MAX(timestamp)" "${asm_devices}" "MAX(timestamp)"
 
 # --- Validate count query ---

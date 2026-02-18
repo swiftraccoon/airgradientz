@@ -174,6 +174,13 @@ describe('GET /api/devices', () => {
     const ids = body.map(d => d.device_id);
     assert.equal(ids.length, new Set(ids).size);
   });
+
+  it('does NOT contain first_seen field (regression)', async () => {
+    const { body } = await get('/api/devices');
+    for (const d of body) {
+      assert.equal('first_seen' in d, false, 'devices response should not have first_seen');
+    }
+  });
 });
 
 describe('GET /api/readings/latest', () => {
@@ -200,6 +207,16 @@ describe('GET /api/readings/latest', () => {
       const maxTs = Math.max(...deviceReadings.map(r => r.timestamp));
       assert.equal(reading.timestamp, maxTs);
     }
+  });
+});
+
+describe('GET /api/readings/count', () => {
+  it('returns only {"count": N} with no extra fields (regression)', async () => {
+    const { status, body } = await get('/api/readings/count');
+    assert.equal(status, 200);
+    assert.ok(typeof body.count === 'number');
+    const keys = Object.keys(body);
+    assert.deepEqual(keys, ['count'], `Expected only "count" key, got: ${JSON.stringify(keys)}`);
   });
 });
 

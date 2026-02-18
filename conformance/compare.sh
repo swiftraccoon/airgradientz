@@ -364,6 +364,119 @@ run_test \
     "normalize_identity" \
     "status_only"
 
+# ── Web page smoke tests ─────────────────────────────────────────────────────
+# Verify that static files are served correctly and contain expected structure
+
+run_web_test() {
+    local test_name="$1"
+    local path="$2"
+    local expected_status="$3"
+    local required_content="$4"
+
+    declare -a statuses=()
+    declare -a bodies=()
+    local idx
+    for (( idx=0; idx<IMPL_COUNT; idx++ )); do
+        local result
+        result="$(fetch "${IMPL_PORTS[${idx}]}" "${path}")"
+        statuses+=("${result%%$'\t'*}")
+        bodies+=("${result#*$'\t'}")
+    done
+
+    # Check expected status on all impls
+    local all_ok=true
+    declare -a details=()
+    for (( idx=0; idx<IMPL_COUNT; idx++ )); do
+        if [[ "${statuses[${idx}]}" != "${expected_status}" ]]; then
+            all_ok=false
+            details+=("${IMPL_NAMES[${idx}]}: HTTP ${statuses[${idx}]}")
+        fi
+    done
+    if [[ "${all_ok}" == "false" ]]; then
+        report_fail "${test_name}" "Status code mismatch (expected ${expected_status}):" "${details[@]}"
+        return
+    fi
+
+    # Check that required content exists in all responses
+    local content_ok=true
+    declare -a content_details=()
+    for (( idx=0; idx<IMPL_COUNT; idx++ )); do
+        if [[ "${bodies[${idx}]}" != *"${required_content}"* ]]; then
+            content_ok=false
+            content_details+=("${IMPL_NAMES[${idx}]}: missing '${required_content}'")
+        fi
+    done
+    if [[ "${content_ok}" == "false" ]]; then
+        report_fail "${test_name}" "${content_details[@]}"
+        return
+    fi
+
+    report_pass "${test_name}"
+}
+
+# 13. GET / (index.html)
+run_web_test \
+    "GET / (index.html)" \
+    "/" \
+    "200" \
+    "AirGradient Dashboard"
+
+# 14. GET /style.css
+run_web_test \
+    "GET /style.css" \
+    "/style.css" \
+    "200" \
+    "box-sizing"
+
+# 15. GET /app.js
+run_web_test \
+    "GET /app.js" \
+    "/app.js" \
+    "200" \
+    "fetchReadings"
+
+# 16. HTML structure: has chart containers
+run_web_test \
+    "HTML has chart section" \
+    "/" \
+    "200" \
+    "id=\"charts\""
+
+# 17. HTML structure: has device-status area
+run_web_test \
+    "HTML has device-status" \
+    "/" \
+    "200" \
+    "id=\"device-status\""
+
+# 18. HTML structure: has time-range nav
+run_web_test \
+    "HTML has time-range nav" \
+    "/" \
+    "200" \
+    "id=\"time-range\""
+
+# 19. HTML structure: has current-values section
+run_web_test \
+    "HTML has current-values" \
+    "/" \
+    "200" \
+    "id=\"current-values\""
+
+# 20. CSS has chart-card class
+run_web_test \
+    "CSS has chart-card class" \
+    "/style.css" \
+    "200" \
+    ".chart-card"
+
+# 21. JS references API endpoints
+run_web_test \
+    "JS calls /api/readings" \
+    "/app.js" \
+    "200" \
+    "/api/readings"
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 echo ""

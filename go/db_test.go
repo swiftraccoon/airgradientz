@@ -716,6 +716,115 @@ func TestGetFilteredCount(t *testing.T) {
 	})
 }
 
+// ---- Regression tests ----
+
+func TestReadingsOrderedASC(t *testing.T) {
+	db := openTestDB(t)
+
+	now := NowMillis()
+
+	_, err := db.Exec(`INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, raw_json)
+		VALUES (?, 'dev1', 'indoor', '1.1.1.1', 10.0, '{}')`, now-3000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, raw_json)
+		VALUES (?, 'dev1', 'indoor', '1.1.1.1', 20.0, '{}')`, now-2000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, raw_json)
+		VALUES (?, 'dev1', 'indoor', '1.1.1.1', 30.0, '{}')`, now-1000)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	readings, err := QueryReadings(db, ReadingQuery{
+		Device: "all", From: 0, To: now + 1000, Limit: 100,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(readings) != 3 {
+		t.Fatalf("expected 3 readings, got %d", len(readings))
+	}
+
+	// Verify ASC order: first has lowest id, last has highest
+	if readings[0].ID >= readings[1].ID {
+		t.Errorf("readings[0].ID (%d) should be < readings[1].ID (%d)", readings[0].ID, readings[1].ID)
+	}
+	if readings[1].ID >= readings[2].ID {
+		t.Errorf("readings[1].ID (%d) should be < readings[2].ID (%d)", readings[1].ID, readings[2].ID)
+	}
+	if readings[0].Timestamp > readings[1].Timestamp {
+		t.Error("timestamps should be in ASC order")
+	}
+}
+
+func TestLatestByMaxIDNotTimestamp(t *testing.T) {
+	db := openTestDB(t)
+
+	now := NowMillis()
+
+	// Insert two readings for same device with SAME timestamp but different values
+	_, err := db.Exec(`INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, rco2, raw_json)
+		VALUES (?, 'dev1', 'indoor', '1.1.1.1', 10.0, 400, '{}')`, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = db.Exec(`INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, rco2, raw_json)
+		VALUES (?, 'dev1', 'indoor', '1.1.1.1', 99.0, 999, '{}')`, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	readings, err := GetLatestReadings(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(readings) != 1 {
+		t.Fatalf("expected 1 latest reading, got %d", len(readings))
+	}
+
+	// Latest should be the second insert (higher id) with pm02=99
+	if !readings[0].PM02.Valid || readings[0].PM02.Float64 != 99.0 {
+		t.Errorf("expected pm02=99.0, got %v", readings[0].PM02)
+	}
+	if !readings[0].RCO2.Valid || readings[0].RCO2.Int64 != 999 {
+		t.Errorf("expected rco2=999, got %v", readings[0].RCO2)
+	}
+}
+
+func TestDevicesNoFirstSeen(t *testing.T) {
+	db := openTestDB(t)
+
+	if err := InsertReading(db, "192.168.1.1", indoorFull); err != nil {
+		t.Fatal(err)
+	}
+
+	devices, err := GetDevices(db)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(devices) != 1 {
+		t.Fatalf("expected 1 device, got %d", len(devices))
+	}
+
+	j := DeviceSummaryToJSON(&devices[0])
+	if _, exists := j["first_seen"]; exists {
+		t.Error("devices response should NOT contain first_seen")
+	}
+	if _, exists := j["device_id"]; !exists {
+		t.Error("devices response should contain device_id")
+	}
+	if _, exists := j["last_seen"]; !exists {
+		t.Error("devices response should contain last_seen")
+	}
+	if _, exists := j["reading_count"]; !exists {
+		t.Error("devices response should contain reading_count")
+	}
+}
+
 func TestSchemaFileExists(t *testing.T) {
 	if _, err := os.Stat("../schema.sql"); os.IsNotExist(err) {
 		t.Fatal("../schema.sql must exist for DB initialization")

@@ -154,7 +154,7 @@ handleRequest conn dbMVar cfg pollerH stats req
           qs   = reqQuery req
       case path of
         "/api/readings/latest" -> handleLatest conn dbMVar
-        "/api/readings/count"  -> handleReadingsCount conn dbMVar cfg qs
+        "/api/readings/count"  -> handleReadingsCount conn dbMVar qs
         "/api/readings"        -> handleReadings conn dbMVar cfg qs
         "/api/devices"         -> handleDevices conn dbMVar
         "/api/health"          -> handleHealth conn pollerH
@@ -166,8 +166,7 @@ handleReadings :: NS.Socket -> MVar DBHandle -> Config -> BS.ByteString -> IO ()
 handleReadings conn dbMVar cfg qs = do
   now <- nowMillis
   let params = parseQueryString qs
-      defaultFrom = now - 24 * 60 * 60 * 1000
-      from'  = lookupInt64Param "from" defaultFrom params
+      from'  = lookupInt64Param "from" 0 params
       to'    = lookupInt64Param "to" now params
       device = lookupParam "device" params
       rawLim = lookupIntParam "limit" (cfgMaxApiRows cfg) params
@@ -207,12 +206,11 @@ handleLatest conn dbMVar = do
     Right readings ->
       sendJSON conn (Aeson.encode (map readingToJSON readings))
 
-handleReadingsCount :: NS.Socket -> MVar DBHandle -> Config -> BS.ByteString -> IO ()
-handleReadingsCount conn dbMVar cfg qs = do
+handleReadingsCount :: NS.Socket -> MVar DBHandle -> BS.ByteString -> IO ()
+handleReadingsCount conn dbMVar qs = do
   now <- nowMillis
   let params = parseQueryString qs
-      defaultFrom = now - 24 * 60 * 60 * 1000
-      from'  = lookupInt64Param "from" defaultFrom params
+      from'  = lookupInt64Param "from" 0 params
       to'    = lookupInt64Param "to" now params
       device = lookupParam "device" params
       devText = T.pack (if null device then "all" else device)
@@ -222,13 +220,7 @@ handleReadingsCount conn dbMVar cfg qs = do
       hPutStrLn stderr $ "[api] readings_count error: " ++ show e
       sendErrorResponse conn 500 "Internal server error"
     Right count -> do
-      let body = Aeson.object
-            [ "count"              Aeson..= count
-            , "from"               Aeson..= from'
-            , "to"                 Aeson..= to'
-            , "device"             Aeson..= devText
-            , "downsampleThreshold" Aeson..= cfgDownsampleThreshold cfg
-            ]
+      let body = Aeson.object [ "count" Aeson..= count ]
       sendJSON conn (Aeson.encode body)
 
 handleDevices :: NS.Socket -> MVar DBHandle -> IO ()

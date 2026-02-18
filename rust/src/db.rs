@@ -803,6 +803,75 @@ mod tests {
         assert_eq!(json.get("id").unwrap().as_i64(), Some(5));
     }
 
+    // ---- Regression tests ----
+
+    #[test]
+    fn test_readings_ordered_asc() {
+        let conn = setup_db();
+        let now = now_millis();
+
+        conn.execute(
+            "INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, raw_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![now - 3000, "dev1", "indoor", "1.1.1.1", 10.0, "{}"],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, raw_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![now - 2000, "dev1", "indoor", "1.1.1.1", 20.0, "{}"],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, raw_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![now - 1000, "dev1", "indoor", "1.1.1.1", 30.0, "{}"],
+        ).unwrap();
+
+        let readings = query_readings(
+            &conn,
+            &ReadingQuery { device: None, from: 0, to: i64::MAX, limit: None, downsample_ms: None },
+        ).unwrap();
+
+        assert_eq!(readings.len(), 3);
+        assert!(readings[0].id < readings[1].id, "first id should be less than second");
+        assert!(readings[1].id < readings[2].id, "second id should be less than third");
+        assert!(readings[0].timestamp <= readings[1].timestamp);
+        assert!(readings[1].timestamp <= readings[2].timestamp);
+    }
+
+    #[test]
+    fn test_latest_by_max_id_not_timestamp() {
+        let conn = setup_db();
+        let now = now_millis();
+
+        // Insert two readings for same device with SAME timestamp but different values
+        conn.execute(
+            "INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, rco2, raw_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![now, "dev1", "indoor", "1.1.1.1", 10.0, 400, "{}"],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, rco2, raw_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![now, "dev1", "indoor", "1.1.1.1", 99.0, 999, "{}"],
+        ).unwrap();
+
+        let latest = get_latest_readings(&conn).unwrap();
+        assert_eq!(latest.len(), 1);
+        // Should be the second insert (higher id) with pm02=99
+        assert_eq!(latest[0].pm02, Some(99.0));
+        assert_eq!(latest[0].rco2, Some(999));
+    }
+
+    #[test]
+    fn test_devices_no_first_seen() {
+        let conn = setup_db();
+        insert_reading(&conn, "192.168.1.1", &indoor_fixture()).unwrap();
+
+        let devices = get_devices(&conn).unwrap();
+        assert_eq!(devices.len(), 1);
+
+        let json = devices[0].to_json();
+        assert!(json.get("first_seen").is_none(), "devices should not contain first_seen");
+        assert!(json.get("device_id").is_some());
+        assert!(json.get("last_seen").is_some());
+        assert!(json.get("reading_count").is_some());
+    }
+
     #[test]
     fn test_get_filtered_count() {
         let conn = setup_db();

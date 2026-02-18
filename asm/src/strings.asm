@@ -66,11 +66,11 @@ sql_where_device:
 
 global sql_order_limit
 sql_order_limit:
-    db ` ORDER BY timestamp DESC LIMIT %d)`, 0
+    db ` ORDER BY timestamp ASC LIMIT %d)`, 0
 
 global sql_order_limit_close
 sql_order_limit_close:
-    db ` ORDER BY timestamp DESC LIMIT %d);`, 0
+    db ` ORDER BY timestamp ASC LIMIT %d);`, 0
 
 global sql_latest_json
 sql_latest_json:
@@ -83,18 +83,17 @@ sql_latest_json:
     db `'tvoc_index',tvoc_index,'nox_index',nox_index,'wifi',wifi`
     db `)),'[]') FROM (`
     db `SELECT r.* FROM readings r `
-    db `INNER JOIN (SELECT device_id, MAX(timestamp) AS max_ts FROM readings GROUP BY device_id) g `
-    db `ON r.device_id = g.device_id AND r.timestamp = g.max_ts);`, 0
+    db `INNER JOIN (SELECT device_id, MAX(id) AS max_id FROM readings GROUP BY device_id) g `
+    db `ON r.device_id = g.device_id AND r.id = g.max_id);`, 0
 
 global sql_devices_json
 sql_devices_json:
     db `SELECT COALESCE(json_group_array(json_object(`
     db `'device_id',device_id,'device_type',device_type,'device_ip',device_ip,`
-    db `'reading_count',cnt,`
-    db `'first_seen',first_ts,'last_seen',last_ts`
+    db `'reading_count',cnt,'last_seen',last_ts`
     db `)),'[]') FROM (`
     db `SELECT device_id,device_type,device_ip,`
-    db `COUNT(*) AS cnt,MIN(timestamp) AS first_ts,MAX(timestamp) AS last_ts `
+    db `COUNT(*) AS cnt,MAX(timestamp) AS last_ts `
     db `FROM readings GROUP BY device_id);`, 0
 
 global sql_downsample_json

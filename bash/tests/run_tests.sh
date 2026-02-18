@@ -496,6 +496,27 @@ body=$(get_body "${response}")
 assert_eq "/ returns 200" "200" "${status}"
 assert_contains "/ serves html" "${body}" "<!DOCTYPE html>"
 
+# Dashboard structure verification
+assert_contains "HTML has charts section" "${body}" 'id="charts"'
+assert_contains "HTML has device-status" "${body}" 'id="device-status"'
+assert_contains "HTML has time-range nav" "${body}" 'id="time-range"'
+assert_contains "HTML has current-values" "${body}" 'id="current-values"'
+
+# CSS file
+response=$(do_handler_request GET "/style.css")
+status=$(get_status_code "${response}")
+css_body=$(get_body "${response}")
+assert_eq "/style.css returns 200" "200" "${status}"
+assert_contains "CSS has chart-card class" "${css_body}" ".chart-card"
+
+# JS file
+response=$(do_handler_request GET "/app.js")
+status=$(get_status_code "${response}")
+js_body=$(get_body "${response}")
+assert_eq "/app.js returns 200" "200" "${status}"
+assert_contains "app.js has fetchReadings" "${js_body}" "fetchReadings"
+assert_contains "app.js references /api/readings" "${js_body}" "/api/readings"
+
 # TestNotFoundForMissing
 response=$(do_handler_request GET "/nonexistent.html")
 status=$(get_status_code "${response}")
@@ -566,6 +587,79 @@ assert_eq "readings/count for indoor device is 1" "1" "${device_count}"
 response=$(do_handler_request GET "/api/config")
 body=$(get_body "${response}")
 assert_json_field "config has downsampleThreshold" "${body}" '.downsampleThreshold' "10000"
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════
+# REGRESSION TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+echo "--- Regression tests ---"
+
+# TestReadingsOrderedASC
+# Insert readings with different timestamps and verify ASC order via handler
+response=$(do_handler_request GET "/api/readings?device=${INDOOR_SERIAL}")
+body=$(get_body "${response}")
+count=$(jq 'length' <<< "${body}")
+if (( count > 1 )); then
+    first_ts=$(jq '.[0].timestamp' <<< "${body}")
+    last_ts=$(jq '.[-1].timestamp' <<< "${body}")
+    if (( first_ts <= last_ts )); then
+        assert_eq "readings ASC order (first <= last)" "yes" "yes"
+    else
+        assert_eq "readings ASC order (first <= last)" "yes" "no (${first_ts} > ${last_ts})"
+    fi
+else
+    # Only 1 reading, test with all readings instead
+    response=$(do_handler_request GET "/api/readings?limit=10")
+    body=$(get_body "${response}")
+    first_ts=$(jq '.[0].timestamp' <<< "${body}")
+    last_ts=$(jq '.[-1].timestamp' <<< "${body}")
+    if (( first_ts <= last_ts )); then
+        assert_eq "readings ASC order (first <= last)" "yes" "yes"
+    else
+        assert_eq "readings ASC order (first <= last)" "yes" "no"
+    fi
+fi
+
+# TestLatestByMaxID: Insert 2 readings with same timestamp, verify latest returns higher id
+ts_same=$(now_ms)
+db_exec "INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, rco2, raw_json) VALUES (${ts_same}, 'maxid_dev', 'indoor', '10.0.0.50', 10.0, 400, '{}');"
+db_exec "INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, rco2, raw_json) VALUES (${ts_same}, 'maxid_dev', 'indoor', '10.0.0.50', 99.0, 999, '{}');"
+
+response=$(do_handler_request GET "/api/readings/latest")
+body=$(get_body "${response}")
+maxid_pm02=$(jq -r '.[] | select(.device_id == "maxid_dev") | .pm02' <<< "${body}")
+maxid_rco2=$(jq -r '.[] | select(.device_id == "maxid_dev") | .rco2' <<< "${body}")
+assert_eq "latest by MAX(id) pm02=99" "99" "${maxid_pm02}"
+assert_eq "latest by MAX(id) rco2=999" "999" "${maxid_rco2}"
+
+# TestDevicesNoFirstSeen
+response=$(do_handler_request GET "/api/devices")
+body=$(get_body "${response}")
+has_first_seen=$(jq 'any(.[]; has("first_seen"))' <<< "${body}")
+assert_eq "devices has no first_seen" "false" "${has_first_seen}"
+# But must have expected fields
+has_device_id=$(jq 'all(.[]; has("device_id"))' <<< "${body}")
+has_last_seen=$(jq 'all(.[]; has("last_seen"))' <<< "${body}")
+has_reading_count=$(jq 'all(.[]; has("reading_count"))' <<< "${body}")
+assert_eq "devices has device_id" "true" "${has_device_id}"
+assert_eq "devices has last_seen" "true" "${has_last_seen}"
+assert_eq "devices has reading_count" "true" "${has_reading_count}"
+
+# TestCountResponseShape: Only {"count": N}, no extra fields
+response=$(do_handler_request GET "/api/readings/count")
+body=$(get_body "${response}")
+count_keys=$(jq 'keys | length' <<< "${body}")
+assert_eq "count response has exactly 1 key" "1" "${count_keys}"
+count_key=$(jq -r 'keys[0]' <<< "${body}")
+assert_eq "count response key is 'count'" "count" "${count_key}"
+count_val=$(jq '.count' <<< "${body}")
+if (( count_val >= 0 )); then
+    assert_eq "count value is non-negative" "yes" "yes"
+else
+    assert_eq "count value is non-negative" "yes" "no (${count_val})"
+fi
 
 echo ""
 

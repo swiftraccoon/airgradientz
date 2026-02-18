@@ -179,7 +179,7 @@ defmodule Airgradientz.HttpServer do
     params = parse_query_string(query)
 
     now = System.system_time(:millisecond)
-    from_ts = parse_int(Map.get(params, "from")) || now - 24 * 60 * 60 * 1000
+    from_ts = parse_int(Map.get(params, "from")) || 0
     to_ts = parse_int(Map.get(params, "to")) || now
     device = Map.get(params, "device", "all")
 
@@ -197,7 +197,7 @@ defmodule Airgradientz.HttpServer do
     params = parse_query_string(query)
 
     now = System.system_time(:millisecond)
-    from_ts = parse_int(Map.get(params, "from")) || now - 24 * 60 * 60 * 1000
+    from_ts = parse_int(Map.get(params, "from")) || 0
     to_ts = parse_int(Map.get(params, "to")) || now
 
     requested_limit = parse_int(Map.get(params, "limit")) || config.max_api_rows

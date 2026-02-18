@@ -233,6 +233,35 @@ defmodule Airgradientz.DBTest do
     assert count_filtered == 2
   end
 
+  test "count with from=0 returns all readings (not just last 24h)" do
+    :ok = Airgradientz.DB.insert_reading("10.0.0.1", @indoor_data)
+    :ok = Airgradientz.DB.insert_reading("10.0.0.2", @outdoor_data)
+
+    now = System.system_time(:millisecond)
+
+    # With from=0 (API default), all readings should be counted
+    count = Airgradientz.DB.query_readings_count(%{from: 0, to: now + 1000})
+    assert count == 2
+
+    # With from=now (simulates what the old from=now-24h bug would return for old data)
+    count_recent = Airgradientz.DB.query_readings_count(%{from: now + 500, to: now + 1000})
+    assert count_recent == 0
+  end
+
+  test "devices response has no first_seen field" do
+    :ok = Airgradientz.DB.insert_reading("10.0.0.1", @indoor_data)
+
+    devices = Airgradientz.DB.get_devices()
+    assert length(devices) == 1
+    device = hd(devices)
+
+    # API spec: devices have device_id, device_type, device_ip, last_seen, reading_count
+    assert Map.has_key?(device, :device_id)
+    assert Map.has_key?(device, :last_seen)
+    assert Map.has_key?(device, :reading_count)
+    refute Map.has_key?(device, :first_seen)
+  end
+
   test "query_readings_count with device=all returns all" do
     :ok = Airgradientz.DB.insert_reading("10.0.0.1", @indoor_data)
     :ok = Airgradientz.DB.insert_reading("10.0.0.2", @outdoor_data)

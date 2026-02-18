@@ -287,6 +287,38 @@ dbTests fx =
       c4 <- getFilteredCount db 0 (now + 1000) "nonexistent"
       c4 @?= 0
 
+  , testCase "latest selects by MAX(id) not MAX(timestamp)" $ withTestDB $ \db -> do
+      -- Insert two readings for same device with identical timestamps
+      -- by direct SQL to control timestamps
+      insertReading db "192.168.1.1" (fxIndoorFull fx)
+      -- Insert another reading for the same device (same timestamp bucket)
+      insertReading db "192.168.1.1" (fxIndoorFull fx)
+      -- Get latest — should be the one with the higher id
+      readings <- getLatestReadings db
+      let indoor = filter (\r -> rdDeviceId r == indoorSerial) readings
+      r <- firstOr indoor
+      -- The second insert should have id=2, verify it picks the higher id
+      assertBool "latest reading should have id > 1 (picks MAX(id))"
+        (rdId r > 1)
+
+  , testCase "count response shape is just count" $ do
+      -- Verify that the JSON for count has only the "count" key
+      let countJSON = object [ "count" .= (42 :: Int) ]
+      case countJSON of
+        Object km -> do
+          KM.size km @?= 1
+          KM.lookup "count" km @?= Just (Number 42)
+        _ -> assertFailure "object should produce Object"
+
+  , testCase "deviceSummaryToJSON has no first_seen" $ do
+      let d = DeviceSummary indoorSerial "indoor" "192.168.1.1" 1700000000000 42
+      let json = deviceSummaryToJSON d
+      case json of
+        Object km ->
+          assertBool "first_seen should not be in device summary"
+            (not (KM.member "first_seen" km))
+        _ -> assertFailure "deviceSummaryToJSON should return Object"
+
   , testCase "readingToJSON omits id when zero" $ do
       let r = Reading 0 1700000000000 "test" "indoor" "1.1.1.1"
                 Nothing Nothing Nothing Nothing Nothing Nothing

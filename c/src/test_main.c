@@ -1365,6 +1365,89 @@ static void test_db_filtered_count_empty_device(void)
     sqlite3_close(db);
 }
 
+/* ================================================================
+ * Regression tests (order, latest-by-id, no-first_seen, count shape)
+ * ================================================================ */
+
+static void test_db_readings_ordered_asc(void)
+{
+    sqlite3 *db = setup_test_db();
+    ASSERT_NOT_NULL(db);
+
+    int64_t now = db_now_millis();
+    insert_raw_reading(db, now - 3000, "dev1", "indoor", "1.1.1.1", 10.0, 400, 20.0);
+    insert_raw_reading(db, now - 2000, "dev1", "indoor", "1.1.1.1", 20.0, 500, 21.0);
+    insert_raw_reading(db, now - 1000, "dev1", "indoor", "1.1.1.1", 30.0, 600, 22.0);
+
+    ReadingQuery q = { .device = NULL, .from = 0, .to = now + 1000, .limit = 0 };
+    ReadingList rl;
+    ASSERT_INT_EQ(db_query_readings(db, &q, &rl), 0);
+    ASSERT_INT_EQ(rl.count, 3);
+
+    /* Verify ASC order: first has lowest id, last has highest id */
+    ASSERT(rl.items[0].id < rl.items[1].id);
+    ASSERT(rl.items[1].id < rl.items[2].id);
+    ASSERT(rl.items[0].timestamp <= rl.items[1].timestamp);
+    ASSERT(rl.items[1].timestamp <= rl.items[2].timestamp);
+
+    reading_list_free(&rl);
+    sqlite3_close(db);
+}
+
+static void test_db_latest_by_max_id(void)
+{
+    sqlite3 *db = setup_test_db();
+    ASSERT_NOT_NULL(db);
+
+    int64_t now = db_now_millis();
+    /* Two readings for same device with SAME timestamp, different pm02 */
+    insert_raw_reading(db, now, "dev1", "indoor", "1.1.1.1", 10.0, 400, 20.0);
+    insert_raw_reading(db, now, "dev1", "indoor", "1.1.1.1", 99.0, 999, 30.0);
+
+    ReadingList rl;
+    ASSERT_INT_EQ(db_get_latest_readings(db, &rl), 0);
+    ASSERT_INT_EQ(rl.count, 1);
+
+    /* Latest should be the second insert (higher id), which has pm02=99 */
+    ASSERT(rl.items[0].has_pm02);
+    ASSERT_DBL_EQ(rl.items[0].pm02, 99.0);
+    ASSERT(rl.items[0].has_rco2);
+    ASSERT_INT_EQ(rl.items[0].rco2, 999);
+
+    reading_list_free(&rl);
+    sqlite3_close(db);
+}
+
+static void test_db_devices_no_first_seen(void)
+{
+    sqlite3 *db = setup_test_db();
+    ASSERT_NOT_NULL(db);
+
+    JsonValue *data = indoor_fixture();
+    ASSERT_NOT_NULL(data);
+    db_insert_reading(db, "192.168.1.1", data);
+    json_free(data);
+
+    DeviceSummaryList dl;
+    ASSERT_INT_EQ(db_get_devices(db, &dl), 0);
+    ASSERT_INT_EQ(dl.count, 1);
+
+    JsonValue *json = device_summary_to_json(&dl.items[0]);
+    ASSERT_NOT_NULL(json);
+
+    /* Devices response must NOT contain first_seen */
+    ASSERT_NULL(json_get(json, "first_seen"));
+
+    /* But must contain expected fields */
+    ASSERT_NOT_NULL(json_get(json, "device_id"));
+    ASSERT_NOT_NULL(json_get(json, "last_seen"));
+    ASSERT_NOT_NULL(json_get(json, "reading_count"));
+
+    json_free(json);
+    device_summary_list_free(&dl);
+    sqlite3_close(db);
+}
+
 static void test_db_downsample_with_device_filter(void)
 {
     sqlite3 *db = setup_test_db();
@@ -1557,6 +1640,11 @@ int main(void)
     RUN_TEST(test_db_filtered_count_time_range);
     RUN_TEST(test_db_filtered_count_empty_device);
     RUN_TEST(test_db_downsample_with_device_filter);
+
+    fprintf(stderr, "\n=== Regression tests ===\n");
+    RUN_TEST(test_db_readings_ordered_asc);
+    RUN_TEST(test_db_latest_by_max_id);
+    RUN_TEST(test_db_devices_no_first_seen);
 
     fprintf(stderr, "\n=== API query_param tests ===\n");
     RUN_TEST(test_query_param_basic);

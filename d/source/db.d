@@ -559,3 +559,96 @@ long getFilteredReadingsCount(ref Database db, string device, long from, long to
 void checkpoint(ref Database db) {
     db.run("PRAGMA wal_checkpoint(TRUNCATE);");
 }
+
+// ---- unit tests ----
+unittest {
+    import std.stdio : stderr;
+
+    // Helper: open in-memory DB with schema
+    Database openTestDb() {
+        setDefaultQueries();  // ensure queries are available without queries.sql
+        auto testDb = Database(":memory:");
+        testDb.run("PRAGMA journal_mode = WAL;");
+        testDb.run("PRAGMA busy_timeout = 5000;");
+        testDb.run("PRAGMA foreign_keys = ON;");
+        testDb.run("CREATE TABLE IF NOT EXISTS readings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            timestamp INTEGER NOT NULL,
+            device_id TEXT NOT NULL,
+            device_type TEXT NOT NULL CHECK(device_type IN ('indoor', 'outdoor')),
+            device_ip TEXT NOT NULL,
+            pm01 REAL,
+            pm02 REAL,
+            pm10 REAL,
+            pm02_compensated REAL,
+            rco2 INTEGER,
+            atmp REAL,
+            atmp_compensated REAL,
+            rhum REAL,
+            rhum_compensated REAL,
+            tvoc_index REAL,
+            nox_index REAL,
+            wifi INTEGER,
+            raw_json TEXT NOT NULL
+        );
+        CREATE INDEX IF NOT EXISTS idx_readings_ts ON readings(timestamp);
+        CREATE INDEX IF NOT EXISTS idx_readings_device ON readings(device_id, timestamp);");
+        return testDb;
+    }
+
+    void insertRaw(ref Database testDb, long ts, string deviceId, string deviceType, string deviceIp,
+                   double pm02, long rco2) {
+        import std.format : format;
+        auto sql = format("INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, rco2, raw_json) VALUES (%d, '%s', '%s', '%s', %g, %d, '{}')",
+            ts, deviceId, deviceType, deviceIp, pm02, rco2);
+        testDb.run(sql);
+    }
+
+    // Test: readings ordered by timestamp ASC
+    {
+        auto testDb = openTestDb();
+        auto now = nowMillis();
+        insertRaw(testDb, now - 3000, "dev1", "indoor", "1.1.1.1", 10.0, 400);
+        insertRaw(testDb, now - 2000, "dev1", "indoor", "1.1.1.1", 20.0, 500);
+        insertRaw(testDb, now - 1000, "dev1", "indoor", "1.1.1.1", 30.0, 600);
+
+        auto readings = queryReadings(testDb, "all", 0, now + 1000, 100);
+        assert(readings.length == 3, "expected 3 readings");
+        assert(readings[0].id < readings[1].id, "first id < second id");
+        assert(readings[1].id < readings[2].id, "second id < third id");
+        assert(readings[0].timestamp <= readings[1].timestamp, "ASC timestamp order");
+        stderr.writeln("  pass: readings ordered ASC");
+    }
+
+    // Test: latest by MAX(id) not MAX(timestamp)
+    {
+        auto testDb = openTestDb();
+        auto now = nowMillis();
+        insertRaw(testDb, now, "dev1", "indoor", "1.1.1.1", 10.0, 400);
+        insertRaw(testDb, now, "dev1", "indoor", "1.1.1.1", 99.0, 999);
+
+        auto latest = getLatestReadings(testDb);
+        assert(latest.length == 1, "expected 1 latest reading");
+        assert(!latest[0].pm02.isNull, "pm02 should not be null");
+        assert(latest[0].pm02.get == 99.0, "latest should have pm02=99 (higher id)");
+        assert(!latest[0].rco2.isNull, "rco2 should not be null");
+        assert(latest[0].rco2.get == 999, "latest should have rco2=999 (higher id)");
+        stderr.writeln("  pass: latest by MAX(id)");
+    }
+
+    // Test: devices response does not contain first_seen
+    {
+        auto testDb = openTestDb();
+        auto now = nowMillis();
+        insertRaw(testDb, now, "dev1", "indoor", "1.1.1.1", 10.0, 400);
+
+        auto devices = getDevices(testDb);
+        assert(devices.length == 1, "expected 1 device");
+        auto j = devices[0].toJson();
+        assert(("first_seen" in j.object) is null, "devices should NOT have first_seen");
+        assert(("device_id" in j.object) !is null, "devices should have device_id");
+        assert(("last_seen" in j.object) !is null, "devices should have last_seen");
+        assert(("reading_count" in j.object) !is null, "devices should have reading_count");
+        stderr.writeln("  pass: devices no first_seen");
+    }
+}
