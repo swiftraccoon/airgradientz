@@ -1,0 +1,46 @@
+name: Conformance
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  conformance:
+    name: Cross-implementation conformance
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ncat jq sqlite3 curl bc gcc-14
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "24"
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go/go.mod
+
+      - name: Install Node.js dependencies
+        run: cd nodejs && npm ci
+
+      - name: Build C implementation
+        run: make -C c CC=gcc-14
+
+      - name: Build Go implementation
+        run: cd go && go build -o airgradientz .
+
+      - name: Make conformance scripts executable
+        run: chmod +x conformance/*.sh
+
+      - name: Run conformance tests
+        run: ./conformance/run.sh nodejs go c
