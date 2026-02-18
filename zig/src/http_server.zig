@@ -271,14 +271,22 @@ fn routeRequest(allocator: std.mem.Allocator, state: *ServerState, data: []const
         return buildError(allocator, 405, "Method Not Allowed", "Method not allowed");
     }
 
-    // Route - check /api/readings/latest before /api/readings
+    // Route - check /api/readings/latest and /api/readings/count before /api/readings
     if (std.mem.eql(u8, req.path, "/api/readings/latest")) {
         const result = api.handleReadingsLatest(allocator, state) catch {
             return buildError(allocator, 500, "Internal Server Error", "Internal server error");
         };
         return buildJsonResponse(allocator, 200, "OK", result);
+    } else if (std.mem.eql(u8, req.path, "/api/readings/count")) {
+        const result = api.handleReadingsCount(allocator, state, req.query) catch {
+            return buildError(allocator, 500, "Internal Server Error", "Internal server error");
+        };
+        return buildJsonResponse(allocator, 200, "OK", result);
     } else if (std.mem.eql(u8, req.path, "/api/readings")) {
-        const result = api.handleReadings(allocator, state, req.query) catch {
+        const result = api.handleReadings(allocator, state, req.query) catch |err| {
+            if (err == api.ReadingsError.InvalidDownsample) {
+                return buildError(allocator, 400, "Bad Request", "invalid downsample value");
+            }
             return buildError(allocator, 500, "Internal Server Error", "Internal server error");
         };
         return buildJsonResponse(allocator, 200, "OK", result);

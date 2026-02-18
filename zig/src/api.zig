@@ -3,7 +3,9 @@ const db_mod = @import("db.zig");
 const poller_mod = @import("poller.zig");
 const http_server = @import("http_server.zig");
 
-pub fn handleReadings(allocator: std.mem.Allocator, state: *http_server.ServerState, query: []const u8) !std.json.Value {
+pub const ReadingsError = error{ InvalidDownsample, InternalError };
+
+pub fn handleReadings(allocator: std.mem.Allocator, state: *http_server.ServerState, query: []const u8) ReadingsError!std.json.Value {
     const now = db_mod.nowMillis();
     const default_from = now - 24 * 60 * 60 * 1000;
 
@@ -15,6 +17,14 @@ pub fn handleReadings(allocator: std.mem.Allocator, state: *http_server.ServerSt
     const requested_limit = http_server.parseI64Param(query, "limit", max);
     const effective_limit = if (requested_limit > 0 and requested_limit < max) requested_limit else max;
 
+    // Parse downsample param
+    var downsample_ms: i64 = 0;
+    if (http_server.queryParam(query, "downsample")) |ds| {
+        if (ds.len > 0) {
+            downsample_ms = db_mod.downsampleLookup(ds) orelse return ReadingsError.InvalidDownsample;
+        }
+    }
+
     // Validate time range
     const safe_from = if (from <= to) from else default_from;
     const safe_to = if (to >= safe_from) to else now;
@@ -24,18 +34,36 @@ pub fn handleReadings(allocator: std.mem.Allocator, state: *http_server.ServerSt
         .from = safe_from,
         .to = safe_to,
         .limit = effective_limit,
+        .downsample_ms = downsample_ms,
     };
 
     state.db_mutex.lock();
     defer state.db_mutex.unlock();
-    const readings = try db_mod.queryReadings(allocator, state.db, q);
+    const readings = db_mod.queryReadings(allocator, state.db, q) catch return ReadingsError.InternalError;
 
     var arr = std.json.Array.init(allocator);
     for (readings) |*r| {
-        try arr.append(try db_mod.readingToJson(allocator, r));
+        arr.append(db_mod.readingToJson(allocator, r) catch return ReadingsError.InternalError) catch return ReadingsError.InternalError;
     }
 
     return .{ .array = arr };
+}
+
+pub fn handleReadingsCount(allocator: std.mem.Allocator, state: *http_server.ServerState, query: []const u8) !std.json.Value {
+    const now = db_mod.nowMillis();
+
+    const from = http_server.parseI64Param(query, "from", 0);
+    const to = http_server.parseI64Param(query, "to", now);
+    const device = http_server.queryParam(query, "device");
+
+    state.db_mutex.lock();
+    defer state.db_mutex.unlock();
+    const count = try db_mod.getFilteredCount(state.db, from, to, device);
+
+    var obj = std.json.ObjectMap.init(allocator);
+    try obj.put("count", .{ .integer = count });
+
+    return .{ .object = obj };
 }
 
 pub fn handleReadingsLatest(allocator: std.mem.Allocator, state: *http_server.ServerState) !std.json.Value {
@@ -150,6 +178,7 @@ pub fn handleConfig(allocator: std.mem.Allocator, state: *http_server.ServerStat
 
     var cfg = std.json.ObjectMap.init(allocator);
     try cfg.put("pollIntervalMs", .{ .integer = @as(i64, state.config.poll_interval_ms) });
+    try cfg.put("downsampleThreshold", .{ .integer = @as(i64, state.config.downsample_threshold) });
     try cfg.put("devices", .{ .array = devices_arr });
 
     return .{ .object = cfg };

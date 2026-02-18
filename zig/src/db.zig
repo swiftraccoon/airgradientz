@@ -36,7 +36,26 @@ pub const ReadingQuery = struct {
     from: i64,
     to: i64,
     limit: i64,
+    downsample_ms: i64 = 0,
 };
+
+const BucketEntry = struct { key: []const u8, ms: i64 };
+pub const downsample_map = [_]BucketEntry{
+    .{ .key = "5m", .ms = 300_000 },
+    .{ .key = "10m", .ms = 600_000 },
+    .{ .key = "15m", .ms = 900_000 },
+    .{ .key = "30m", .ms = 1_800_000 },
+    .{ .key = "1h", .ms = 3_600_000 },
+    .{ .key = "1d", .ms = 86_400_000 },
+    .{ .key = "1w", .ms = 604_800_000 },
+};
+
+pub fn downsampleLookup(s: []const u8) ?i64 {
+    for (downsample_map) |entry| {
+        if (std.mem.eql(u8, s, entry.key)) return entry.ms;
+    }
+    return null;
+}
 
 // ---- loaded queries from queries.sql ----
 
@@ -407,22 +426,70 @@ fn rowToReading(allocator: std.mem.Allocator, stmt: ?*c.sqlite3_stmt) !Reading {
     };
 }
 
+// Downsampled rows: no id column; columns start at timestamp (col 0)
+fn rowToDownsampledReading(allocator: std.mem.Allocator, stmt: ?*c.sqlite3_stmt) !Reading {
+    return Reading{
+        .id = 0,
+        .timestamp = c.sqlite3_column_int64(stmt, 0),
+        .device_id = try colText(allocator, stmt, 1),
+        .device_type = try colText(allocator, stmt, 2),
+        .device_ip = try colText(allocator, stmt, 3),
+        .pm01 = colOptF64(stmt, 4),
+        .pm02 = colOptF64(stmt, 5),
+        .pm10 = colOptF64(stmt, 6),
+        .pm02_compensated = colOptF64(stmt, 7),
+        .rco2 = colOptI64(stmt, 8),
+        .atmp = colOptF64(stmt, 9),
+        .atmp_compensated = colOptF64(stmt, 10),
+        .rhum = colOptF64(stmt, 11),
+        .rhum_compensated = colOptF64(stmt, 12),
+        .tvoc_index = colOptF64(stmt, 13),
+        .nox_index = colOptF64(stmt, 14),
+        .wifi = colOptI64(stmt, 15),
+    };
+}
+
 pub fn queryReadings(allocator: std.mem.Allocator, db: SqliteDb, q: ReadingQuery) ![]Reading {
     const want_device = if (q.device) |d| !std.mem.eql(u8, d, "all") else false;
 
-    // Build SQL dynamically using bufPrint for safety
-    var sql_buf: [1024]u8 = [_]u8{0} ** 1024;
+    // Build SQL dynamically using fixedBufferStream for safety
+    var sql_buf: [2048]u8 = [_]u8{0} ** 2048;
     var fbs = std.io.fixedBufferStream(&sql_buf);
     const writer = fbs.writer();
 
-    const cols = loaded_query_cols orelse query_cols;
-    writer.print("SELECT {s} FROM readings WHERE ", .{cols}) catch return error.SqliteError;
+    const is_downsampled = q.downsample_ms > 0;
+
+    if (is_downsampled) {
+        // Downsampled query: bucket_ms is a trusted constant from downsample_map
+        writer.print(
+            "SELECT (timestamp / {d}) * {d} AS timestamp" ++
+                ", device_id, device_type, device_ip" ++
+                ", AVG(pm01) AS pm01, AVG(pm02) AS pm02, AVG(pm10) AS pm10" ++
+                ", AVG(pm02_compensated) AS pm02_compensated" ++
+                ", CAST(AVG(rco2) AS INTEGER) AS rco2" ++
+                ", AVG(atmp) AS atmp, AVG(atmp_compensated) AS atmp_compensated" ++
+                ", AVG(rhum) AS rhum, AVG(rhum_compensated) AS rhum_compensated" ++
+                ", AVG(tvoc_index) AS tvoc_index, AVG(nox_index) AS nox_index" ++
+                ", CAST(AVG(wifi) AS INTEGER) AS wifi" ++
+                " FROM readings WHERE ",
+            .{ q.downsample_ms, q.downsample_ms },
+        ) catch return error.SqliteError;
+    } else {
+        const cols = loaded_query_cols orelse query_cols;
+        writer.print("SELECT {s} FROM readings WHERE ", .{cols}) catch return error.SqliteError;
+    }
 
     if (want_device) {
         writer.writeAll("device_id = ?3 AND ") catch return error.SqliteError;
     }
 
-    writer.writeAll("timestamp >= ?1 AND timestamp <= ?2 ORDER BY timestamp ASC") catch return error.SqliteError;
+    writer.writeAll("timestamp >= ?1 AND timestamp <= ?2") catch return error.SqliteError;
+
+    if (is_downsampled) {
+        writer.print(" GROUP BY (timestamp / {d}), device_id ORDER BY timestamp ASC", .{q.downsample_ms}) catch return error.SqliteError;
+    } else {
+        writer.writeAll(" ORDER BY timestamp ASC") catch return error.SqliteError;
+    }
 
     if (q.limit > 0) {
         if (want_device) {
@@ -460,7 +527,11 @@ pub fn queryReadings(allocator: std.mem.Allocator, db: SqliteDb, q: ReadingQuery
     while (true) {
         rc = c.sqlite3_step(stmt);
         if (rc == c.SQLITE_ROW) {
-            try readings.append(allocator, try rowToReading(allocator, stmt));
+            if (is_downsampled) {
+                try readings.append(allocator, try rowToDownsampledReading(allocator, stmt));
+            } else {
+                try readings.append(allocator, try rowToReading(allocator, stmt));
+            }
         } else {
             break;
         }
@@ -553,6 +624,45 @@ pub fn checkpoint(db: SqliteDb) !void {
     }
 }
 
+pub fn getFilteredCount(db: SqliteDb, from: i64, to: i64, device: ?[]const u8) !i64 {
+    const want_device = if (device) |d| !std.mem.eql(u8, d, "all") and d.len > 0 else false;
+
+    var sql_buf: [512]u8 = [_]u8{0} ** 512;
+    var fbs = std.io.fixedBufferStream(&sql_buf);
+    const writer = fbs.writer();
+
+    writer.writeAll("SELECT COUNT(*) FROM readings WHERE ") catch return error.SqliteError;
+
+    if (want_device) {
+        writer.writeAll("device_id = ?3 AND ") catch return error.SqliteError;
+    }
+
+    writer.writeAll("timestamp >= ?1 AND timestamp <= ?2") catch return error.SqliteError;
+
+    const sql_len = fbs.pos;
+
+    var stmt: ?*c.sqlite3_stmt = null;
+    var rc = c.sqlite3_prepare_v2(db, &sql_buf, @intCast(sql_len), &stmt, null);
+    if (rc != c.SQLITE_OK) {
+        std.log.err("[db] prepare filtered count error: {s}", .{c.sqlite3_errmsg(db)});
+        return error.SqliteError;
+    }
+    defer _ = c.sqlite3_finalize(stmt);
+
+    _ = c.sqlite3_bind_int64(stmt, 1, from);
+    _ = c.sqlite3_bind_int64(stmt, 2, to);
+
+    if (want_device) {
+        bindText(stmt, 3, device.?);
+    }
+
+    rc = c.sqlite3_step(stmt);
+    if (rc == c.SQLITE_ROW) {
+        return c.sqlite3_column_int64(stmt, 0);
+    }
+    return error.SqliteError;
+}
+
 pub fn getReadingsCount(db: SqliteDb) !i64 {
     const fallback_count_sql = "SELECT COUNT(*) FROM readings";
     const sql: [*:0]const u8 = if (loaded_count_sql) |q| q.ptr else fallback_count_sql.ptr;
@@ -585,7 +695,10 @@ fn jsonOptI64(val: ?i64) std.json.Value {
 
 pub fn readingToJson(allocator: std.mem.Allocator, r: *const Reading) !std.json.Value {
     var obj = std.json.ObjectMap.init(allocator);
-    try obj.put("id", .{ .integer = r.id });
+    // Downsampled rows have id=0; omit id from JSON output
+    if (r.id != 0) {
+        try obj.put("id", .{ .integer = r.id });
+    }
     try obj.put("timestamp", .{ .integer = r.timestamp });
     try obj.put("device_id", .{ .string = r.device_id });
     try obj.put("device_type", .{ .string = r.device_type });
@@ -1025,4 +1138,148 @@ test "checkpoint does not error" {
     defer closeDb(db);
 
     try checkpoint(db);
+}
+
+test "downsampleLookup valid keys" {
+    try testing.expectEqual(@as(?i64, 300_000), downsampleLookup("5m"));
+    try testing.expectEqual(@as(?i64, 3_600_000), downsampleLookup("1h"));
+    try testing.expectEqual(@as(?i64, 86_400_000), downsampleLookup("1d"));
+    try testing.expectEqual(@as(?i64, 604_800_000), downsampleLookup("1w"));
+}
+
+test "downsampleLookup invalid keys" {
+    try testing.expectEqual(@as(?i64, null), downsampleLookup("2h"));
+    try testing.expectEqual(@as(?i64, null), downsampleLookup(""));
+    try testing.expectEqual(@as(?i64, null), downsampleLookup("abc"));
+}
+
+fn testInsertRaw(db: SqliteDb, ts: i64, device_id: []const u8, pm02: f64, rco2: i64) !void {
+    const sql = "INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, rco2, raw_json) VALUES (?1, ?2, 'indoor', '10.0.0.1', ?3, ?4, '{}')";
+    var stmt: ?*c.sqlite3_stmt = null;
+    var rc = c.sqlite3_prepare_v2(db, sql, -1, &stmt, null);
+    if (rc != c.SQLITE_OK) return error.SqliteError;
+    defer _ = c.sqlite3_finalize(stmt);
+
+    _ = c.sqlite3_bind_int64(stmt, 1, ts);
+    bindText(stmt, 2, device_id);
+    _ = c.sqlite3_bind_double(stmt, 3, pm02);
+    _ = c.sqlite3_bind_int64(stmt, 4, rco2);
+
+    rc = c.sqlite3_step(stmt);
+    if (rc != c.SQLITE_DONE) return error.SqliteError;
+}
+
+test "downsampled query groups readings" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    // Insert readings with specific timestamps in the same 1h bucket
+    const ts_base: i64 = 1_000_000_000_000;
+    try testInsertRaw(db, ts_base, "dev1", 10.0, 400);
+    try testInsertRaw(db, ts_base + 60_000, "dev1", 20.0, 500);
+    try testInsertRaw(db, ts_base + 120_000, "dev1", 30.0, 600);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // Query with 1h downsample — should get 1 grouped row
+    const readings = try queryReadings(alloc, db, .{
+        .device = null,
+        .from = ts_base - 1000,
+        .to = ts_base + 200_000,
+        .limit = 100,
+        .downsample_ms = 3_600_000,
+    });
+
+    try testing.expectEqual(@as(usize, 1), readings.len);
+    // id should be 0 for downsampled rows
+    try testing.expectEqual(@as(i64, 0), readings[0].id);
+    // pm02 should be average of 10, 20, 30 = 20
+    try testing.expect(readings[0].pm02 != null);
+    const pm02_val = readings[0].pm02.?;
+    try testing.expect(@abs(pm02_val - 20.0) < 0.01);
+    // rco2 should be average of 400, 500, 600 = 500
+    try testing.expectEqual(@as(?i64, 500), readings[0].rco2);
+}
+
+test "downsampled rows omit id in JSON" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    const ts_base: i64 = 1_000_000_000_000;
+    try testInsertRaw(db, ts_base, "dev1", 10.0, 400);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const readings = try queryReadings(alloc, db, .{
+        .device = null,
+        .from = ts_base - 1000,
+        .to = ts_base + 1000,
+        .limit = 100,
+        .downsample_ms = 3_600_000,
+    });
+
+    try testing.expectEqual(@as(usize, 1), readings.len);
+    const json = try readingToJson(alloc, &readings[0]);
+    // Downsampled row should not have "id" key
+    try testing.expect(!json.object.contains("id"));
+    // But should still have other fields
+    try testing.expect(json.object.contains("timestamp"));
+    try testing.expect(json.object.contains("device_id"));
+}
+
+test "getFilteredCount all devices" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    const indoor = try loadFixtureJson(testing.allocator, "indoorFull");
+    defer testing.allocator.free(indoor);
+    const outdoor = try loadFixtureJson(testing.allocator, "outdoorFull");
+    defer testing.allocator.free(outdoor);
+    try testParseAndInsert(db, "10.0.0.1", indoor);
+    try testParseAndInsert(db, "10.0.0.2", outdoor);
+
+    const count = try getFilteredCount(db, 0, nowMillis() + 1000, null);
+    try testing.expectEqual(@as(i64, 2), count);
+}
+
+test "getFilteredCount with device filter" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    const indoor = try loadFixtureJson(testing.allocator, "indoorFull");
+    defer testing.allocator.free(indoor);
+    const outdoor = try loadFixtureJson(testing.allocator, "outdoorFull");
+    defer testing.allocator.free(outdoor);
+    try testParseAndInsert(db, "10.0.0.1", indoor);
+    try testParseAndInsert(db, "10.0.0.2", outdoor);
+
+    const count = try getFilteredCount(db, 0, nowMillis() + 1000, "84fce602549c");
+    try testing.expectEqual(@as(i64, 1), count);
+}
+
+test "getFilteredCount with device=all returns all" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    const indoor = try loadFixtureJson(testing.allocator, "indoorFull");
+    defer testing.allocator.free(indoor);
+    const outdoor = try loadFixtureJson(testing.allocator, "outdoorFull");
+    defer testing.allocator.free(outdoor);
+    try testParseAndInsert(db, "10.0.0.1", indoor);
+    try testParseAndInsert(db, "10.0.0.2", outdoor);
+
+    const count = try getFilteredCount(db, 0, nowMillis() + 1000, "all");
+    try testing.expectEqual(@as(i64, 2), count);
+}
+
+test "getFilteredCount empty db" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    const count = try getFilteredCount(db, 0, nowMillis() + 1000, null);
+    try testing.expectEqual(@as(i64, 0), count);
 }

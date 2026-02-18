@@ -15,6 +15,7 @@ pub const Config = struct {
     poll_interval_ms: u32,
     fetch_timeout_ms: u32,
     max_api_rows: u32,
+    downsample_threshold: u32,
 };
 
 const empty_device = DeviceConfig{ .ip = "", .label = "" };
@@ -28,6 +29,7 @@ pub fn fromEnv() Config {
         .poll_interval_ms = 15000,
         .fetch_timeout_ms = 5000,
         .max_api_rows = 10000,
+        .downsample_threshold = 10000,
     };
 
     config.devices[0] = .{ .ip = "192.168.88.6", .label = "outdoor" };
@@ -122,6 +124,11 @@ fn applyConfigValues(config: *Config, obj: std.json.ObjectMap) void {
     if (obj.get("maxApiRows")) |v| {
         if (v == .integer and v.integer > 0) {
             config.max_api_rows = std.math.cast(u32, v.integer) orelse config.max_api_rows;
+        }
+    }
+    if (obj.get("downsampleThreshold")) |v| {
+        if (v == .integer and v.integer > 0) {
+            config.downsample_threshold = std.math.cast(u32, v.integer) orelse config.downsample_threshold;
         }
     }
 }
