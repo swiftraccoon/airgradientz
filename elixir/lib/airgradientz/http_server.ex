@@ -175,6 +175,24 @@ defmodule Airgradientz.HttpServer do
     send_json(socket, readings)
   end
 
+  defp route(socket, "GET", "/api/readings/count", query, _config) do
+    params = parse_query_string(query)
+
+    now = System.system_time(:millisecond)
+    from_ts = parse_int(Map.get(params, "from")) || now - 24 * 60 * 60 * 1000
+    to_ts = parse_int(Map.get(params, "to")) || now
+    device = Map.get(params, "device", "all")
+
+    count =
+      Airgradientz.DB.query_readings_count(%{
+        device: device,
+        from: from_ts,
+        to: to_ts
+      })
+
+    send_json(socket, %{count: count})
+  end
+
   defp route(socket, "GET", "/api/readings", query, config) do
     params = parse_query_string(query)
 
@@ -190,16 +208,39 @@ defmodule Airgradientz.HttpServer do
         else: config.max_api_rows
 
     device = Map.get(params, "device", "all")
+    downsample_param = Map.get(params, "downsample")
 
-    readings =
-      Airgradientz.DB.query_readings(%{
-        device: device,
-        from: from_ts,
-        to: to_ts,
-        limit: effective_limit
-      })
+    ds_map = Airgradientz.DB.downsample_map()
 
-    send_json(socket, readings)
+    cond do
+      downsample_param != nil and not Map.has_key?(ds_map, downsample_param) ->
+        send_json_error(socket, 400, "Invalid downsample interval")
+
+      downsample_param != nil ->
+        bucket_ms = Map.fetch!(ds_map, downsample_param)
+
+        readings =
+          Airgradientz.DB.query_readings_downsampled(%{
+            device: device,
+            from: from_ts,
+            to: to_ts,
+            limit: effective_limit,
+            bucket_ms: bucket_ms
+          })
+
+        send_json(socket, readings)
+
+      true ->
+        readings =
+          Airgradientz.DB.query_readings(%{
+            device: device,
+            from: from_ts,
+            to: to_ts,
+            limit: effective_limit
+          })
+
+        send_json(socket, readings)
+    end
   end
 
   defp route(socket, "GET", "/api/devices", _query, _config) do
@@ -215,6 +256,7 @@ defmodule Airgradientz.HttpServer do
   defp route(socket, "GET", "/api/config", _query, config) do
     payload = %{
       pollIntervalMs: config.poll_interval_ms,
+      downsampleThreshold: config.downsample_threshold,
       devices: Enum.map(config.devices, &%{ip: &1.ip, label: &1.label})
     }
 

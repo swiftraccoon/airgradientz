@@ -66,6 +66,30 @@ defmodule Airgradientz.DB do
   @latest_sql Map.fetch!(@queries, "select_latest")
   @count_sql Map.fetch!(@queries, "count_readings")
 
+  @downsample_map %{
+    "5m" => 300_000,
+    "10m" => 600_000,
+    "15m" => 900_000,
+    "30m" => 1_800_000,
+    "1h" => 3_600_000,
+    "1d" => 86_400_000,
+    "1w" => 604_800_000
+  }
+
+  def downsample_map, do: @downsample_map
+
+  # Downsampled query columns (no id)
+  @ds_columns "device_id, device_type, device_ip"
+  @ds_agg_columns """
+  AVG(pm01) AS pm01, AVG(pm02) AS pm02, AVG(pm10) AS pm10,
+  AVG(pm02_compensated) AS pm02_compensated,
+  CAST(AVG(rco2) AS INTEGER) AS rco2,
+  AVG(atmp) AS atmp, AVG(atmp_compensated) AS atmp_compensated,
+  AVG(rhum) AS rhum, AVG(rhum_compensated) AS rhum_compensated,
+  AVG(tvoc_index) AS tvoc_index, AVG(nox_index) AS nox_index,
+  CAST(AVG(wifi) AS INTEGER) AS wifi
+  """
+
   # Pre-built query SQL for all variants (dynamic WHERE/LIMIT)
   @q_all_range "SELECT #{@query_cols} FROM readings WHERE timestamp >= ?1 AND timestamp <= ?2 ORDER BY timestamp ASC"
   @q_all_range_limit "SELECT #{@query_cols} FROM readings WHERE timestamp >= ?1 AND timestamp <= ?2 ORDER BY timestamp ASC LIMIT ?3"
@@ -92,6 +116,14 @@ defmodule Airgradientz.DB do
 
   def get_latest_readings do
     GenServer.call(__MODULE__, :get_latest_readings)
+  end
+
+  def query_readings_downsampled(params) do
+    GenServer.call(__MODULE__, {:query_readings_downsampled, params}, 30_000)
+  end
+
+  def query_readings_count(params) do
+    GenServer.call(__MODULE__, {:query_readings_count, params}, 30_000)
   end
 
   def checkpoint do
@@ -253,6 +285,74 @@ defmodule Airgradientz.DB do
     {:reply, count, state}
   end
 
+  def handle_call({:query_readings_downsampled, params}, _from, %{conn: conn} = state) do
+    bucket_ms = Map.fetch!(params, :bucket_ms)
+    device = Map.get(params, :device)
+    from_ts = Map.get(params, :from)
+    to_ts = Map.get(params, :to)
+    limit = Map.get(params, :limit)
+
+    want_device = device != nil and device != "all"
+
+    # bucket_ms is a trusted integer from the downsample_map — safe to interpolate
+    bucket_str = Integer.to_string(bucket_ms)
+
+    {where, binds} =
+      if want_device do
+        {"WHERE device_id = ?1 AND timestamp >= ?2 AND timestamp <= ?3",
+         [device, from_ts, to_ts]}
+      else
+        {"WHERE timestamp >= ?1 AND timestamp <= ?2", [from_ts, to_ts]}
+      end
+
+    limit_clause =
+      if limit do
+        next_idx = length(binds) + 1
+        " LIMIT ?#{next_idx}"
+      else
+        ""
+      end
+
+    binds = if limit, do: binds ++ [limit], else: binds
+
+    sql =
+      "SELECT (timestamp / #{bucket_str}) * #{bucket_str} AS timestamp, " <>
+        "#{@ds_columns}, #{String.trim(@ds_agg_columns)} " <>
+        "FROM readings #{where} " <>
+        "GROUP BY (timestamp / #{bucket_str}), device_id " <>
+        "ORDER BY timestamp ASC" <> limit_clause
+
+    {:ok, stmt} = Exqlite.Sqlite3.prepare(conn, sql)
+    rows = exec_prepared(conn, stmt, binds)
+    Exqlite.Sqlite3.release(conn, stmt)
+    readings = Enum.map(rows, &row_to_reading_no_id/1)
+    {:reply, readings, state}
+  end
+
+  def handle_call({:query_readings_count, params}, _from, %{conn: conn} = state) do
+    device = Map.get(params, :device)
+    from_ts = Map.get(params, :from)
+    to_ts = Map.get(params, :to)
+
+    want_device = device != nil and device != "all"
+
+    {sql, binds} =
+      if want_device do
+        {"SELECT COUNT(*) FROM readings WHERE device_id = ?1 AND timestamp >= ?2 AND timestamp <= ?3",
+         [device, from_ts, to_ts]}
+      else
+        {"SELECT COUNT(*) FROM readings WHERE timestamp >= ?1 AND timestamp <= ?2",
+         [from_ts, to_ts]}
+      end
+
+    {:ok, stmt} = Exqlite.Sqlite3.prepare(conn, sql)
+    :ok = Exqlite.Sqlite3.bind(stmt, binds)
+    {:row, [count]} = Exqlite.Sqlite3.step(conn, stmt)
+    :done = Exqlite.Sqlite3.step(conn, stmt)
+    Exqlite.Sqlite3.release(conn, stmt)
+    {:reply, count, state}
+  end
+
   @impl true
   def terminate(_reason, state) do
     %{
@@ -296,6 +396,29 @@ defmodule Airgradientz.DB do
 
     %{
       id: id,
+      timestamp: ts,
+      device_id: dev_id,
+      device_type: dev_type,
+      device_ip: dev_ip,
+      pm01: pm01,
+      pm02: pm02,
+      pm10: pm10,
+      pm02_compensated: pm02c,
+      rco2: rco2,
+      atmp: atmp,
+      atmp_compensated: atmpc,
+      rhum: rhum,
+      rhum_compensated: rhumc,
+      tvoc_index: tvoc,
+      nox_index: nox,
+      wifi: wifi
+    }
+  end
+
+  defp row_to_reading_no_id([ts, dev_id, dev_type, dev_ip | rest]) do
+    [pm01, pm02, pm10, pm02c, rco2, atmp, atmpc, rhum, rhumc, tvoc, nox, wifi] = rest
+
+    %{
       timestamp: ts,
       device_id: dev_id,
       device_type: dev_type,

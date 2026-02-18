@@ -9,7 +9,8 @@ defmodule Airgradientz.Config do
             ],
             poll_interval_ms: 15_000,
             fetch_timeout_ms: 5_000,
-            max_api_rows: 10_000
+            max_api_rows: 10_000,
+            downsample_threshold: 10_000
 
   @type t :: %__MODULE__{
           port: pos_integer(),
@@ -17,7 +18,8 @@ defmodule Airgradientz.Config do
           devices: [%{ip: String.t(), label: String.t()}],
           poll_interval_ms: pos_integer(),
           fetch_timeout_ms: pos_integer(),
-          max_api_rows: pos_integer()
+          max_api_rows: pos_integer(),
+          downsample_threshold: pos_integer()
         }
 
   @spec load() :: t()
@@ -79,11 +81,13 @@ defmodule Airgradientz.Config do
     |> maybe_put_positive_int(:poll_interval_ms, defaults, "pollIntervalMs")
     |> maybe_put_positive_int(:fetch_timeout_ms, defaults, "fetchTimeoutMs")
     |> maybe_put_positive_int(:max_api_rows, defaults, "maxApiRows")
+    |> maybe_put_positive_int(:downsample_threshold, defaults, "downsampleThreshold")
     |> maybe_put_port(json)
     |> maybe_put_devices(json)
     |> maybe_put_positive_int(:poll_interval_ms, json, "pollIntervalMs")
     |> maybe_put_positive_int(:fetch_timeout_ms, json, "fetchTimeoutMs")
     |> maybe_put_positive_int(:max_api_rows, json, "maxApiRows")
+    |> maybe_put_positive_int(:downsample_threshold, json, "downsampleThreshold")
   end
 
   defp maybe_put_port(config, %{"ports" => %{"elixir" => port}})

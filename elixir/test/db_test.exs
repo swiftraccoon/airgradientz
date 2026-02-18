@@ -172,4 +172,80 @@ defmodule Airgradientz.DBTest do
   test "checkpoint does not error" do
     assert Airgradientz.DB.checkpoint() == :ok
   end
+
+  test "downsampled query groups readings into buckets" do
+    # Insert two readings for the same device with timestamps in the same 1h bucket
+    bucket_ms = 3_600_000
+
+    # We need to directly insert with controlled timestamps, so use the DB GenServer
+    # Insert two readings manually via insert_reading (timestamps are auto-generated)
+    :ok = Airgradientz.DB.insert_reading("10.0.0.1", @indoor_data)
+    Process.sleep(10)
+    :ok = Airgradientz.DB.insert_reading("10.0.0.1", @indoor_data)
+
+    now = System.system_time(:millisecond)
+
+    # Without downsampling, we get 2 rows
+    readings =
+      Airgradientz.DB.query_readings(%{from: 0, to: now + 1000, limit: 100})
+
+    assert length(readings) == 2
+
+    # With downsampling at 1h bucket, both should collapse into 1 row
+    downsampled =
+      Airgradientz.DB.query_readings_downsampled(%{
+        from: 0,
+        to: now + 1000,
+        limit: 100,
+        bucket_ms: bucket_ms
+      })
+
+    assert length(downsampled) == 1
+    r = hd(downsampled)
+    # Downsampled rows should not have an :id field
+    refute Map.has_key?(r, :id)
+    # Should have averaged values
+    assert r.device_id == "84fce602549c"
+    assert r.pm02 != nil
+  end
+
+  test "query_readings_count returns filtered count" do
+    :ok = Airgradientz.DB.insert_reading("10.0.0.1", @indoor_data)
+    :ok = Airgradientz.DB.insert_reading("10.0.0.2", @outdoor_data)
+    :ok = Airgradientz.DB.insert_reading("10.0.0.1", @indoor_data)
+
+    now = System.system_time(:millisecond)
+
+    # Count all
+    count =
+      Airgradientz.DB.query_readings_count(%{from: 0, to: now + 1000})
+
+    assert count == 3
+
+    # Count filtered by device
+    count_filtered =
+      Airgradientz.DB.query_readings_count(%{
+        device: "84fce602549c",
+        from: 0,
+        to: now + 1000
+      })
+
+    assert count_filtered == 2
+  end
+
+  test "query_readings_count with device=all returns all" do
+    :ok = Airgradientz.DB.insert_reading("10.0.0.1", @indoor_data)
+    :ok = Airgradientz.DB.insert_reading("10.0.0.2", @outdoor_data)
+
+    now = System.system_time(:millisecond)
+
+    count =
+      Airgradientz.DB.query_readings_count(%{
+        device: "all",
+        from: 0,
+        to: now + 1000
+      })
+
+    assert count == 2
+  end
 end
