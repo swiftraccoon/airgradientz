@@ -14,6 +14,9 @@ Historical sensor readings.
 | `to`     | integer | now     | End time, epoch ms (inclusive)           |
 | `device` | string  | —       | Filter by device_id                      |
 | `limit`  | integer | —       | Max rows returned, capped by `maxApiRows`|
+| `downsample` | string | —   | Aggregate into time buckets: `5m`,`10m`,`15m`,`30m`,`1h`,`1d`,`1w` |
+
+Unrecognized `downsample` values return 400. When `downsample` is set, the server aggregates on the fly using `GROUP BY (timestamp / bucket_ms), device_id` with `AVG()` for sensor fields and `CAST(AVG(...) AS INTEGER)` for integer fields (rco2, wifi).
 
 ### Response
 
@@ -40,6 +43,26 @@ JSON array of reading objects, ordered by `timestamp` ASC.
 | `wifi`              | integer \| null   | WiFi RSSI (dBm)                    |
 
 The `raw_json` column exists in the database but is never included in API responses. Null sensor fields indicate the sensor is not available on that device model or the device just booted.
+
+When `downsample` is set, the `id` field is omitted (no single row identity after aggregation). All other fields have the same shape.
+
+## GET /api/readings/count
+
+Total reading count for a time range.
+
+### Query Parameters
+
+| Param    | Type    | Default | Description                  |
+|----------|---------|---------|------------------------------|
+| `from`   | integer | 0       | Start time, epoch ms         |
+| `to`     | integer | now     | End time, epoch ms           |
+| `device` | string  | —       | Optional device_id filter    |
+
+### Response
+
+```json
+{"count": 345219}
+```
 
 ## GET /api/readings/latest
 
@@ -77,8 +100,9 @@ Active configuration. Returns a JSON object.
 
 | Field            | Type   | Description                                  |
 |------------------|--------|----------------------------------------------|
-| `pollIntervalMs` | integer| Polling interval in milliseconds             |
-| `devices`        | array  | Array of `{ip: string, label: string}` objects|
+| `pollIntervalMs`      | integer| Polling interval in milliseconds             |
+| `downsampleThreshold` | integer| Row count above which dashboard suggests downsampling |
+| `devices`             | array  | Array of `{ip: string, label: string}` objects|
 
 ## GET /api/stats
 

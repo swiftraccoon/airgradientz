@@ -60,3 +60,32 @@ ORDER BY device_type;
 
 -- name: count_readings
 SELECT COUNT(*) FROM readings;
+
+-- name: count_readings_filtered
+-- Template: implementations build WHERE clause dynamically.
+-- Required: timestamp >= :from AND timestamp <= :to
+-- Optional: device_id = :device (appended with AND)
+SELECT COUNT(*) FROM readings
+WHERE [device_id = :device AND] timestamp >= :from AND timestamp <= :to;
+
+-- name: select_downsampled
+-- Template: implementations interpolate :bucket_ms as a trusted integer constant.
+-- Required: timestamp >= :from AND timestamp <= :to
+-- Optional: device_id = :device (prepended to WHERE)
+-- Optional: LIMIT :limit (appended)
+-- Note: id column is omitted (no single row identity after aggregation).
+SELECT
+    (timestamp / :bucket_ms) * :bucket_ms AS timestamp,
+    device_id, device_type, device_ip,
+    AVG(pm01) AS pm01, AVG(pm02) AS pm02, AVG(pm10) AS pm10,
+    AVG(pm02_compensated) AS pm02_compensated,
+    CAST(AVG(rco2) AS INTEGER) AS rco2,
+    AVG(atmp) AS atmp, AVG(atmp_compensated) AS atmp_compensated,
+    AVG(rhum) AS rhum, AVG(rhum_compensated) AS rhum_compensated,
+    AVG(tvoc_index) AS tvoc_index, AVG(nox_index) AS nox_index,
+    CAST(AVG(wifi) AS INTEGER) AS wifi
+FROM readings
+WHERE [device_id = :device AND] timestamp >= :from AND timestamp <= :to
+GROUP BY (timestamp / :bucket_ms), device_id
+ORDER BY timestamp ASC
+[LIMIT :limit];
