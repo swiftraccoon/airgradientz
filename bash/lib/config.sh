@@ -28,6 +28,7 @@ load_config() {
         AGTZ_POLL_INTERVAL_MS=$(jq -r '.pollIntervalMs // .defaults.pollIntervalMs // empty' <<< "${config}")
         AGTZ_FETCH_TIMEOUT_MS=$(jq -r '.fetchTimeoutMs // .defaults.fetchTimeoutMs // empty' <<< "${config}")
         AGTZ_MAX_API_ROWS=$(jq -r '.maxApiRows // .defaults.maxApiRows // empty' <<< "${config}")
+        AGTZ_DOWNSAMPLE_THRESHOLD=$(jq -r '.downsampleThreshold // .defaults.downsampleThreshold // empty' <<< "${config}")
         AGTZ_DEVICES_JSON=$(jq -c '.devices // .defaults.devices // []' <<< "${config}")
 
         log "Loaded config from ${config_file}"
@@ -42,9 +43,10 @@ load_config() {
     AGTZ_POLL_INTERVAL_MS="${AGTZ_POLL_INTERVAL_MS:-15000}"
     AGTZ_FETCH_TIMEOUT_MS="${AGTZ_FETCH_TIMEOUT_MS:-5000}"
     AGTZ_MAX_API_ROWS="${AGTZ_MAX_API_ROWS:-10000}"
+    AGTZ_DOWNSAMPLE_THRESHOLD="${AGTZ_DOWNSAMPLE_THRESHOLD:-10000}"
 
     export AGTZ_PORT AGTZ_DB_PATH AGTZ_POLL_INTERVAL_MS AGTZ_FETCH_TIMEOUT_MS
-    export AGTZ_MAX_API_ROWS AGTZ_DEVICES_JSON
+    export AGTZ_MAX_API_ROWS AGTZ_DOWNSAMPLE_THRESHOLD AGTZ_DEVICES_JSON
     export AGTZ_SCRIPT_DIR
 }
 

@@ -19,7 +19,7 @@ PUBLIC_DIR="${SCRIPT_DIR}/public"
 # --- Route handlers ---
 
 handle_readings() {
-    local now_ts default_from from_ts to_ts device limit requested_limit
+    local now_ts default_from from_ts to_ts device limit requested_limit downsample bucket_ms
     now_ts=$(now_ms)
     default_from=$(( now_ts - 24 * 60 * 60 * 1000 ))
 
@@ -27,6 +27,20 @@ handle_readings() {
     to_ts=$(parse_query_param "${QUERY_STRING}" "to" "${now_ts}")
     device=$(parse_query_param "${QUERY_STRING}" "device" "")
     requested_limit=$(parse_query_param "${QUERY_STRING}" "limit" "${AGTZ_MAX_API_ROWS}")
+    downsample=$(parse_query_param "${QUERY_STRING}" "downsample" "")
+
+    # Validate downsample parameter
+    case "${downsample}" in
+        5m)  bucket_ms=300000 ;;
+        10m) bucket_ms=600000 ;;
+        15m) bucket_ms=900000 ;;
+        30m) bucket_ms=1800000 ;;
+        1h)  bucket_ms=3600000 ;;
+        1d)  bucket_ms=86400000 ;;
+        1w)  bucket_ms=604800000 ;;
+        "")  bucket_ms=0 ;;
+        *)   send_error "400 Bad Request" "invalid downsample value"; return ;;
+    esac
 
     # Validate integers
     [[ "${from_ts}" =~ ^-?[0-9]+$ ]] || from_ts="${default_from}"
@@ -41,7 +55,37 @@ handle_readings() {
     [[ -z "${device}" ]] && device="all"
 
     local result
-    result=$(query_readings "${device}" "${from_ts}" "${to_ts}" "${limit}")
+    if (( bucket_ms > 0 )); then
+        result=$(query_readings_downsampled "${device}" "${from_ts}" "${to_ts}" "${limit}" "${bucket_ms}")
+    else
+        result=$(query_readings "${device}" "${from_ts}" "${to_ts}" "${limit}")
+    fi
+    send_json "200 OK" "${result}"
+}
+
+handle_readings_count() {
+    local now_ts default_from from_ts to_ts device
+    now_ts=$(now_ms)
+    default_from=0
+
+    from_ts=$(parse_query_param "${QUERY_STRING}" "from" "${default_from}")
+    to_ts=$(parse_query_param "${QUERY_STRING}" "to" "${now_ts}")
+    device=$(parse_query_param "${QUERY_STRING}" "device" "")
+
+    # Validate integers
+    [[ "${from_ts}" =~ ^-?[0-9]+$ ]] || from_ts="${default_from}"
+    [[ "${to_ts}" =~ ^-?[0-9]+$ ]] || to_ts="${now_ts}"
+
+    if [[ -n "${device}" ]] && [[ "${device}" != "all" ]]; then
+        # Validate device ID
+        if [[ ! "${device}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            send_error "400 Bad Request" "invalid device parameter"
+            return
+        fi
+    fi
+
+    local result
+    result=$(get_filtered_count "${device}" "${from_ts}" "${to_ts}")
     send_json "200 OK" "${result}"
 }
 
@@ -72,8 +116,9 @@ handle_config() {
     devices_arr=$(jq -c '[.[] | {ip, label}]' <<< "${AGTZ_DEVICES_JSON}")
     local result
     result=$(jq -cn --argjson interval "${AGTZ_POLL_INTERVAL_MS}" \
+                    --argjson threshold "${AGTZ_DOWNSAMPLE_THRESHOLD}" \
                     --argjson devices "${devices_arr}" \
-                    '{"pollIntervalMs": $interval, "devices": $devices}')
+                    '{"pollIntervalMs": $interval, "downsampleThreshold": $threshold, "devices": $devices}')
     send_json "200 OK" "${result}"
 }
 
@@ -215,6 +260,9 @@ increment_counter "${RUN_DIR}/requests"
 
 # Route the request
 case "${REQUEST_PATH}" in
+    /api/readings/count)
+        handle_readings_count
+        ;;
     /api/readings/latest)
         handle_readings_latest
         ;;

@@ -72,6 +72,64 @@ query_readings() {
     printf '%s' "${result}" | normalize_json
 }
 
+# Output downsampled readings as a JSON array using GROUP BY on time buckets.
+# Omits 'id' from output since rows are aggregated.
+query_readings_downsampled() {
+    local device="$1" from_ts="$2" to_ts="$3" limit="$4" bucket_ms="$5"
+
+    local where_clause="timestamp >= ${from_ts} AND timestamp <= ${to_ts}"
+    if [[ -n "${device}" ]] && [[ "${device}" != "all" ]]; then
+        if [[ ! "${device}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            printf '[]'
+            return
+        fi
+        where_clause="device_id = '${device}' AND ${where_clause}"
+    fi
+
+    local sql="SELECT json_group_array(json_object(
+        'timestamp', bucket_ts,
+        'device_id', device_id,
+        'device_type', device_type,
+        'device_ip', device_ip,
+        'pm01', avg_pm01,
+        'pm02', avg_pm02,
+        'pm10', avg_pm10,
+        'pm02_compensated', avg_pm02_compensated,
+        'rco2', avg_rco2,
+        'atmp', avg_atmp,
+        'atmp_compensated', avg_atmp_compensated,
+        'rhum', avg_rhum,
+        'rhum_compensated', avg_rhum_compensated,
+        'tvoc_index', avg_tvoc_index,
+        'nox_index', avg_nox_index,
+        'wifi', avg_wifi
+    )) FROM (
+        SELECT (timestamp / ${bucket_ms}) * ${bucket_ms} AS bucket_ts,
+            device_id, device_type, device_ip,
+            AVG(pm01) AS avg_pm01,
+            AVG(pm02) AS avg_pm02,
+            AVG(pm10) AS avg_pm10,
+            AVG(pm02_compensated) AS avg_pm02_compensated,
+            CAST(AVG(rco2) AS INTEGER) AS avg_rco2,
+            AVG(atmp) AS avg_atmp,
+            AVG(atmp_compensated) AS avg_atmp_compensated,
+            AVG(rhum) AS avg_rhum,
+            AVG(rhum_compensated) AS avg_rhum_compensated,
+            AVG(tvoc_index) AS avg_tvoc_index,
+            AVG(nox_index) AS avg_nox_index,
+            CAST(AVG(wifi) AS INTEGER) AS avg_wifi
+        FROM readings
+        WHERE ${where_clause}
+        GROUP BY (timestamp / ${bucket_ms}), device_id
+        ORDER BY bucket_ts ASC
+        LIMIT ${limit}
+    )"
+
+    local result
+    result=$(db_exec "${sql}" 2>/dev/null) || { printf '[]'; return; }
+    printf '%s' "${result}" | normalize_json
+}
+
 get_latest_readings() {
     local sql="SELECT json_group_array(json_object(
         'id', r.id,
@@ -118,6 +176,25 @@ get_devices() {
     local result
     result=$(db_exec "${sql}" 2>/dev/null) || { printf '[]'; return; }
     printf '%s' "${result}" | normalize_json
+}
+
+# Output filtered readings count as a JSON object: {"count": N}
+get_filtered_count() {
+    local device="$1" from_ts="$2" to_ts="$3"
+
+    local where_clause="timestamp >= ${from_ts} AND timestamp <= ${to_ts}"
+    if [[ -n "${device}" ]] && [[ "${device}" != "all" ]]; then
+        if [[ ! "${device}" =~ ^[a-zA-Z0-9_-]+$ ]]; then
+            printf '{"count":0}'
+            return
+        fi
+        where_clause="device_id = '${device}' AND ${where_clause}"
+    fi
+
+    local sql="SELECT json_object('count', COUNT(*)) FROM readings WHERE ${where_clause}"
+    local result
+    result=$(db_exec "${sql}" 2>/dev/null) || { printf '{"count":0}'; return; }
+    printf '%s' "${result}"
 }
 
 get_readings_count() {

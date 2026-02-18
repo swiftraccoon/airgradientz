@@ -91,6 +91,7 @@ setup_test_env() {
     export AGTZ_POLL_INTERVAL_MS=15000
     export AGTZ_FETCH_TIMEOUT_MS=5000
     export AGTZ_MAX_API_ROWS=10000
+    export AGTZ_DOWNSAMPLE_THRESHOLD=10000
     export AGTZ_DEVICES_JSON='[{"ip":"192.168.1.1","label":"test-indoor"}]'
 
     # Create run directory
@@ -142,6 +143,7 @@ do_request() {
           AGTZ_POLL_INTERVAL_MS="${AGTZ_POLL_INTERVAL_MS}" \
           AGTZ_FETCH_TIMEOUT_MS="${AGTZ_FETCH_TIMEOUT_MS}" \
           AGTZ_MAX_API_ROWS="${AGTZ_MAX_API_ROWS}" \
+          AGTZ_DOWNSAMPLE_THRESHOLD="${AGTZ_DOWNSAMPLE_THRESHOLD}" \
           AGTZ_DEVICES_JSON="${AGTZ_DEVICES_JSON}" \
           bash "${SCRIPT_DIR}/handler.sh" 2>/dev/null
 }
@@ -390,6 +392,7 @@ do_handler_request() {
           AGTZ_POLL_INTERVAL_MS="${AGTZ_POLL_INTERVAL_MS}" \
           AGTZ_FETCH_TIMEOUT_MS="${AGTZ_FETCH_TIMEOUT_MS}" \
           AGTZ_MAX_API_ROWS="${AGTZ_MAX_API_ROWS}" \
+          AGTZ_DOWNSAMPLE_THRESHOLD="${AGTZ_DOWNSAMPLE_THRESHOLD}" \
           AGTZ_DEVICES_JSON="${AGTZ_DEVICES_JSON}" \
           bash "${HANDLER_TEST_DIR}/handler.sh" 2>/dev/null || true
 }
@@ -515,6 +518,54 @@ assert_eq "dotdot in middle returns 404" "404" "${status}"
 response=$(do_handler_request GET "/api/readings?limit=1")
 body=$(get_body "${response}")
 assert_not_contains "raw_json not in API response" "${body}" "raw_json"
+
+# TestReadingsDownsample1h
+response=$(do_handler_request GET "/api/readings?downsample=1h")
+status=$(get_status_code "${response}")
+body=$(get_body "${response}")
+assert_eq "downsample=1h status 200" "200" "${status}"
+ds_count=$(jq 'length' <<< "${body}")
+if (( ds_count > 0 )); then
+    assert_eq "downsample returns data" "yes" "yes"
+    # Downsampled results should NOT have 'id' field
+    first_has_id=$(jq '.[0] | has("id")' <<< "${body}")
+    assert_eq "downsample omits id field" "false" "${first_has_id}"
+    # Should still have standard fields
+    assert_json_not_null "downsample has timestamp" "${body}" '.[0].timestamp'
+    assert_json_not_null "downsample has device_id" "${body}" '.[0].device_id'
+else
+    assert_eq "downsample returns data" "yes" "no (got ${ds_count})"
+fi
+
+# TestReadingsDownsampleInvalid
+response=$(do_handler_request GET "/api/readings?downsample=invalid")
+status=$(get_status_code "${response}")
+assert_eq "downsample=invalid returns 400" "400" "${status}"
+
+# TestReadingsCount
+response=$(do_handler_request GET "/api/readings/count")
+status=$(get_status_code "${response}")
+body=$(get_body "${response}")
+assert_eq "readings/count status 200" "200" "${status}"
+total_count=$(jq '.count' <<< "${body}")
+if (( total_count > 0 )); then
+    assert_eq "readings/count returns positive count" "yes" "yes"
+else
+    assert_eq "readings/count returns positive count" "yes" "no (got ${total_count})"
+fi
+
+# TestReadingsCountWithDevice
+response=$(do_handler_request GET "/api/readings/count?device=${INDOOR_SERIAL}")
+status=$(get_status_code "${response}")
+body=$(get_body "${response}")
+assert_eq "readings/count?device status 200" "200" "${status}"
+device_count=$(jq '.count' <<< "${body}")
+assert_eq "readings/count for indoor device is 1" "1" "${device_count}"
+
+# TestConfigHasDownsampleThreshold
+response=$(do_handler_request GET "/api/config")
+body=$(get_body "${response}")
+assert_json_field "config has downsampleThreshold" "${body}" '.downsampleThreshold' "10000"
 
 echo ""
 
