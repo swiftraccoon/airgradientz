@@ -23,6 +23,7 @@ typedef struct {
     uint32_t      poll_interval_ms;
     uint32_t      fetch_timeout_ms;
     uint32_t      max_api_rows;
+    uint32_t      downsample_threshold;
 } Config;
 
 /* Try to read a config file. Returns malloc'd content or NULL. */
@@ -117,6 +118,12 @@ static inline void config_apply_values(Config *c, const JsonValue *obj) {
         int64_t n = json_as_i64(v, &ok);
         if (ok && n > 0) c->max_api_rows = (uint32_t)n;
     }
+
+    v = json_get(obj, "downsampleThreshold");
+    if (v) {
+        int64_t n = json_as_i64(v, &ok);
+        if (ok && n > 0) c->downsample_threshold = (uint32_t)n;
+    }
 }
 
 /* Apply parsed JSON config to Config struct. Does not touch db_path. */
@@ -159,6 +166,7 @@ static inline Config config_from_env(void) {
     c.poll_interval_ms = 15000;
     c.fetch_timeout_ms = 5000;
     c.max_api_rows     = 10000;
+    c.downsample_threshold = 10000;
 
     /* 2. Config file overrides */
     char *file_content = config_find_file();

@@ -93,6 +93,24 @@ JsonValue *api_handle_readings(struct AppState *state, const HttpReq *req, int *
 
     char *device = query_param(req->query, "device");
 
+    /* Parse downsample parameter */
+    int64_t downsample_ms = 0;
+    char *ds = query_param(req->query, "downsample");
+    if (ds) {
+        if (ds[0] != '\0') {
+            downsample_ms = downsample_lookup(ds);
+            if (downsample_ms == 0) {
+                free(ds);
+                free(device);
+                *status = 400;
+                JsonValue *err = json_object_new();
+                json_object_set(err, "error", json_string("invalid downsample value"));
+                return err;
+            }
+        }
+        free(ds);
+    }
+
     int64_t requested_limit = parse_i64_param(req->query, "limit",
                                               (int64_t)state->config.max_api_rows);
     int64_t max = (int64_t)state->config.max_api_rows;
@@ -100,10 +118,11 @@ JsonValue *api_handle_readings(struct AppState *state, const HttpReq *req, int *
                              ? requested_limit : max;
 
     ReadingQuery q;
-    q.device = device ? device : "all";
-    q.from   = from;
-    q.to     = to;
-    q.limit  = effective_limit;
+    q.device        = device ? device : "all";
+    q.from          = from;
+    q.to            = to;
+    q.limit         = effective_limit;
+    q.downsample_ms = downsample_ms;
 
     ReadingList rl;
     pthread_mutex_lock(&state->db_mutex);
@@ -125,6 +144,33 @@ JsonValue *api_handle_readings(struct AppState *state, const HttpReq *req, int *
 
     *status = 200;
     return arr;
+}
+
+JsonValue *api_handle_readings_count(struct AppState *state, const HttpReq *req, int *status)
+{
+    int64_t now = db_now_millis();
+
+    int64_t from = parse_i64_param(req->query, "from", 0);
+    int64_t to   = parse_i64_param(req->query, "to",   now);
+
+    char *device = query_param(req->query, "device");
+
+    pthread_mutex_lock(&state->db_mutex);
+    int64_t count = db_get_filtered_count(state->db, from, to, device);
+    pthread_mutex_unlock(&state->db_mutex);
+
+    free(device);
+
+    if (count < 0) {
+        *status = 500;
+        return NULL;
+    }
+
+    JsonValue *obj = json_object_new();
+    json_object_set(obj, "count", json_from_i64(count));
+
+    *status = 200;
+    return obj;
 }
 
 JsonValue *api_handle_readings_latest(struct AppState *state, int *status)
@@ -189,6 +235,7 @@ JsonValue *api_handle_config(const struct AppState *state, int *status)
 
     JsonValue *cfg = json_object_new();
     json_object_set(cfg, "pollIntervalMs", json_number((double)state->config.poll_interval_ms));
+    json_object_set(cfg, "downsampleThreshold", json_number((double)state->config.downsample_threshold));
     json_object_set(cfg, "devices", devices);
 
     *status = 200;

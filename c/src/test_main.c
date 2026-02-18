@@ -1160,6 +1160,238 @@ static void test_db_now_millis(void)
 }
 
 /* ================================================================
+ * Downsample + count tests
+ * ================================================================ */
+
+/* Helper: insert a reading with explicit timestamp via raw SQL */
+static void insert_raw_reading(sqlite3 *db, int64_t ts, const char *device_id,
+                                const char *device_type, const char *device_ip,
+                                double pm02, int64_t rco2, double atmp)
+{
+    sqlite3_stmt *stmt;
+    const char *sql =
+        "INSERT INTO readings (timestamp, device_id, device_type, device_ip, "
+        "pm02, rco2, atmp, raw_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '{}')";
+    int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "    insert_raw_reading prepare failed: %s\n", sqlite3_errmsg(db));
+        return;
+    }
+    sqlite3_bind_int64(stmt, 1, ts);
+    sqlite3_bind_text(stmt, 2, device_id, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 3, device_type, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_text(stmt, 4, device_ip, -1, SQLITE_TRANSIENT);
+    sqlite3_bind_double(stmt, 5, pm02);
+    sqlite3_bind_int64(stmt, 6, rco2);
+    sqlite3_bind_double(stmt, 7, atmp);
+    sqlite3_step(stmt);
+    sqlite3_finalize(stmt);
+}
+
+static void test_downsample_lookup(void)
+{
+    ASSERT_INT_EQ(downsample_lookup("5m"),  300000);
+    ASSERT_INT_EQ(downsample_lookup("10m"), 600000);
+    ASSERT_INT_EQ(downsample_lookup("15m"), 900000);
+    ASSERT_INT_EQ(downsample_lookup("30m"), 1800000);
+    ASSERT_INT_EQ(downsample_lookup("1h"),  3600000);
+    ASSERT_INT_EQ(downsample_lookup("1d"),  86400000);
+    ASSERT_INT_EQ(downsample_lookup("1w"),  604800000);
+    ASSERT_INT_EQ(downsample_lookup("invalid"), 0);
+    ASSERT_INT_EQ(downsample_lookup(NULL),  0);
+    ASSERT_INT_EQ(downsample_lookup(""),    0);
+}
+
+static void test_db_downsample_grouping(void)
+{
+    sqlite3 *db = setup_test_db();
+    ASSERT_NOT_NULL(db);
+
+    int64_t now = db_now_millis();
+    int64_t bucket_ms = 3600000; /* 1h */
+
+    /* Insert 3 readings in the same 1-hour bucket */
+    insert_raw_reading(db, now - 1000, "dev1", "indoor", "1.1.1.1", 10.0, 400, 20.0);
+    insert_raw_reading(db, now - 2000, "dev1", "indoor", "1.1.1.1", 20.0, 500, 21.0);
+    insert_raw_reading(db, now - 3000, "dev1", "indoor", "1.1.1.1", 30.0, 600, 22.0);
+
+    /* Insert 1 reading in a different bucket (2 hours ago) */
+    insert_raw_reading(db, now - 2 * bucket_ms, "dev1", "indoor", "1.1.1.1", 100.0, 900, 30.0);
+
+    ReadingQuery q = {
+        .device = "all", .from = 0, .to = now + 1000,
+        .limit = 100, .downsample_ms = bucket_ms
+    };
+    ReadingList rl;
+    ASSERT_INT_EQ(db_query_readings(db, &q, &rl), 0);
+
+    /* Should produce 2 buckets */
+    ASSERT_INT_EQ(rl.count, 2);
+
+    /* Downsampled rows must have id == 0 */
+    ASSERT_INT_EQ(rl.items[0].id, 0);
+    ASSERT_INT_EQ(rl.items[1].id, 0);
+
+    /* Verify averages in the recent bucket (3 readings: pm02 = 10,20,30 => avg 20) */
+    Reading *recent = &rl.items[1]; /* ordered ASC, recent is last */
+    ASSERT(recent->has_pm02);
+    ASSERT_DBL_EQ(recent->pm02, 20.0);
+
+    /* Verify averages for rco2: (400+500+600)/3 = 500 */
+    ASSERT(recent->has_rco2);
+    ASSERT_INT_EQ(recent->rco2, 500);
+
+    reading_list_free(&rl);
+    sqlite3_close(db);
+}
+
+static void test_db_downsample_no_id_in_json(void)
+{
+    /* A downsampled reading (id=0) should not have 'id' in JSON */
+    Reading r;
+    memset(&r, 0, sizeof(r));
+    r.id = 0;
+    r.timestamp = 1700000000000LL;
+    r.device_id = strdup("dev1");
+    r.device_type = strdup("indoor");
+    r.device_ip = strdup("1.1.1.1");
+    r.has_pm02 = true;
+    r.pm02 = 15.0;
+
+    JsonValue *json = reading_to_json(&r);
+    ASSERT_NOT_NULL(json);
+    ASSERT_NULL(json_get(json, "id"));
+    ASSERT_NOT_NULL(json_get(json, "timestamp"));
+    ASSERT_NOT_NULL(json_get(json, "pm02"));
+    json_free(json);
+    free(r.device_id);
+    free(r.device_type);
+    free(r.device_ip);
+}
+
+static void test_db_non_downsampled_has_id_in_json(void)
+{
+    /* A normal reading (id>0) should have 'id' in JSON */
+    Reading r;
+    memset(&r, 0, sizeof(r));
+    r.id = 5;
+    r.timestamp = 1700000000000LL;
+    r.device_id = strdup("dev1");
+    r.device_type = strdup("indoor");
+    r.device_ip = strdup("1.1.1.1");
+
+    JsonValue *json = reading_to_json(&r);
+    ASSERT_NOT_NULL(json);
+    bool ok;
+    ASSERT_INT_EQ(json_as_i64(json_get(json, "id"), &ok), 5);
+    ASSERT(ok);
+    json_free(json);
+    free(r.device_id);
+    free(r.device_type);
+    free(r.device_ip);
+}
+
+static void test_db_filtered_count_all(void)
+{
+    sqlite3 *db = setup_test_db();
+    ASSERT_NOT_NULL(db);
+
+    int64_t now = db_now_millis();
+
+    insert_raw_reading(db, now - 10000, "dev1", "indoor", "1.1.1.1", 10.0, 400, 20.0);
+    insert_raw_reading(db, now - 5000,  "dev1", "indoor", "1.1.1.1", 20.0, 500, 21.0);
+    insert_raw_reading(db, now - 3000,  "dev2", "outdoor", "1.1.1.2", 30.0, 600, 22.0);
+
+    int64_t count = db_get_filtered_count(db, 0, now + 1000, "all");
+    ASSERT_INT_EQ(count, 3);
+
+    sqlite3_close(db);
+}
+
+static void test_db_filtered_count_single_device(void)
+{
+    sqlite3 *db = setup_test_db();
+    ASSERT_NOT_NULL(db);
+
+    int64_t now = db_now_millis();
+
+    insert_raw_reading(db, now - 10000, "dev1", "indoor", "1.1.1.1", 10.0, 400, 20.0);
+    insert_raw_reading(db, now - 5000,  "dev1", "indoor", "1.1.1.1", 20.0, 500, 21.0);
+    insert_raw_reading(db, now - 3000,  "dev2", "outdoor", "1.1.1.2", 30.0, 600, 22.0);
+
+    int64_t count = db_get_filtered_count(db, 0, now + 1000, "dev1");
+    ASSERT_INT_EQ(count, 2);
+
+    sqlite3_close(db);
+}
+
+static void test_db_filtered_count_time_range(void)
+{
+    sqlite3 *db = setup_test_db();
+    ASSERT_NOT_NULL(db);
+
+    int64_t now = db_now_millis();
+
+    insert_raw_reading(db, now - 10000, "dev1", "indoor", "1.1.1.1", 10.0, 400, 20.0);
+    insert_raw_reading(db, now - 5000,  "dev1", "indoor", "1.1.1.1", 20.0, 500, 21.0);
+    insert_raw_reading(db, now - 3000,  "dev2", "outdoor", "1.1.1.2", 30.0, 600, 22.0);
+
+    /* Only readings from last 7 seconds */
+    int64_t count = db_get_filtered_count(db, now - 7000, now + 1000, "all");
+    ASSERT_INT_EQ(count, 2);
+
+    sqlite3_close(db);
+}
+
+static void test_db_filtered_count_empty_device(void)
+{
+    sqlite3 *db = setup_test_db();
+    ASSERT_NOT_NULL(db);
+
+    int64_t now = db_now_millis();
+
+    insert_raw_reading(db, now - 10000, "dev1", "indoor", "1.1.1.1", 10.0, 400, 20.0);
+    insert_raw_reading(db, now - 5000,  "dev1", "indoor", "1.1.1.1", 20.0, 500, 21.0);
+    insert_raw_reading(db, now - 3000,  "dev2", "outdoor", "1.1.1.2", 30.0, 600, 22.0);
+
+    /* Empty device string means all */
+    int64_t count = db_get_filtered_count(db, 0, now + 1000, "");
+    ASSERT_INT_EQ(count, 3);
+
+    /* NULL device means all */
+    count = db_get_filtered_count(db, 0, now + 1000, NULL);
+    ASSERT_INT_EQ(count, 3);
+
+    sqlite3_close(db);
+}
+
+static void test_db_downsample_with_device_filter(void)
+{
+    sqlite3 *db = setup_test_db();
+    ASSERT_NOT_NULL(db);
+
+    int64_t now = db_now_millis();
+    int64_t bucket_ms = 3600000; /* 1h */
+
+    insert_raw_reading(db, now - 1000, "dev1", "indoor", "1.1.1.1", 10.0, 400, 20.0);
+    insert_raw_reading(db, now - 2000, "dev2", "outdoor", "1.1.1.2", 50.0, 800, 25.0);
+
+    ReadingQuery q = {
+        .device = "dev1", .from = 0, .to = now + 1000,
+        .limit = 100, .downsample_ms = bucket_ms
+    };
+    ReadingList rl;
+    ASSERT_INT_EQ(db_query_readings(db, &q, &rl), 0);
+
+    /* Should only see dev1 */
+    ASSERT_INT_EQ(rl.count, 1);
+    ASSERT_STR_EQ(rl.items[0].device_id, "dev1");
+
+    reading_list_free(&rl);
+    sqlite3_close(db);
+}
+
+/* ================================================================
  * API query_param tests
  * ================================================================ */
 
@@ -1314,6 +1546,17 @@ int main(void)
     RUN_TEST(test_db_empty_query);
     RUN_TEST(test_db_checkpoint);
     RUN_TEST(test_db_now_millis);
+
+    fprintf(stderr, "\n=== Downsample + count tests ===\n");
+    RUN_TEST(test_downsample_lookup);
+    RUN_TEST(test_db_downsample_grouping);
+    RUN_TEST(test_db_downsample_no_id_in_json);
+    RUN_TEST(test_db_non_downsampled_has_id_in_json);
+    RUN_TEST(test_db_filtered_count_all);
+    RUN_TEST(test_db_filtered_count_single_device);
+    RUN_TEST(test_db_filtered_count_time_range);
+    RUN_TEST(test_db_filtered_count_empty_device);
+    RUN_TEST(test_db_downsample_with_device_filter);
 
     fprintf(stderr, "\n=== API query_param tests ===\n");
     RUN_TEST(test_query_param_basic);

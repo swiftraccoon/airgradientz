@@ -16,6 +16,7 @@ typedef struct {
    On error, *status is set to 500; otherwise 200. */
 
 JsonValue *api_handle_readings(struct AppState *state, const HttpReq *req, int *status);
+JsonValue *api_handle_readings_count(struct AppState *state, const HttpReq *req, int *status);
 JsonValue *api_handle_readings_latest(struct AppState *state, int *status);
 JsonValue *api_handle_devices(struct AppState *state, int *status);
 JsonValue *api_handle_health(struct AppState *state, int *status);

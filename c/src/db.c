@@ -152,6 +152,28 @@ static void load_queries(void)
     fprintf(stderr, "[db] loaded %d queries from queries.sql\n", n);
 }
 
+/* ---- downsample map ---- */
+
+static const struct { const char *key; int64_t ms; } downsample_map[] = {
+    {"5m",  300000},
+    {"10m", 600000},
+    {"15m", 900000},
+    {"30m", 1800000},
+    {"1h",  3600000},
+    {"1d",  86400000},
+    {"1w",  604800000},
+};
+
+int64_t downsample_lookup(const char *key)
+{
+    if (!key) return 0;
+    for (size_t i = 0; i < sizeof(downsample_map) / sizeof(downsample_map[0]); i++) {
+        if (strcmp(key, downsample_map[i].key) == 0)
+            return downsample_map[i].ms;
+    }
+    return 0;
+}
+
 /* ---- pool allocator stats ---- */
 
 static atomic_uint_fast64_t pool_alloc_count;
@@ -472,10 +494,140 @@ static Reading row_to_reading(sqlite3_stmt *stmt, ReadingList *rl)
     return r;
 }
 
+/* ---- downsampled row extraction (no id column, columns shifted by -1) ---- */
+
+static Reading row_to_downsampled_reading(sqlite3_stmt *stmt, ReadingList *rl)
+{
+    Reading r;
+    memset(&r, 0, sizeof(r));
+
+    r.id        = 0; /* downsampled rows have no single-row identity */
+    r.timestamp = sqlite3_column_int64(stmt, 0);
+    r.device_id   = arena_strdup(rl->str_arena, rl->str_arena_cap, &rl->str_arena_used,
+                                 (const char *)sqlite3_column_text(stmt, 1));
+    r.device_type = arena_strdup(rl->str_arena, rl->str_arena_cap, &rl->str_arena_used,
+                                 (const char *)sqlite3_column_text(stmt, 2));
+    r.device_ip   = arena_strdup(rl->str_arena, rl->str_arena_cap, &rl->str_arena_used,
+                                 (const char *)sqlite3_column_text(stmt, 3));
+
+    r.has_pm01 = !col_is_null(stmt, 4);
+    if (r.has_pm01) r.pm01 = sqlite3_column_double(stmt, 4);
+
+    r.has_pm02 = !col_is_null(stmt, 5);
+    if (r.has_pm02) r.pm02 = sqlite3_column_double(stmt, 5);
+
+    r.has_pm10 = !col_is_null(stmt, 6);
+    if (r.has_pm10) r.pm10 = sqlite3_column_double(stmt, 6);
+
+    r.has_pm02_compensated = !col_is_null(stmt, 7);
+    if (r.has_pm02_compensated) r.pm02_compensated = sqlite3_column_double(stmt, 7);
+
+    r.has_rco2 = !col_is_null(stmt, 8);
+    if (r.has_rco2) r.rco2 = sqlite3_column_int64(stmt, 8);
+
+    r.has_atmp = !col_is_null(stmt, 9);
+    if (r.has_atmp) r.atmp = sqlite3_column_double(stmt, 9);
+
+    r.has_atmp_compensated = !col_is_null(stmt, 10);
+    if (r.has_atmp_compensated) r.atmp_compensated = sqlite3_column_double(stmt, 10);
+
+    r.has_rhum = !col_is_null(stmt, 11);
+    if (r.has_rhum) r.rhum = sqlite3_column_double(stmt, 11);
+
+    r.has_rhum_compensated = !col_is_null(stmt, 12);
+    if (r.has_rhum_compensated) r.rhum_compensated = sqlite3_column_double(stmt, 12);
+
+    r.has_tvoc_index = !col_is_null(stmt, 13);
+    if (r.has_tvoc_index) r.tvoc_index = sqlite3_column_double(stmt, 13);
+
+    r.has_nox_index = !col_is_null(stmt, 14);
+    if (r.has_nox_index) r.nox_index = sqlite3_column_double(stmt, 14);
+
+    r.has_wifi = !col_is_null(stmt, 15);
+    if (r.has_wifi) r.wifi = sqlite3_column_int64(stmt, 15);
+
+    return r;
+}
+
+/* ---- query downsampled readings ---- */
+
+static int db_query_downsampled(sqlite3 *db, const ReadingQuery *q, ReadingList *out)
+{
+    size_t est_items = (q->limit > 0) ? (size_t)q->limit : 1000;
+    reading_list_init_pooled(out, est_items, est_items * 96);
+
+    bool want_device = q->device && strcmp(q->device, "all") != 0;
+    int64_t bucket_ms = q->downsample_ms;
+
+    /* bucket_ms is a trusted constant from downsample_map, safe to interpolate via %lld */
+    StrBuf sql = strbuf_new();
+    strbuf_appendf(&sql,
+        "SELECT (timestamp / %lld) * %lld AS timestamp, "
+        "device_id, device_type, device_ip, "
+        "AVG(pm01) AS pm01, AVG(pm02) AS pm02, AVG(pm10) AS pm10, "
+        "AVG(pm02_compensated) AS pm02_compensated, "
+        "CAST(AVG(rco2) AS INTEGER) AS rco2, "
+        "AVG(atmp) AS atmp, AVG(atmp_compensated) AS atmp_compensated, "
+        "AVG(rhum) AS rhum, AVG(rhum_compensated) AS rhum_compensated, "
+        "AVG(tvoc_index) AS tvoc_index, AVG(nox_index) AS nox_index, "
+        "CAST(AVG(wifi) AS INTEGER) AS wifi "
+        "FROM readings WHERE ",
+        (long long)bucket_ms, (long long)bucket_ms);
+
+    if (want_device) {
+        strbuf_append_cstr(&sql, "device_id = ?3 AND ");
+    }
+
+    strbuf_append_cstr(&sql, "timestamp >= ?1 AND timestamp <= ?2 ");
+    strbuf_appendf(&sql, "GROUP BY (timestamp / %lld), device_id ORDER BY timestamp ASC",
+                   (long long)bucket_ms);
+
+    if (q->limit > 0) {
+        if (want_device) {
+            strbuf_append_cstr(&sql, " LIMIT ?4");
+        } else {
+            strbuf_append_cstr(&sql, " LIMIT ?3");
+        }
+    }
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(db, strbuf_cstr(&sql), -1, &stmt, NULL);
+    strbuf_free(&sql);
+
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[db] prepare downsampled query error: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+
+    sqlite3_bind_int64(stmt, 1, q->from);
+    sqlite3_bind_int64(stmt, 2, q->to);
+
+    if (want_device && q->limit > 0) {
+        sqlite3_bind_text(stmt, 3, q->device, -1, SQLITE_TRANSIENT);
+        sqlite3_bind_int64(stmt, 4, q->limit);
+    } else if (want_device) {
+        sqlite3_bind_text(stmt, 3, q->device, -1, SQLITE_TRANSIENT);
+    } else if (q->limit > 0) {
+        sqlite3_bind_int64(stmt, 3, q->limit);
+    }
+
+    while ((rc = sqlite3_step(stmt)) == SQLITE_ROW) {
+        Reading r = row_to_downsampled_reading(stmt, out);
+        reading_list_push(out, &r);
+    }
+
+    sqlite3_finalize(stmt);
+    return (rc == SQLITE_DONE) ? 0 : -1;
+}
+
 /* ---- query readings ---- */
 
 int db_query_readings(sqlite3 *db, const ReadingQuery *q, ReadingList *out)
 {
+    /* Dispatch to downsampled path if downsample_ms is set */
+    if (q->downsample_ms > 0)
+        return db_query_downsampled(db, q, out);
+
     size_t est_items = (q->limit > 0) ? (size_t)q->limit : 1000;
     reading_list_init_pooled(out, est_items, est_items * 96);
 
@@ -631,6 +783,44 @@ int64_t db_get_readings_count(sqlite3 *db)
     return count;
 }
 
+/* ---- filtered count ---- */
+
+int64_t db_get_filtered_count(sqlite3 *db, int64_t from, int64_t to, const char *device)
+{
+    bool want_device = device && device[0] != '\0' && strcmp(device, "all") != 0;
+
+    StrBuf sql = strbuf_new();
+    strbuf_append_cstr(&sql, "SELECT COUNT(*) FROM readings WHERE ");
+
+    if (want_device) {
+        strbuf_append_cstr(&sql, "device_id = ?3 AND ");
+    }
+
+    strbuf_append_cstr(&sql, "timestamp >= ?1 AND timestamp <= ?2");
+
+    sqlite3_stmt *stmt;
+    int rc = sqlite3_prepare_v2(db, strbuf_cstr(&sql), -1, &stmt, NULL);
+    strbuf_free(&sql);
+
+    if (rc != SQLITE_OK) {
+        fprintf(stderr, "[db] prepare filtered count error: %s\n", sqlite3_errmsg(db));
+        return -1;
+    }
+
+    sqlite3_bind_int64(stmt, 1, from);
+    sqlite3_bind_int64(stmt, 2, to);
+    if (want_device) {
+        sqlite3_bind_text(stmt, 3, device, -1, SQLITE_TRANSIENT);
+    }
+
+    int64_t count = 0;
+    if (sqlite3_step(stmt) == SQLITE_ROW) {
+        count = sqlite3_column_int64(stmt, 0);
+    }
+    sqlite3_finalize(stmt);
+    return count;
+}
+
 /* ---- checkpoint ---- */
 
 int db_checkpoint(sqlite3 *db)
@@ -660,7 +850,9 @@ static JsonValue *opt_i64_json(bool has, int64_t val)
 JsonValue *reading_to_json(const Reading *r)
 {
     JsonValue *obj = json_object_new();
-    json_object_set(obj, "id",                json_from_i64(r->id));
+    /* Downsampled rows have id=0 (no single-row identity); omit id field. */
+    if (r->id != 0)
+        json_object_set(obj, "id",            json_from_i64(r->id));
     json_object_set(obj, "timestamp",         json_from_i64(r->timestamp));
     json_object_set(obj, "device_id",         json_string(r->device_id));
     json_object_set(obj, "device_type",       json_string(r->device_type));

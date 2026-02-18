@@ -68,6 +68,7 @@ typedef struct {
     int64_t     from;
     int64_t     to;
     int64_t     limit;    /* 0 = no limit */
+    int64_t     downsample_ms; /* 0 = no downsampling */
 } ReadingQuery;
 
 /* ---- Functions ---- */
@@ -79,6 +80,11 @@ int     db_get_devices(sqlite3 *db, DeviceSummaryList *out);
 int     db_get_latest_readings(sqlite3 *db, ReadingList *out);
 int     db_checkpoint(sqlite3 *db);
 int64_t db_get_readings_count(sqlite3 *db);
+int64_t db_get_filtered_count(sqlite3 *db, int64_t from, int64_t to, const char *device);
+
+/* Downsample map: maps human-readable bucket names to millisecond durations.
+   Returns 0 if the key is not found. */
+int64_t downsample_lookup(const char *key);
 
 int64_t db_now_millis(void);
 

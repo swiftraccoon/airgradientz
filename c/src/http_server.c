@@ -297,11 +297,22 @@ static void route_request(AppState *state, const HttpReq *req,
         return;
     }
 
-    if (strcmp(req->path, "/api/readings") == 0) {
+    if (strcmp(req->path, "/api/readings/count") == 0) {
+        int status;
+        JsonValue *json = api_handle_readings_count(state, req, &status);
+        if (json) {
+            *resp = build_json_response(status, "OK", json, resp_len);
+            json_free(json);
+        } else {
+            *resp = build_error_response(500, "Internal Server Error",
+                                          "Internal server error", resp_len);
+        }
+    } else if (strcmp(req->path, "/api/readings") == 0) {
         int status;
         JsonValue *json = api_handle_readings(state, req, &status);
         if (json) {
-            *resp = build_json_response(status, "OK", json, resp_len);
+            const char *status_text = (status == 200) ? "OK" : "Bad Request";
+            *resp = build_json_response(status, status_text, json, resp_len);
             json_free(json);
         } else {
             *resp = build_error_response(500, "Internal Server Error",
