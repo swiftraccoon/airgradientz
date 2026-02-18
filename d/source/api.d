@@ -12,6 +12,14 @@ import db;
 import state : AppState;
 import poller : getHealthJson, getPollStats;
 
+private bool isValidDownsample(string s) {
+    return db.isValidDownsample(s);
+}
+
+private long getDownsampleBucketMs(string s) {
+    return db.getDownsampleBucketMs(s);
+}
+
 HttpResponse handleReadings(AppState appState, HttpRequest req) {
     auto now = db.nowMillis();
     auto defaultFrom = now - 24 * 60 * 60 * 1000;
@@ -20,6 +28,7 @@ HttpResponse handleReadings(AppState appState, HttpRequest req) {
     long to = now;
     string device = "all";
     uint limit = appState.config.maxApiRows;
+    string downsample = null;
 
     if (auto s = req.queryParam("from")) {
         try { from = s.to!long; } catch (Exception) {}
@@ -36,11 +45,27 @@ HttpResponse handleReadings(AppState appState, HttpRequest req) {
                 limit = (requested < appState.config.maxApiRows) ? requested : appState.config.maxApiRows;
         } catch (Exception) {}
     }
+    if (auto s = req.queryParam("downsample"))
+        downsample = s;
+
+    // Validate downsample param if present
+    if (downsample !is null && downsample.length > 0) {
+        if (!isValidDownsample(downsample))
+            return HttpResponse.badRequest("Invalid downsample value");
+    }
 
     try {
-        auto readings = appState.withDb((ref Database db_) {
-            return db.queryReadings(db_, device, from, to, limit);
-        });
+        Reading[] readings;
+        if (downsample !is null && downsample.length > 0) {
+            auto bucketMs = getDownsampleBucketMs(downsample);
+            readings = appState.withDb((ref Database db_) {
+                return db.queryReadingsDownsampled(db_, device, from, to, limit, bucketMs);
+            });
+        } else {
+            readings = appState.withDb((ref Database db_) {
+                return db.queryReadings(db_, device, from, to, limit);
+            });
+        }
 
         JSONValue[] items;
         foreach (ref r; readings)
@@ -48,6 +73,37 @@ HttpResponse handleReadings(AppState appState, HttpRequest req) {
         return HttpResponse.okJson(JSONValue(items));
     } catch (Exception e) {
         stderr.writefln("[api] query_readings error: %s", e.msg);
+        return HttpResponse.internalError("Internal server error");
+    }
+}
+
+HttpResponse handleReadingsCount(AppState appState, HttpRequest req) {
+    auto now = db.nowMillis();
+    auto defaultFrom = now - 24 * 60 * 60 * 1000;
+
+    long from = defaultFrom;
+    long to = now;
+    string device = "all";
+
+    if (auto s = req.queryParam("from")) {
+        try { from = s.to!long; } catch (Exception) {}
+    }
+    if (auto s = req.queryParam("to")) {
+        try { to = s.to!long; } catch (Exception) {}
+    }
+    if (auto s = req.queryParam("device"))
+        device = s;
+
+    try {
+        auto count = appState.withDb((ref Database db_) {
+            return db.getFilteredReadingsCount(db_, device, from, to);
+        });
+
+        JSONValue obj = JSONValue(string[string].init);
+        obj["count"] = JSONValue(count);
+        return HttpResponse.okJson(obj);
+    } catch (Exception e) {
+        stderr.writefln("[api] readings_count error: %s", e.msg);
         return HttpResponse.internalError("Internal server error");
     }
 }
@@ -100,6 +156,7 @@ HttpResponse handleConfig(AppState appState) {
 
     JSONValue cfg = JSONValue(string[string].init);
     cfg["pollIntervalMs"] = JSONValue(cast(long) appState.config.pollIntervalMs);
+    cfg["downsampleThreshold"] = JSONValue(cast(long) appState.config.downsampleThreshold);
     cfg["devices"] = JSONValue(devicesJson);
 
     return HttpResponse.okJson(cfg);

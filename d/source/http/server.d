@@ -136,6 +136,7 @@ private void closeAndCleanup(int fd, ref ConnData[int] conns, int epfd, AppState
 private HttpResponse routeRequest(HttpRequest req, AppState appState) {
     if (req.method == Method.get) {
         switch (req.path) {
+            case "/api/readings/count":   return handleReadingsCount(appState, req);
             case "/api/readings":        return handleReadings(appState, req);
             case "/api/readings/latest":  return handleReadingsLatest(appState);
             case "/api/devices":          return handleDevices(appState);

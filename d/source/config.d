@@ -16,6 +16,7 @@ struct Config {
     uint pollIntervalMs = 15_000;
     uint fetchTimeoutMs = 5_000;
     uint maxApiRows = 10_000;
+    uint downsampleThreshold = 10_000;
 
     static Config fromEnv() {
         Config c;
@@ -138,6 +139,14 @@ private void applyConfigValues(ref Config c, ref const JSONValue obj) {
             auto n = v.get!long;
             if (n > 0)
                 c.maxApiRows = cast(uint) n;
+        }
+    }
+
+    if (auto v = "downsampleThreshold" in obj) {
+        if (v.type == JSONType.integer || v.type == JSONType.uinteger) {
+            auto n = v.get!long;
+            if (n > 0)
+                c.downsampleThreshold = cast(uint) n;
         }
     }
 }

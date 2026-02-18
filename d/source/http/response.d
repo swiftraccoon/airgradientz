@@ -48,6 +48,16 @@ struct HttpResponse {
         return r;
     }
 
+    static HttpResponse badRequest(string msg) {
+        auto bodyStr = format!`{"error":"%s"}`(msg);
+        auto bodyBytes = cast(const(ubyte)[]) bodyStr;
+        auto r = make(400, "Bad Request");
+        r.headers ~= Header("Content-Type", "application/json");
+        r.headers ~= Header("Content-Length", bodyBytes.length.to!string);
+        r.body_ = bodyBytes;
+        return r;
+    }
+
     static HttpResponse notFound() {
         enum bodyStr = `{"error":"Not found"}`;
         auto r = make(404, "Not Found");

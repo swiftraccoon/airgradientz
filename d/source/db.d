@@ -300,10 +300,12 @@ struct Reading {
     Nullable!double rhum, rhumCompensated;
     Nullable!double tvocIndex, noxIndex;
     Nullable!long wifi;
+    bool downsampled;
 
     JSONValue toJson() const {
         JSONValue obj = JSONValue(string[string].init);
-        obj["id"] = JSONValue(id);
+        if (!downsampled)
+            obj["id"] = JSONValue(id);
         obj["timestamp"] = JSONValue(timestamp);
         obj["device_id"] = JSONValue(deviceId);
         obj["device_type"] = JSONValue(deviceType);
@@ -332,6 +334,30 @@ private JSONValue nullableLongJson(Nullable!long v) {
     return v.isNull ? JSONValue(null) : JSONValue(v.get);
 }
 
+private immutable long[string] downsampleMap;
+
+shared static this() {
+    downsampleMap = [
+        "5m":  300_000L,
+        "10m": 600_000L,
+        "15m": 900_000L,
+        "30m": 1_800_000L,
+        "1h":  3_600_000L,
+        "1d":  86_400_000L,
+        "1w":  604_800_000L,
+    ];
+}
+
+bool isValidDownsample(string key) {
+    return key !is null && key.length > 0 && (key in downsampleMap) !is null;
+}
+
+long getDownsampleBucketMs(string key) {
+    if (auto p = key in downsampleMap)
+        return *p;
+    return 0;
+}
+
 private string queryCols() {
     return loadedQueryCols.length > 0 ? loadedQueryCols : DEFAULT_QUERY_COLS;
 }
@@ -356,6 +382,68 @@ private Reading rowToReading(Row)(auto ref Row row) {
     r.noxIndex = row.peek!(Nullable!double)(15);
     r.wifi = row.peek!(Nullable!long)(16);
     return r;
+}
+
+private Reading rowToDownsampledReading(Row)(auto ref Row row) {
+    Reading r;
+    r.downsampled = true;
+    r.timestamp = row.peek!long(0);
+    r.deviceId = row.peek!string(1);
+    r.deviceType = row.peek!string(2);
+    r.deviceIp = row.peek!string(3);
+    r.pm01 = row.peek!(Nullable!double)(4);
+    r.pm02 = row.peek!(Nullable!double)(5);
+    r.pm10 = row.peek!(Nullable!double)(6);
+    r.pm02Compensated = row.peek!(Nullable!double)(7);
+    r.rco2 = row.peek!(Nullable!long)(8);
+    r.atmp = row.peek!(Nullable!double)(9);
+    r.atmpCompensated = row.peek!(Nullable!double)(10);
+    r.rhum = row.peek!(Nullable!double)(11);
+    r.rhumCompensated = row.peek!(Nullable!double)(12);
+    r.tvocIndex = row.peek!(Nullable!double)(13);
+    r.noxIndex = row.peek!(Nullable!double)(14);
+    r.wifi = row.peek!(Nullable!long)(15);
+    return r;
+}
+
+Reading[] queryReadingsDownsampled(ref Database db, string device, long from, long to, uint limit, long bucketMs) {
+    import std.format : format;
+
+    bool wantDevice = device !is null && device != "all";
+
+    string sql = format("SELECT (timestamp / %d) * %d AS timestamp, " ~
+        "device_id, device_type, device_ip, " ~
+        "AVG(pm01) AS pm01, AVG(pm02) AS pm02, AVG(pm10) AS pm10, " ~
+        "AVG(pm02_compensated) AS pm02_compensated, " ~
+        "CAST(AVG(rco2) AS INTEGER) AS rco2, " ~
+        "AVG(atmp) AS atmp, AVG(atmp_compensated) AS atmp_compensated, " ~
+        "AVG(rhum) AS rhum, AVG(rhum_compensated) AS rhum_compensated, " ~
+        "AVG(tvoc_index) AS tvoc_index, AVG(nox_index) AS nox_index, " ~
+        "CAST(AVG(wifi) AS INTEGER) AS wifi " ~
+        "FROM readings WHERE timestamp >= ? AND timestamp <= ?%s " ~
+        "GROUP BY (timestamp / %d), device_id " ~
+        "ORDER BY timestamp ASC%s",
+        bucketMs, bucketMs,
+        wantDevice ? " AND device_id = ?" : "",
+        bucketMs,
+        limit > 0 ? " LIMIT ?" : "");
+
+    auto stmt = db.prepare(sql);
+
+    int idx = 1;
+    stmt.bind(idx++, from);
+    stmt.bind(idx++, to);
+    if (wantDevice)
+        stmt.bind(idx++, device);
+    if (limit > 0)
+        stmt.bind(idx++, cast(long) limit);
+
+    Reading[] results;
+    foreach (row; stmt.execute()) {
+        results ~= rowToDownsampledReading(row);
+    }
+    stmt.reset();
+    return results;
 }
 
 Reading[] queryReadings(ref Database db, string device, long from, long to, uint limit) {
@@ -442,6 +530,30 @@ Reading[] getLatestReadings(ref Database db) {
     }
     stmt.reset();
     return results;
+}
+
+long getFilteredReadingsCount(ref Database db, string device, long from, long to) {
+    bool wantDevice = device !is null && device != "all";
+
+    string sql;
+    if (wantDevice)
+        sql = "SELECT COUNT(*) FROM readings WHERE timestamp >= ? AND timestamp <= ? AND device_id = ?";
+    else
+        sql = "SELECT COUNT(*) FROM readings WHERE timestamp >= ? AND timestamp <= ?";
+
+    auto stmt = db.prepare(sql);
+    stmt.bind(1, from);
+    stmt.bind(2, to);
+    if (wantDevice)
+        stmt.bind(3, device);
+
+    foreach (row; stmt.execute()) {
+        auto count = row.peek!long(0);
+        stmt.reset();
+        return count;
+    }
+    stmt.reset();
+    return 0;
 }
 
 void checkpoint(ref Database db) {
