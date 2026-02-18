@@ -59,6 +59,7 @@ PORT_NIM=$(get_port nim 3015)
 PORT_GO=$(get_port go 3016)
 PORT_BASH=$(get_port bash 3017)
 PORT_ASM=$(get_port asm 3018)
+PORT_HASKELL=$(get_port haskell 3019)
 
 IMPL_REGISTRY=(
     "c|${PORT_C}|c|cd c && make clean && make|cd c && ./airgradientz|c/airgradientz"
@@ -71,6 +72,7 @@ IMPL_REGISTRY=(
     "go|${PORT_GO}|go|cd go && go build -o airgradientz .|cd go && ./airgradientz|go/airgradientz"
     "bash|${PORT_BASH}|bash|cd bash && bash build.sh|cd bash && bash server.sh|n/a"
     "asm|${PORT_ASM}|asm|cd asm && make clean && make|cd asm && ./airgradientz|asm/airgradientz"
+    "haskell|${PORT_HASKELL}|haskell|cd haskell && export PATH=\$HOME/.ghcup/bin:\$PATH && cabal build 2>/dev/null|cd haskell && export PATH=\$HOME/.ghcup/bin:\$PATH && cabal run airgradientz 2>/dev/null|n/a"
 )
 
 # Display names for the report header
@@ -85,10 +87,11 @@ declare -A DISPLAY_NAMES=(
     [go]="Go"
     [bash]="Bash"
     [asm]="x86_64 ASM"
+    [haskell]="Haskell"
 )
 
 # Canonical order for table columns
-IMPL_ORDER=(c nodejs rust zig d elixir nim go bash asm)
+IMPL_ORDER=(c nodejs rust zig d elixir nim go bash asm haskell)
 
 # ── Process tracking for cleanup ─────────────────────────────────────────────
 
