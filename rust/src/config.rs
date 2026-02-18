@@ -18,6 +18,7 @@ pub(crate) struct Config {
     pub(crate) poll_interval_ms: u32,
     pub(crate) fetch_timeout_ms: u32,
     pub(crate) max_api_rows: u32,
+    pub(crate) downsample_threshold: u32,
 }
 
 fn load_config_file() -> Option<JsonValue> {
@@ -73,6 +74,7 @@ impl Config {
             poll_interval_ms: 15_000,
             fetch_timeout_ms: 5_000,
             max_api_rows: 10_000,
+            downsample_threshold: 10_000,
         };
 
         // 2. Config file overrides
@@ -118,6 +120,11 @@ impl Config {
                 && n > 0
             {
                 config.max_api_rows = u32::try_from(n).unwrap_or(u32::MAX);
+            }
+            if let Some(n) = get_i64("downsampleThreshold")
+                && n > 0
+            {
+                config.downsample_threshold = u32::try_from(n).unwrap_or(u32::MAX);
             }
 
             if let Some(n) = root.get("ports").and_then(|p| p.get("rust")).and_then(JsonValue::as_i64)

@@ -149,6 +149,20 @@ pub(crate) struct ReadingQuery {
     pub(crate) from: i64,
     pub(crate) to: i64,
     pub(crate) limit: Option<u32>,
+    pub(crate) downsample_ms: Option<i64>,
+}
+
+pub(crate) fn downsample_bucket(s: &str) -> Option<i64> {
+    match s {
+        "5m" => Some(300_000),
+        "10m" => Some(600_000),
+        "15m" => Some(900_000),
+        "30m" => Some(1_800_000),
+        "1h" => Some(3_600_000),
+        "1d" => Some(86_400_000),
+        "1w" => Some(604_800_000),
+        _ => None,
+    }
 }
 
 #[derive(Debug)]
@@ -184,8 +198,12 @@ impl Reading {
     pub(crate) fn to_json(&self) -> JsonValue {
         use crate::json::json_object;
 
-        json_object(vec![
-            ("id", JsonValue::from_i64(self.id)),
+        let mut fields = Vec::with_capacity(17);
+        // Downsampled rows have id=0 (no single row identity); omit id field.
+        if self.id != 0 {
+            fields.push(("id", JsonValue::from_i64(self.id)));
+        }
+        fields.extend_from_slice(&[
             ("timestamp", JsonValue::from_i64(self.timestamp)),
             ("device_id", JsonValue::String(self.device_id.clone())),
             ("device_type", JsonValue::String(self.device_type.clone())),
@@ -202,7 +220,8 @@ impl Reading {
             ("tvoc_index", opt_f64_json(self.tvoc_index)),
             ("nox_index", opt_f64_json(self.nox_index)),
             ("wifi", opt_i64_json(self.wifi)),
-        ])
+        ]);
+        json_object(fields)
     }
 }
 
@@ -240,6 +259,10 @@ pub(crate) fn query_readings(
     conn: &Connection,
     q: &ReadingQuery,
 ) -> Result<Vec<Reading>, AppError> {
+    if let Some(bucket) = q.downsample_ms {
+        return query_downsampled(conn, q, bucket);
+    }
+
     let want_device = q.device.as_ref().is_some_and(|d| d != "all");
 
     let cols = &*QUERY_COLS;
@@ -282,6 +305,122 @@ pub(crate) fn query_readings(
     };
 
     Ok(readings)
+}
+
+fn row_to_downsampled(row: &rusqlite::Row<'_>) -> rusqlite::Result<Reading> {
+    Ok(Reading {
+        id: 0,
+        timestamp: row.get(0)?,
+        device_id: row.get(1)?,
+        device_type: row.get(2)?,
+        device_ip: row.get(3)?,
+        pm01: row.get(4)?,
+        pm02: row.get(5)?,
+        pm10: row.get(6)?,
+        pm02_compensated: row.get(7)?,
+        rco2: row.get(8)?,
+        atmp: row.get(9)?,
+        atmp_compensated: row.get(10)?,
+        rhum: row.get(11)?,
+        rhum_compensated: row.get(12)?,
+        tvoc_index: row.get(13)?,
+        nox_index: row.get(14)?,
+        wifi: row.get(15)?,
+    })
+}
+
+fn query_downsampled(
+    conn: &Connection,
+    q: &ReadingQuery,
+    bucket: i64,
+) -> Result<Vec<Reading>, AppError> {
+    let want_device = q.device.as_ref().is_some_and(|d| d != "all");
+
+    // bucket is a trusted constant from downsample_bucket match, safe to interpolate
+    let mut sql = format!(
+        "SELECT (timestamp / {bucket}) * {bucket} AS timestamp, \
+         device_id, device_type, device_ip, \
+         AVG(pm01) AS pm01, AVG(pm02) AS pm02, AVG(pm10) AS pm10, \
+         AVG(pm02_compensated) AS pm02_compensated, \
+         CAST(AVG(rco2) AS INTEGER) AS rco2, \
+         AVG(atmp) AS atmp, AVG(atmp_compensated) AS atmp_compensated, \
+         AVG(rhum) AS rhum, AVG(rhum_compensated) AS rhum_compensated, \
+         AVG(tvoc_index) AS tvoc_index, AVG(nox_index) AS nox_index, \
+         CAST(AVG(wifi) AS INTEGER) AS wifi \
+         FROM readings WHERE "
+    );
+
+    let mut param_idx = 1u32;
+
+    if want_device {
+        let _ = write!(sql, "device_id = ?{param_idx} AND ");
+        param_idx += 1;
+    }
+
+    let from_idx = param_idx;
+    param_idx += 1;
+    let to_idx = param_idx;
+    param_idx += 1;
+
+    let _ = write!(
+        sql,
+        "timestamp >= ?{from_idx} AND timestamp <= ?{to_idx} \
+         GROUP BY (timestamp / {bucket}), device_id ORDER BY timestamp ASC"
+    );
+
+    if q.limit.is_some() {
+        let _ = write!(sql, " LIMIT ?{param_idx}");
+    }
+
+    let mut stmt = conn.prepare(&sql)?;
+
+    let readings = match (want_device, q.limit) {
+        (false, None) => stmt
+            .query_map(params![q.from, q.to], row_to_downsampled)?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+        (false, Some(limit)) => stmt
+            .query_map(params![q.from, q.to, limit], row_to_downsampled)?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+        (true, None) => stmt
+            .query_map(
+                params![q.device.as_ref().unwrap(), q.from, q.to],
+                row_to_downsampled,
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+        (true, Some(limit)) => stmt
+            .query_map(
+                params![q.device.as_ref().unwrap(), q.from, q.to, limit],
+                row_to_downsampled,
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?,
+    };
+
+    Ok(readings)
+}
+
+pub(crate) fn get_filtered_count(
+    conn: &Connection,
+    from: i64,
+    to: i64,
+    device: Option<&str>,
+) -> Result<i64, AppError> {
+    let want_device = device.is_some_and(|d| d != "all");
+
+    let count = if want_device {
+        conn.query_row(
+            "SELECT COUNT(*) FROM readings WHERE device_id = ?1 AND timestamp >= ?2 AND timestamp <= ?3",
+            params![device.unwrap(), from, to],
+            |row| row.get(0),
+        )?
+    } else {
+        conn.query_row(
+            "SELECT COUNT(*) FROM readings WHERE timestamp >= ?1 AND timestamp <= ?2",
+            params![from, to],
+            |row| row.get(0),
+        )?
+    };
+
+    Ok(count)
 }
 
 #[derive(Debug)]
@@ -372,7 +511,7 @@ mod tests {
 
         let readings = query_readings(
             &conn,
-            &ReadingQuery { device: None, from: 0, to: i64::MAX, limit: None },
+            &ReadingQuery { device: None, from: 0, to: i64::MAX, limit: None, downsample_ms: None },
         ).unwrap();
 
         assert_eq!(readings.len(), 1);
@@ -408,7 +547,7 @@ mod tests {
 
         let readings = query_readings(
             &conn,
-            &ReadingQuery { device: None, from: 0, to: i64::MAX, limit: None },
+            &ReadingQuery { device: None, from: 0, to: i64::MAX, limit: None, downsample_ms: None },
         ).unwrap();
 
         assert_eq!(readings.len(), 1);
@@ -426,7 +565,7 @@ mod tests {
 
         let readings = query_readings(
             &conn,
-            &ReadingQuery { device: None, from: 0, to: i64::MAX, limit: None },
+            &ReadingQuery { device: None, from: 0, to: i64::MAX, limit: None, downsample_ms: None },
         ).unwrap();
 
         assert_eq!(readings[0].pm02_compensated, Some(0.0));
@@ -442,7 +581,7 @@ mod tests {
 
         let readings = query_readings(
             &conn,
-            &ReadingQuery { device: Some("84fce602549c".to_string()), from: 0, to: i64::MAX, limit: None },
+            &ReadingQuery { device: Some("84fce602549c".to_string()), from: 0, to: i64::MAX, limit: None, downsample_ms: None },
         ).unwrap();
 
         assert_eq!(readings.len(), 1);
@@ -458,7 +597,7 @@ mod tests {
 
         let readings = query_readings(
             &conn,
-            &ReadingQuery { device: None, from: 0, to: i64::MAX, limit: Some(3) },
+            &ReadingQuery { device: None, from: 0, to: i64::MAX, limit: Some(3), downsample_ms: None },
         ).unwrap();
 
         assert_eq!(readings.len(), 3);
@@ -497,7 +636,7 @@ mod tests {
 
         let readings = query_readings(
             &conn,
-            &ReadingQuery { device: None, from: 0, to: i64::MAX, limit: None },
+            &ReadingQuery { device: None, from: 0, to: i64::MAX, limit: None, downsample_ms: None },
         ).unwrap();
 
         assert_eq!(readings[0].device_id, "unknown");
@@ -552,12 +691,151 @@ mod tests {
 
         let readings = query_readings(
             &conn,
-            &ReadingQuery { device: None, from: 0, to: i64::MAX, limit: None },
+            &ReadingQuery { device: None, from: 0, to: i64::MAX, limit: None, downsample_ms: None },
         ).unwrap();
 
         let json = readings[0].to_json();
         assert_eq!(json.get("device_id").unwrap().as_str(), Some("84fce602549c"));
         assert_eq!(json.get("device_type").unwrap().as_str(), Some("indoor"));
         assert_eq!(json.get("pm02").unwrap().as_f64(), Some(41.67));
+    }
+
+    #[test]
+    fn test_downsample_bucket_valid() {
+        assert_eq!(downsample_bucket("5m"), Some(300_000));
+        assert_eq!(downsample_bucket("10m"), Some(600_000));
+        assert_eq!(downsample_bucket("15m"), Some(900_000));
+        assert_eq!(downsample_bucket("30m"), Some(1_800_000));
+        assert_eq!(downsample_bucket("1h"), Some(3_600_000));
+        assert_eq!(downsample_bucket("1d"), Some(86_400_000));
+        assert_eq!(downsample_bucket("1w"), Some(604_800_000));
+    }
+
+    #[test]
+    fn test_downsample_bucket_invalid() {
+        assert_eq!(downsample_bucket("2m"), None);
+        assert_eq!(downsample_bucket("foo"), None);
+        assert_eq!(downsample_bucket(""), None);
+    }
+
+    #[test]
+    fn test_downsampled_query_groups_readings() {
+        let conn = setup_db();
+
+        let base_ts: i64 = 1_700_000_000_000;
+        let bucket_ms: i64 = 300_000; // 5m
+
+        // Insert 3 readings in the same 5m bucket with different pm02 values
+        for (i, pm) in [10.0, 20.0, 30.0].iter().enumerate() {
+            let ts = base_ts + (i as i64) * 1000; // 1s apart, same bucket
+            conn.execute(
+                "INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, raw_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                params![ts, "dev1", "indoor", "1.1.1.1", pm, "{}"],
+            ).unwrap();
+        }
+
+        // Insert 1 reading in a different bucket
+        let far_ts = base_ts + bucket_ms * 2;
+        conn.execute(
+            "INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, raw_json) VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![far_ts, "dev1", "indoor", "1.1.1.1", 100.0, "{}"],
+        ).unwrap();
+
+        let readings = query_readings(
+            &conn,
+            &ReadingQuery {
+                device: None,
+                from: 0,
+                to: i64::MAX,
+                limit: None,
+                downsample_ms: Some(bucket_ms),
+            },
+        ).unwrap();
+
+        // Should get 2 buckets
+        assert_eq!(readings.len(), 2);
+
+        // First bucket: average of 10, 20, 30 = 20
+        assert_eq!(readings[0].pm02, Some(20.0));
+        // id should be 0 for downsampled
+        assert_eq!(readings[0].id, 0);
+
+        // Second bucket: just 100
+        assert_eq!(readings[1].pm02, Some(100.0));
+    }
+
+    #[test]
+    fn test_downsampled_no_id_in_json() {
+        let r = Reading {
+            id: 0,
+            timestamp: 1_700_000_000_000,
+            device_id: "dev1".to_string(),
+            device_type: "indoor".to_string(),
+            device_ip: "1.1.1.1".to_string(),
+            pm01: None, pm02: Some(15.0), pm10: None,
+            pm02_compensated: None, rco2: None,
+            atmp: None, atmp_compensated: None,
+            rhum: None, rhum_compensated: None,
+            tvoc_index: None, nox_index: None, wifi: None,
+        };
+
+        let json = r.to_json();
+        assert!(json.get("id").is_none(), "downsampled reading (id=0) should not have 'id' field");
+        assert_eq!(json.get("pm02").unwrap().as_f64(), Some(15.0));
+    }
+
+    #[test]
+    fn test_non_downsampled_has_id_in_json() {
+        let r = Reading {
+            id: 5,
+            timestamp: 1_700_000_000_000,
+            device_id: "dev1".to_string(),
+            device_type: "indoor".to_string(),
+            device_ip: "1.1.1.1".to_string(),
+            pm01: None, pm02: None, pm10: None,
+            pm02_compensated: None, rco2: None,
+            atmp: None, atmp_compensated: None,
+            rhum: None, rhum_compensated: None,
+            tvoc_index: None, nox_index: None, wifi: None,
+        };
+
+        let json = r.to_json();
+        assert_eq!(json.get("id").unwrap().as_i64(), Some(5));
+    }
+
+    #[test]
+    fn test_get_filtered_count() {
+        let conn = setup_db();
+        let now = now_millis();
+
+        // Insert readings with known timestamps
+        conn.execute(
+            "INSERT INTO readings (timestamp, device_id, device_type, device_ip, raw_json) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![now - 10000, "dev1", "indoor", "1.1.1.1", "{}"],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO readings (timestamp, device_id, device_type, device_ip, raw_json) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![now - 5000, "dev1", "indoor", "1.1.1.1", "{}"],
+        ).unwrap();
+        conn.execute(
+            "INSERT INTO readings (timestamp, device_id, device_type, device_ip, raw_json) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![now - 3000, "dev2", "outdoor", "1.1.1.2", "{}"],
+        ).unwrap();
+
+        // All devices
+        let count = get_filtered_count(&conn, 0, now + 1000, Some("all")).unwrap();
+        assert_eq!(count, 3);
+
+        // Single device
+        let count = get_filtered_count(&conn, 0, now + 1000, Some("dev1")).unwrap();
+        assert_eq!(count, 2);
+
+        // No device filter
+        let count = get_filtered_count(&conn, 0, now + 1000, None).unwrap();
+        assert_eq!(count, 3);
+
+        // Time range filter
+        let count = get_filtered_count(&conn, now - 6000, now + 1000, Some("all")).unwrap();
+        assert_eq!(count, 2);
     }
 }

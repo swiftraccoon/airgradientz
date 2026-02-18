@@ -38,11 +38,22 @@ pub(crate) fn handle_readings(state: &AppState, req: &HttpRequest) -> HttpRespon
         state.config.max_api_rows
     };
 
+    // Parse downsample parameter
+    let downsample_ms = if let Some(ds) = req.query_param("downsample") {
+        match db::downsample_bucket(&ds) {
+            Some(bucket) => Some(bucket),
+            None => return HttpResponse::bad_request("invalid downsample value"),
+        }
+    } else {
+        None
+    };
+
     let query = ReadingQuery {
         device: Some(device.unwrap_or_else(|| "all".to_string())),
         from,
         to,
         limit: Some(effective_limit),
+        downsample_ms,
     };
 
     match db::query_readings(&conn, &query) {
@@ -52,6 +63,37 @@ pub(crate) fn handle_readings(state: &AppState, req: &HttpRequest) -> HttpRespon
         }
         Err(e) => {
             eprintln!("[api] query_readings error: {e}");
+            HttpResponse::internal_error("Internal server error")
+        }
+    }
+}
+
+pub(crate) fn handle_readings_count(state: &AppState, req: &HttpRequest) -> HttpResponse {
+    let Ok(conn) = state.db.lock() else {
+        return HttpResponse::internal_error("Internal server error");
+    };
+
+    let now = db::now_millis();
+
+    let from: i64 = req
+        .query_param("from")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(0);
+
+    let to: i64 = req
+        .query_param("to")
+        .and_then(|s| s.parse().ok())
+        .unwrap_or(now);
+
+    let device = req.query_param("device");
+
+    match db::get_filtered_count(&conn, from, to, device.as_deref()) {
+        Ok(count) => {
+            let body = json_object(vec![("count", JsonValue::from_i64(count))]);
+            HttpResponse::ok_json(&body)
+        }
+        Err(e) => {
+            eprintln!("[api] get_filtered_count error: {e}");
             HttpResponse::internal_error("Internal server error")
         }
     }
@@ -113,6 +155,10 @@ pub(crate) fn handle_config(state: &AppState) -> HttpResponse {
         (
             "pollIntervalMs",
             JsonValue::Number(f64::from(state.config.poll_interval_ms)),
+        ),
+        (
+            "downsampleThreshold",
+            JsonValue::Number(f64::from(state.config.downsample_threshold)),
         ),
         ("devices", json_array(devices)),
     ]);

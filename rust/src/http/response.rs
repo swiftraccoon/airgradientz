@@ -48,6 +48,17 @@ impl HttpResponse {
         resp
     }
 
+    pub(crate) fn bad_request(msg: &str) -> Self {
+        let body = format!("{{\"error\":\"{msg}\"}}").into_bytes();
+        let mut resp = Self::new(400, "Bad Request");
+        resp.headers
+            .push(("Content-Type".to_string(), "application/json".to_string()));
+        resp.headers
+            .push(("Content-Length".to_string(), body.len().to_string()));
+        resp.body = body;
+        resp
+    }
+
     pub(crate) fn not_found() -> Self {
         let body = b"{\"error\":\"Not found\"}".to_vec();
         let mut resp = Self::new(404, "Not Found");

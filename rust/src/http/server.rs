@@ -108,6 +108,7 @@ fn route_request(state: &AppState, req: &HttpRequest) -> HttpResponse {
         match req.path.as_str() {
             "/api/readings" => api::handle_readings(state, req),
             "/api/readings/latest" => api::handle_readings_latest(state),
+            "/api/readings/count" => api::handle_readings_count(state, req),
             "/api/devices" => api::handle_devices(state),
             "/api/health" => api::handle_health(state),
             "/api/config" => api::handle_config(state),
