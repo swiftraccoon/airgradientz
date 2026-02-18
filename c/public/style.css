@@ -45,6 +45,16 @@ header h1 { font-size: 1.4rem; }
   background: var(--card);
   border: 1px solid var(--border);
   border-radius: 6px;
+  cursor: pointer;
+  transition: opacity 0.15s;
+}
+
+.device-badge:hover {
+  border-color: var(--accent);
+}
+
+.device-badge.hidden {
+  opacity: 0.4;
 }
 
 .device-badge .dot {
@@ -57,10 +67,78 @@ header h1 { font-size: 1.4rem; }
 .dot.offline { background: #f87171; }
 .dot.unknown { background: #fbbf24; }
 
+/* Current values panel (Task 18) */
+
+#current-values {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
+  gap: 1rem;
+  margin-bottom: 1rem;
+}
+
+.current-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1rem;
+}
+
+.current-card-label {
+  font-size: 0.95rem;
+  font-weight: 500;
+  margin-bottom: 0.5rem;
+}
+
+.aqi-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.3rem 0.8rem;
+  border-radius: 6px;
+  font-weight: 600;
+  margin-bottom: 0.75rem;
+}
+
+.aqi-value {
+  font-size: 1.3rem;
+  font-weight: 700;
+}
+
+.aqi-category {
+  font-size: 0.8rem;
+  font-weight: 500;
+}
+
+.metric-grid {
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  gap: 0.5rem;
+}
+
+.metric {
+  text-align: center;
+}
+
+.metric-label {
+  font-size: 0.7rem;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  margin-bottom: 0.15rem;
+}
+
+.metric-value {
+  font-size: 1.1rem;
+  font-weight: 600;
+}
+
+/* Time range nav */
+
 #time-range {
   display: flex;
   gap: 0.4rem;
   margin-bottom: 1rem;
+  flex-wrap: wrap;
 }
 
 #time-range button {
@@ -80,6 +158,8 @@ header h1 { font-size: 1.4rem; }
   color: #fff;
   border-color: var(--accent);
 }
+
+/* Charts */
 
 #charts {
   display: grid;
@@ -106,3 +186,95 @@ header h1 { font-size: 1.4rem; }
 }
 
 canvas { width: 100% !important; }
+
+/* Downsample dialog (Task 20) */
+
+#downsample-dialog {
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 1.5rem;
+  max-width: 400px;
+  width: 90vw;
+}
+
+#downsample-dialog::backdrop {
+  background: rgba(0, 0, 0, 0.6);
+}
+
+#downsample-dialog h3 {
+  font-size: 1.1rem;
+  font-weight: 600;
+  margin-bottom: 0.5rem;
+}
+
+#downsample-dialog p {
+  font-size: 0.85rem;
+  color: var(--text-dim);
+  line-height: 1.4;
+  margin-bottom: 1rem;
+}
+
+#downsample-options {
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  margin-bottom: 1.25rem;
+}
+
+.radio-option {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: border-color 0.15s;
+}
+
+.radio-option:hover {
+  border-color: var(--accent);
+}
+
+.radio-option input[type="radio"] {
+  accent-color: var(--accent);
+}
+
+.dialog-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.dialog-actions button {
+  padding: 0.4rem 1rem;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  transition: all 0.15s;
+}
+
+#downsample-cancel {
+  background: var(--bg);
+  color: var(--text-dim);
+}
+
+#downsample-cancel:hover {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
+#downsample-load {
+  background: var(--accent);
+  color: #fff;
+  border-color: var(--accent);
+}
+
+#downsample-load:hover {
+  opacity: 0.9;
+}
