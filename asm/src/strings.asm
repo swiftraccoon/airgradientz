@@ -97,6 +97,42 @@ sql_devices_json:
     db `COUNT(*) AS cnt,MIN(timestamp) AS first_ts,MAX(timestamp) AS last_ts `
     db `FROM readings GROUP BY device_id);`, 0
 
+global sql_downsample_json
+sql_downsample_json:
+    db `SELECT COALESCE(json_group_array(json_object(`
+    db `'timestamp',timestamp,`
+    db `'device_id',device_id,'device_type',device_type,'device_ip',device_ip,`
+    db `'pm01',pm01,'pm02',pm02,'pm10',pm10,'pm02_compensated',pm02_compensated,`
+    db `'rco2',rco2,'atmp',atmp,'atmp_compensated',atmp_compensated,`
+    db `'rhum',rhum,'rhum_compensated',rhum_compensated,`
+    db `'tvoc_index',tvoc_index,'nox_index',nox_index,'wifi',wifi`
+    db `)),'[]') FROM (SELECT (timestamp / %lld) * %lld AS timestamp,`
+    db `device_id,device_type,device_ip,`
+    db `AVG(pm01) AS pm01,AVG(pm02) AS pm02,AVG(pm10) AS pm10,`
+    db `AVG(pm02_compensated) AS pm02_compensated,`
+    db `CAST(AVG(rco2) AS INTEGER) AS rco2,`
+    db `AVG(atmp) AS atmp,AVG(atmp_compensated) AS atmp_compensated,`
+    db `AVG(rhum) AS rhum,AVG(rhum_compensated) AS rhum_compensated,`
+    db `AVG(tvoc_index) AS tvoc_index,AVG(nox_index) AS nox_index,`
+    db `CAST(AVG(wifi) AS INTEGER) AS wifi`
+    db ` FROM readings`, 0
+
+global sql_ds_group_by
+sql_ds_group_by:
+    db ` GROUP BY (timestamp / %lld), device_id ORDER BY timestamp ASC LIMIT %d);`, 0
+
+global sql_count_filtered
+sql_count_filtered:
+    db `SELECT json_object('count', COUNT(*)) FROM readings`, 0
+
+global sql_count_where_ts
+sql_count_where_ts:
+    db ` WHERE timestamp >= %lld AND timestamp <= %lld`, 0
+
+global sql_count_and_device
+sql_count_and_device:
+    db ` AND device_id = ?`, 0
+
 global sql_count_readings
 sql_count_readings:
     db `SELECT COUNT(*) FROM readings;`, 0
@@ -151,6 +187,18 @@ http_405_response:
 global http_405_response_len
 http_405_response_len equ $ - http_405_response - 1
 
+global http_400_response
+http_400_response:
+    db `HTTP/1.1 400 Bad Request\r\n`
+    db `Content-Type: text/plain\r\n`
+    db `Content-Length: 11\r\n`
+    db `X-Content-Type-Options: nosniff\r\n`
+    db `X-Frame-Options: DENY\r\n`
+    db `Connection: close\r\n`
+    db `\r\nBad Request`, 0
+global http_400_response_len
+http_400_response_len equ $ - http_400_response - 1
+
 global http_500_response
 http_500_response:
     db `HTTP/1.1 500 Internal Server Error\r\n`
@@ -175,7 +223,7 @@ fmt_stats_json:
 global fmt_config_json
 fmt_config_json:
     db `{"pollIntervalMs":%d,"fetchTimeoutMs":%d,"maxApiRows":%d,`
-    db `"devices":[`, 0
+    db `"downsampleThreshold":%d,"devices":[`, 0
 
 global fmt_config_device
 fmt_config_device:
@@ -273,6 +321,10 @@ str_key_ports:
 global str_key_asm
 str_key_asm:
     db `"asm"`, 0
+
+global str_key_downsample_threshold
+str_key_downsample_threshold:
+    db `"downsampleThreshold"`, 0
 
 ; ── AirGradient response keys ────────────────────────────────────────────────
 
@@ -414,6 +466,10 @@ global route_api_readings_latest
 route_api_readings_latest:
     db `/api/readings/latest`, 0
 
+global route_api_readings_count
+route_api_readings_count:
+    db `/api/readings/count`, 0
+
 global route_api_readings
 route_api_readings:
     db `/api/readings`, 0
@@ -489,6 +545,33 @@ str_param_device:
 global str_param_limit
 str_param_limit:
     db `limit`, 0
+
+global str_param_downsample
+str_param_downsample:
+    db `downsample`, 0
+
+; Downsample valid values
+global str_ds_5m
+str_ds_5m:
+    db `5m`, 0
+global str_ds_10m
+str_ds_10m:
+    db `10m`, 0
+global str_ds_15m
+str_ds_15m:
+    db `15m`, 0
+global str_ds_30m
+str_ds_30m:
+    db `30m`, 0
+global str_ds_1h
+str_ds_1h:
+    db `1h`, 0
+global str_ds_1d
+str_ds_1d:
+    db `1d`, 0
+global str_ds_1w
+str_ds_1w:
+    db `1w`, 0
 
 ; ── Misc format strings ──────────────────────────────────────────────────────
 

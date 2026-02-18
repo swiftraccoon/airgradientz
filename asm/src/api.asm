@@ -2,24 +2,28 @@
 ; Each handler: (query_string, &resp_ptr, &resp_len)
 default rel
 
-extern snprintf, malloc, memcpy, strlen, free, strdup
+extern snprintf, malloc, memcpy, strlen, free, strdup, strcmp
 extern atoll, atoi
 extern parse_query_param
-extern db_get_readings, db_get_latest, db_get_devices
+extern db_get_readings, db_get_readings_downsampled, db_get_latest, db_get_devices
+extern db_get_filtered_count
 extern clock_gettime, fprintf, fopen, fread, fclose
 extern stderr
 
 extern pthread_rwlock_rdlock, pthread_rwlock_unlock
 
-extern g_port, g_poll_interval_ms, g_fetch_timeout_ms, g_max_api_rows
+extern g_port, g_poll_interval_ms, g_fetch_timeout_ms, g_max_api_rows, g_downsample_threshold
 extern g_devices, g_device_count
 extern g_requests_served, g_active_conns, g_poll_successes, g_poll_failures
 extern g_started_at, g_health, g_health_lock
 
-extern http_200_json_hdr, http_500_response, http_500_response_len
+extern http_200_json_hdr, http_400_response, http_400_response_len
+extern http_500_response, http_500_response_len
 extern fmt_stats_json, fmt_config_json, fmt_config_device
 extern fmt_health_entry
 extern str_null_json, str_param_from, str_param_to, str_param_device, str_param_limit
+extern str_param_downsample
+extern str_ds_5m, str_ds_10m, str_ds_15m, str_ds_30m, str_ds_1h, str_ds_1d, str_ds_1w
 extern str_proc_statm
 
 section .rodata
@@ -120,14 +124,24 @@ handle_readings:
     push r13
     push r14
     push r15
-    sub rsp, 280           ; param buffers + saved query ptr
+    sub rsp, 344           ; param buffers + saved query ptr + downsample buf
 
-    mov [rsp + 256], rdi    ; save original query pointer
+    ; Stack layout:
+    ;   [rsp+0..63]    from buffer
+    ;   [rsp+64..127]  to buffer
+    ;   [rsp+128..191] device buffer
+    ;   [rsp+192..255] limit buffer
+    ;   [rsp+256..319] downsample buffer
+    ;   [rsp+320]      saved query pointer (8 bytes)
+    ;   [rsp+328]      bucket_ms (8 bytes)
+
+    mov [rsp + 320], rdi    ; save original query pointer
     mov r13, rsi            ; &resp_ptr
     mov r14, rdx            ; &resp_len
+    mov qword [rsp + 328], 0  ; bucket_ms = 0 (no downsample)
 
     ; Parse 'from'
-    mov rdi, [rsp + 256]
+    mov rdi, [rsp + 320]
     lea rsi, [str_param_from]
     lea rdx, [rsp]
     mov ecx, 63
@@ -142,7 +156,7 @@ handle_readings:
     xor r15d, r15d
 
 .hr_parse_to:
-    mov rdi, [rsp + 256]
+    mov rdi, [rsp + 320]
     lea rsi, [str_param_to]
     lea rdx, [rsp + 64]
     mov ecx, 63
@@ -157,7 +171,7 @@ handle_readings:
     mov rbx, 0x7FFFFFFFFFFFFFFF
 
 .hr_parse_device:
-    mov rdi, [rsp + 256]
+    mov rdi, [rsp + 320]
     lea rsi, [str_param_device]
     lea rdx, [rsp + 128]
     mov ecx, 63
@@ -170,7 +184,7 @@ handle_readings:
     xor r12d, r12d           ; NULL = all
 
 .hr_parse_limit:
-    mov rdi, [rsp + 256]
+    mov rdi, [rsp + 320]
     lea rsi, [str_param_limit]
     lea rdx, [rsp + 192]
     mov ecx, 63
@@ -185,18 +199,111 @@ handle_readings:
     jle .hr_limit_ok
     mov eax, [g_max_api_rows]
 .hr_limit_ok:
-    mov ecx, eax
-    jmp .hr_query
+    mov [rsp + 336], eax    ; save limit temporarily
+    jmp .hr_parse_downsample
 .hr_default_limit:
-    mov ecx, [g_max_api_rows]
+    mov eax, [g_max_api_rows]
+    mov [rsp + 336], eax
+
+.hr_parse_downsample:
+    mov rdi, [rsp + 320]
+    lea rsi, [str_param_downsample]
+    lea rdx, [rsp + 256]
+    mov ecx, 63
+    call parse_query_param
+    test eax, eax
+    jnz .hr_query           ; no downsample param — proceed normally
+
+    ; Validate downsample value — check against known strings
+    lea rdi, [rsp + 256]
+    lea rsi, [str_ds_5m]
+    call strcmp wrt ..plt
+    test eax, eax
+    jz .hr_ds_5m
+
+    lea rdi, [rsp + 256]
+    lea rsi, [str_ds_10m]
+    call strcmp wrt ..plt
+    test eax, eax
+    jz .hr_ds_10m
+
+    lea rdi, [rsp + 256]
+    lea rsi, [str_ds_15m]
+    call strcmp wrt ..plt
+    test eax, eax
+    jz .hr_ds_15m
+
+    lea rdi, [rsp + 256]
+    lea rsi, [str_ds_30m]
+    call strcmp wrt ..plt
+    test eax, eax
+    jz .hr_ds_30m
+
+    lea rdi, [rsp + 256]
+    lea rsi, [str_ds_1h]
+    call strcmp wrt ..plt
+    test eax, eax
+    jz .hr_ds_1h
+
+    lea rdi, [rsp + 256]
+    lea rsi, [str_ds_1d]
+    call strcmp wrt ..plt
+    test eax, eax
+    jz .hr_ds_1d
+
+    lea rdi, [rsp + 256]
+    lea rsi, [str_ds_1w]
+    call strcmp wrt ..plt
+    test eax, eax
+    jz .hr_ds_1w
+
+    ; Invalid downsample value — return 400
+    jmp .hr_bad_request
+
+.hr_ds_5m:
+    mov qword [rsp + 328], 300000
+    jmp .hr_query
+.hr_ds_10m:
+    mov qword [rsp + 328], 600000
+    jmp .hr_query
+.hr_ds_15m:
+    mov qword [rsp + 328], 900000
+    jmp .hr_query
+.hr_ds_30m:
+    mov qword [rsp + 328], 1800000
+    jmp .hr_query
+.hr_ds_1h:
+    mov qword [rsp + 328], 3600000
+    jmp .hr_query
+.hr_ds_1d:
+    mov qword [rsp + 328], 86400000
+    jmp .hr_query
+.hr_ds_1w:
+    mov qword [rsp + 328], 604800000
+    jmp .hr_query
 
 .hr_query:
+    mov ecx, [rsp + 336]    ; limit
+    cmp qword [rsp + 328], 0
+    jne .hr_downsample_query
+
+    ; Normal query (no downsample)
     mov rdi, r15            ; from
     mov rsi, rbx            ; to
     mov rdx, r12            ; device (NULL or ptr)
                              ; ecx = limit
     call db_get_readings
+    jmp .hr_check_result
 
+.hr_downsample_query:
+    mov rdi, r15            ; from
+    mov rsi, rbx            ; to
+    mov rdx, r12            ; device (NULL or ptr)
+                             ; ecx = limit
+    mov r8, [rsp + 328]     ; bucket_ms
+    call db_get_readings_downsampled
+
+.hr_check_result:
     test rax, rax
     jz .hr_error
 
@@ -206,11 +313,119 @@ handle_readings:
     call build_json_response
     jmp .hr_done
 
+.hr_bad_request:
+    ; Return 400 Bad Request
+    mov rdi, http_400_response_len + 1
+    call malloc wrt ..plt
+    test rax, rax
+    jz .hr_error
+    mov [r13], rax
+    mov rdi, rax
+    lea rsi, [http_400_response]
+    mov rdx, http_400_response_len
+    call memcpy wrt ..plt
+    mov qword [r14], http_400_response_len
+    jmp .hr_done
+
 .hr_error:
     mov qword [r13], 0
     mov qword [r14], 0
 
 .hr_done:
+    add rsp, 344
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+
+; ── handle_readings_count(query, &resp_ptr, &resp_len) ────────────────────────
+global handle_readings_count
+handle_readings_count:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 280           ; param buffers
+
+    ; Stack layout:
+    ;   [rsp+0..63]    from buffer
+    ;   [rsp+64..127]  to buffer
+    ;   [rsp+128..191] device buffer
+    ;   [rsp+256]      saved query pointer (8 bytes)
+
+    mov [rsp + 256], rdi    ; save original query pointer
+    mov r13, rsi            ; &resp_ptr
+    mov r14, rdx            ; &resp_len
+
+    ; Parse 'from'
+    mov rdi, [rsp + 256]
+    lea rsi, [str_param_from]
+    lea rdx, [rsp]
+    mov ecx, 63
+    call parse_query_param
+    test eax, eax
+    jnz .hrc_no_from
+    lea rdi, [rsp]
+    call atoll wrt ..plt
+    mov r15, rax
+    jmp .hrc_parse_to
+.hrc_no_from:
+    xor r15d, r15d
+
+.hrc_parse_to:
+    mov rdi, [rsp + 256]
+    lea rsi, [str_param_to]
+    lea rdx, [rsp + 64]
+    mov ecx, 63
+    call parse_query_param
+    test eax, eax
+    jnz .hrc_no_to
+    lea rdi, [rsp + 64]
+    call atoll wrt ..plt
+    mov rbx, rax
+    jmp .hrc_parse_device
+.hrc_no_to:
+    mov rbx, 0x7FFFFFFFFFFFFFFF
+
+.hrc_parse_device:
+    mov rdi, [rsp + 256]
+    lea rsi, [str_param_device]
+    lea rdx, [rsp + 128]
+    mov ecx, 63
+    call parse_query_param
+    test eax, eax
+    jnz .hrc_no_device
+    lea r12, [rsp + 128]     ; device ptr
+    jmp .hrc_query
+.hrc_no_device:
+    xor r12d, r12d           ; NULL = all
+
+.hrc_query:
+    mov rdi, r15            ; from
+    mov rsi, rbx            ; to
+    mov rdx, r12            ; device (NULL or ptr)
+    call db_get_filtered_count
+
+    test rax, rax
+    jz .hrc_error
+
+    mov rdi, rax
+    mov rsi, r13
+    mov rdx, r14
+    call build_json_response
+    jmp .hrc_done
+
+.hrc_error:
+    mov qword [r13], 0
+    mov qword [r14], 0
+
+.hrc_done:
     add rsp, 280
     pop r15
     pop r14
@@ -516,7 +731,12 @@ handle_config:
     mov r14, rdx
 
     ; Build config JSON header
-    lea rdi, [rsp]
+    ; fmt_config_json has 4 %d: pollIntervalMs, fetchTimeoutMs, maxApiRows, downsampleThreshold
+    ; 7th snprintf arg goes on stack; sub 16 for alignment (need rsp 0 mod 16 before call)
+    sub rsp, 16
+    mov eax, [g_downsample_threshold]
+    mov [rsp], rax              ; 7th arg (stack) = downsampleThreshold
+    lea rdi, [rsp + 16]        ; buffer (starts after our 16-byte stack arg area)
     mov esi, 4096
     lea rdx, [fmt_config_json]
     mov ecx, [g_poll_interval_ms]
@@ -525,6 +745,7 @@ handle_config:
     xor eax, eax
     xor ebx, ebx
     call snprintf wrt ..plt
+    add rsp, 16
     CLAMP_ADV 4096
 
     ; Add devices

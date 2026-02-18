@@ -9,6 +9,7 @@ extern stderr
 extern str_port_env, str_db_path_env, str_config_path_env
 extern str_default_db, str_config_local, str_config_parent
 extern str_key_poll_interval, str_key_fetch_timeout, str_key_max_api_rows
+extern str_key_downsample_threshold
 extern str_key_devices, str_key_ip, str_key_label, str_key_ports, str_key_asm
 extern log_config_loaded
 extern MAX_DEVICES, MAX_CONFIG_SIZE
@@ -28,6 +29,9 @@ g_fetch_timeout_ms: resd 1
 
 global g_max_api_rows
 g_max_api_rows: resd 1
+
+global g_downsample_threshold
+g_downsample_threshold: resd 1
 
 global g_db_path
 g_db_path: resq 1
@@ -271,6 +275,7 @@ load_config:
     mov dword [g_poll_interval_ms], 15000
     mov dword [g_fetch_timeout_ms], 5000
     mov dword [g_max_api_rows], 10000
+    mov dword [g_downsample_threshold], 10000
     mov dword [g_device_count], 0
 
     ; Default DB path
@@ -339,6 +344,14 @@ load_config:
     je .skip_max_rows
     mov [g_max_api_rows], eax
 .skip_max_rows:
+
+    lea rdi, [rsp]
+    lea rsi, [str_key_downsample_threshold]
+    call extract_int
+    cmp eax, -1
+    je .skip_ds_threshold
+    mov [g_downsample_threshold], eax
+.skip_ds_threshold:
 
     ; Parse port from ports.asm key
     lea rdi, [rsp]

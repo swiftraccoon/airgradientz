@@ -13,6 +13,8 @@ extern g_db, g_db_mutex
 extern sql_schema, sql_pragma, sql_insert_reading
 extern sql_readings_json, sql_where_ts, sql_and_device, sql_where_device
 extern sql_order_limit, sql_order_limit_close
+extern sql_downsample_json, sql_ds_group_by
+extern sql_count_filtered, sql_count_where_ts, sql_count_and_device
 extern sql_latest_json, sql_devices_json, sql_count_readings, sql_checkpoint
 extern log_db_opened
 extern MAX_QUERY_SIZE
@@ -407,8 +409,190 @@ db_get_readings:
 section .rodata
 fmt_str: db `%s`, 0
 str_null: db `NULL`, 0
+fmt_count_end: db `;`, 0
 
 section .text
+
+; ── db_get_readings_downsampled(from, to, device, limit, bucket_ms) → JSON ──
+; rdi = from (int64), rsi = to (int64), rdx = device (string or NULL),
+; ecx = limit (int), r8 = bucket_ms (int64)
+global db_get_readings_downsampled
+db_get_readings_downsampled:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 4120           ; query buffer
+
+    mov r12, rdi            ; from
+    mov r13, rsi            ; to
+    mov r14, rdx            ; device
+    mov r15d, ecx           ; limit
+    mov [rsp + 4104], r8    ; save bucket_ms at end of buffer area
+
+    ; Build downsample query base with bucket_ms interpolated
+    mov rcx, [rsp + 4104]   ; bucket_ms (1st %lld)
+    mov r8, [rsp + 4104]    ; bucket_ms (2nd %lld)
+    lea rdi, [rsp]
+    mov esi, 4096
+    lea rdx, [sql_downsample_json]
+    xor eax, eax
+    call snprintf wrt ..plt
+    mov ebx, eax            ; current length
+
+    ; Add WHERE clause — timestamp filter always present
+    ; Set defaults
+    test r12, r12
+    jnz .grd_from_ok
+    xor r12d, r12d
+.grd_from_ok:
+    test r13, r13
+    jnz .grd_to_ok
+    mov r13, 0x7FFFFFFFFFFFFFFF
+.grd_to_ok:
+
+    lea rdi, [rsp + rbx]
+    mov esi, 4096
+    sub esi, ebx
+    lea rdx, [sql_where_ts]
+    mov rcx, r12            ; from
+    mov r8, r13             ; to
+    xor eax, eax
+    call snprintf wrt ..plt
+    add ebx, eax
+
+    ; Add device filter if specified
+    test r14, r14
+    jz .grd_add_group
+    cmp byte [r14], 0
+    je .grd_clear_device
+
+    lea rdi, [rsp + rbx]
+    mov esi, 4096
+    sub esi, ebx
+    lea rdx, [fmt_str]
+    lea rcx, [sql_and_device]
+    xor eax, eax
+    call snprintf wrt ..plt
+    add ebx, eax
+    jmp .grd_add_group
+
+.grd_clear_device:
+    xor r14d, r14d
+
+.grd_add_group:
+    ; Add GROUP BY ... ORDER BY ... LIMIT ... closing paren
+    lea rdi, [rsp + rbx]
+    mov esi, 4096
+    sub esi, ebx
+    lea rdx, [sql_ds_group_by]
+    mov rcx, [rsp + 4104]   ; bucket_ms
+    mov r8d, r15d            ; limit
+    xor eax, eax
+    call snprintf wrt ..plt
+
+    ; Execute query with optional device binding
+    lea rdi, [rsp]
+    mov rsi, r14
+    call db_query_json_bind1
+
+    add rsp, 4120
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
+
+; ── db_get_filtered_count(from, to, device) → JSON string ─────────────────────
+; rdi = from (int64), rsi = to (int64), rdx = device (string or NULL)
+; Returns strdup'd JSON like {"count": 123}
+global db_get_filtered_count
+db_get_filtered_count:
+    push rbp
+    mov rbp, rsp
+    push rbx
+    push r12
+    push r13
+    push r14
+    push r15
+    sub rsp, 4120
+
+    mov r12, rdi            ; from
+    mov r13, rsi            ; to
+    mov r14, rdx            ; device
+    ; r15 not used here but pushed for alignment
+
+    ; Build base: "SELECT json_object('count', COUNT(*)) FROM readings"
+    lea rdi, [rsp]
+    mov esi, 4096
+    lea rdx, [fmt_str]
+    lea rcx, [sql_count_filtered]
+    xor eax, eax
+    call snprintf wrt ..plt
+    mov ebx, eax
+
+    ; Add WHERE timestamp clause
+    test r12, r12
+    jnz .gfc_from_ok
+    xor r12d, r12d
+.gfc_from_ok:
+    test r13, r13
+    jnz .gfc_to_ok
+    mov r13, 0x7FFFFFFFFFFFFFFF
+.gfc_to_ok:
+
+    lea rdi, [rsp + rbx]
+    mov esi, 4096
+    sub esi, ebx
+    lea rdx, [sql_count_where_ts]
+    mov rcx, r12
+    mov r8, r13
+    xor eax, eax
+    call snprintf wrt ..plt
+    add ebx, eax
+
+    ; Add device filter if specified
+    test r14, r14
+    jz .gfc_finalize
+    cmp byte [r14], 0
+    je .gfc_clear_device
+
+    lea rdi, [rsp + rbx]
+    mov esi, 4096
+    sub esi, ebx
+    lea rdx, [fmt_str]
+    lea rcx, [sql_count_and_device]
+    xor eax, eax
+    call snprintf wrt ..plt
+    add ebx, eax
+    jmp .gfc_finalize
+
+.gfc_clear_device:
+    xor r14d, r14d
+
+.gfc_finalize:
+    ; Add semicolon
+    mov byte [rsp + rbx], ';'
+    mov byte [rsp + rbx + 1], 0
+
+    ; Execute with optional device binding
+    lea rdi, [rsp]
+    mov rsi, r14
+    call db_query_json_bind1
+
+    add rsp, 4120
+    pop r15
+    pop r14
+    pop r13
+    pop r12
+    pop rbx
+    pop rbp
+    ret
 
 ; ── db_get_latest() → JSON string ────────────────────────────────────────────
 global db_get_latest

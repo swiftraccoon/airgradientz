@@ -413,6 +413,68 @@ fi
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════
+# DOWNSAMPLE
+# ═══════════════════════════════════════════════════════════════════
+
+echo "--- Downsample ---"
+
+body=$(curl -sf "${BASE}/api/readings?downsample=1h")
+ds_count=$(jq 'length' <<< "${body}")
+if (( ds_count > 0 )); then
+    PASS=$(( PASS + 1 ))
+    # Downsampled results should NOT have 'id' field
+    first_has_id=$(jq '.[0] | has("id")' <<< "${body}")
+    assert_eq "downsample omits id field" "false" "${first_has_id}"
+    # Should still have standard fields
+    assert_json_not_null "downsample has timestamp" "${body}" '.[0].timestamp'
+    assert_json_not_null "downsample has device_id" "${body}" '.[0].device_id'
+else
+    FAIL=$(( FAIL + 1 ))
+    ERRORS+=("FAIL: downsample=1h should return data, got 0")
+    echo "  FAIL: downsample=1h returns data" >&2
+fi
+
+# Invalid downsample returns 400
+code=$(curl -s -o /dev/null -w "%{http_code}" "${BASE}/api/readings?downsample=invalid" 2>/dev/null) || code="000"
+assert_eq "downsample=invalid returns 400" "400" "${code}"
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════
+# READINGS COUNT
+# ═══════════════════════════════════════════════════════════════════
+
+echo "--- Readings count ---"
+
+body=$(curl -sf "${BASE}/api/readings/count")
+total_count=$(jq '.count' <<< "${body}")
+if (( total_count > 0 )); then
+    PASS=$(( PASS + 1 ))
+else
+    FAIL=$(( FAIL + 1 ))
+    ERRORS+=("FAIL: readings/count should be > 0, got ${total_count}")
+    echo "  FAIL: readings/count > 0" >&2
+fi
+
+# Count with device filter
+body=$(curl -sf "${BASE}/api/readings/count?device=${INDOOR_SERIAL}")
+device_count=$(jq '.count' <<< "${body}")
+assert_eq "readings/count for indoor device is 2" "2" "${device_count}"
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════
+# CONFIG DOWNSAMPLE THRESHOLD
+# ═══════════════════════════════════════════════════════════════════
+
+echo "--- Config downsampleThreshold ---"
+
+body=$(curl -sf "${BASE}/api/config")
+assert_json_field "config has downsampleThreshold" "${body}" '.downsampleThreshold' "10000"
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════
 # SQL DRIFT VALIDATION (source-level checks against queries.sql)
 # ═══════════════════════════════════════════════════════════════════
 

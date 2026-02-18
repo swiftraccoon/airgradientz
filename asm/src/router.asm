@@ -4,11 +4,11 @@ default rel
 extern strcmp, strlen, strncmp, snprintf, malloc, memcpy, free
 extern url_decode
 
-extern handle_readings, handle_readings_latest
+extern handle_readings, handle_readings_count, handle_readings_latest
 extern handle_devices, handle_health, handle_config, handle_stats
 extern serve_static_file
 
-extern route_api_readings_latest, route_api_readings
+extern route_api_readings_latest, route_api_readings_count, route_api_readings
 extern route_api_devices, route_api_health, route_api_config, route_api_stats
 extern str_get, str_slash
 
@@ -121,6 +121,13 @@ route_request:
     test eax, eax
     jz .route_readings_latest
 
+    ; /api/readings/count (exact match, check before prefix /api/readings)
+    lea rdi, [rsp]
+    lea rsi, [route_api_readings_count]
+    call strcmp wrt ..plt
+    test eax, eax
+    jz .route_readings_count
+
     ; /api/readings (prefix match)
     lea rdi, [rsp]
     lea rsi, [route_api_readings]
@@ -169,6 +176,13 @@ route_request:
     mov rsi, r13
     mov rdx, r14
     call handle_readings_latest
+    jmp .rr_done
+
+.route_readings_count:
+    lea rdi, [rsp + 512]
+    mov rsi, r13
+    mov rdx, r14
+    call handle_readings_count
     jmp .rr_done
 
 .route_readings:
