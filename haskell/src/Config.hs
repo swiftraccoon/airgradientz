@@ -31,21 +31,23 @@ instance FromJSON DeviceConfig where
     DeviceConfig <$> o .: "ip" <*> o .: "label"
 
 data Config = Config
-  { cfgPort           :: !Word16
-  , cfgDBPath         :: !FilePath
-  , cfgDevices        :: ![DeviceConfig]
-  , cfgPollIntervalMs :: !Int
-  , cfgFetchTimeoutMs :: !Int
-  , cfgMaxApiRows     :: !Int
+  { cfgPort                :: !Word16
+  , cfgDBPath              :: !FilePath
+  , cfgDevices             :: ![DeviceConfig]
+  , cfgPollIntervalMs      :: !Int
+  , cfgFetchTimeoutMs      :: !Int
+  , cfgMaxApiRows          :: !Int
+  , cfgDownsampleThreshold :: !Int
   } deriving (Show)
 
 data ConfigFile = ConfigFile
-  { cfPorts          :: !(Maybe (KM.KeyMap Int))
-  , cfDevices        :: !(Maybe [DeviceConfig])
-  , cfPollIntervalMs :: !(Maybe Int)
-  , cfFetchTimeoutMs :: !(Maybe Int)
-  , cfMaxApiRows     :: !(Maybe Int)
-  , cfDefaults       :: !(Maybe ConfigFile)
+  { cfPorts                :: !(Maybe (KM.KeyMap Int))
+  , cfDevices              :: !(Maybe [DeviceConfig])
+  , cfPollIntervalMs       :: !(Maybe Int)
+  , cfFetchTimeoutMs       :: !(Maybe Int)
+  , cfMaxApiRows           :: !(Maybe Int)
+  , cfDownsampleThreshold  :: !(Maybe Int)
+  , cfDefaults             :: !(Maybe ConfigFile)
   }
 
 instance FromJSON ConfigFile where
@@ -56,15 +58,17 @@ instance FromJSON ConfigFile where
       <*> o .:? "pollIntervalMs"
       <*> o .:? "fetchTimeoutMs"
       <*> o .:? "maxApiRows"
+      <*> o .:? "downsampleThreshold"
       <*> o .:? "defaults"
 
 defaultPort :: Word16
 defaultPort = 3019
 
-defaultPollIntervalMs, defaultFetchTimeoutMs, defaultMaxApiRows :: Int
+defaultPollIntervalMs, defaultFetchTimeoutMs, defaultMaxApiRows, defaultDownsampleThreshold :: Int
 defaultPollIntervalMs = 15000
 defaultFetchTimeoutMs = 5000
 defaultMaxApiRows = 10000
+defaultDownsampleThreshold = 10000
 
 maxConfigFileSize :: Int
 maxConfigFileSize = 1048576
@@ -72,12 +76,13 @@ maxConfigFileSize = 1048576
 loadConfig :: IO Config
 loadConfig = do
   let baseCfg = Config
-        { cfgPort           = defaultPort
-        , cfgDBPath         = "./airgradientz.db"
-        , cfgDevices        = defaultDevices
-        , cfgPollIntervalMs = defaultPollIntervalMs
-        , cfgFetchTimeoutMs = defaultFetchTimeoutMs
-        , cfgMaxApiRows     = defaultMaxApiRows
+        { cfgPort                = defaultPort
+        , cfgDBPath              = "./airgradientz.db"
+        , cfgDevices             = defaultDevices
+        , cfgPollIntervalMs      = defaultPollIntervalMs
+        , cfgFetchTimeoutMs      = defaultFetchTimeoutMs
+        , cfgMaxApiRows          = defaultMaxApiRows
+        , cfgDownsampleThreshold = defaultDownsampleThreshold
         }
   cfg <- loadFromFile baseCfg
   applyEnvOverrides cfg
@@ -130,10 +135,11 @@ applyConfigFile cfg cf =
 
 applyValues :: Config -> ConfigFile -> Config
 applyValues cfg cf = cfg
-  { cfgDevices        = fromMaybe (cfgDevices cfg) (cfDevices cf)
-  , cfgPollIntervalMs = applyPositive (cfgPollIntervalMs cfg) (cfPollIntervalMs cf)
-  , cfgFetchTimeoutMs = applyPositive (cfgFetchTimeoutMs cfg) (cfFetchTimeoutMs cf)
-  , cfgMaxApiRows     = applyPositive (cfgMaxApiRows cfg) (cfMaxApiRows cf)
+  { cfgDevices             = fromMaybe (cfgDevices cfg) (cfDevices cf)
+  , cfgPollIntervalMs      = applyPositive (cfgPollIntervalMs cfg) (cfPollIntervalMs cf)
+  , cfgFetchTimeoutMs      = applyPositive (cfgFetchTimeoutMs cfg) (cfFetchTimeoutMs cf)
+  , cfgMaxApiRows          = applyPositive (cfgMaxApiRows cfg) (cfMaxApiRows cf)
+  , cfgDownsampleThreshold = applyPositive (cfgDownsampleThreshold cfg) (cfDownsampleThreshold cf)
   }
 
 applyPositive :: Int -> Maybe Int -> Int

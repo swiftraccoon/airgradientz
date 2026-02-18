@@ -7,6 +7,7 @@ module DB
   , getLatestReadings
   , getDevices
   , getReadingsCount
+  , getFilteredCount
   , checkpoint
   , nowMillis
   , Reading(..)
@@ -72,10 +73,11 @@ data DeviceSummary = DeviceSummary
   } deriving (Show, Eq)
 
 data ReadingQuery = ReadingQuery
-  { rqDevice :: !T.Text
-  , rqFrom   :: !Int64
-  , rqTo     :: !Int64
-  , rqLimit  :: !Int
+  { rqDevice       :: !T.Text
+  , rqFrom         :: !Int64
+  , rqTo           :: !Int64
+  , rqLimit        :: !Int
+  , rqDownsampleMs :: !Int64
   } deriving (Show)
 
 -- | Default query SQL (fallback if queries.sql not found).
@@ -230,9 +232,14 @@ insertReading h ip jsonVal = do
     _ <- SQL.step stmt
     pure ()
 
--- | Query readings with optional device filter and limit.
+-- | Query readings with optional device filter, limit, and downsampling.
 queryReadings :: DBHandle -> ReadingQuery -> IO [Reading]
-queryReadings h q = do
+queryReadings h q
+  | rqDownsampleMs q > 0 = queryDownsampled h q
+  | otherwise = queryNormal h q
+
+queryNormal :: DBHandle -> ReadingQuery -> IO [Reading]
+queryNormal h q = do
   let wantDevice = rqDevice q /= "" && rqDevice q /= "all"
       cols = T.replace "\n" " " (dbQueryCols h)
       baseSql = "SELECT " <> cols <> " FROM readings WHERE "
@@ -258,6 +265,79 @@ queryReadings h q = do
   bracket (SQL.prepare (dbConn h) fullSql) SQL.finalize $ \stmt -> do
     SQL.bindNamed stmt params
     collectReadings stmt
+
+queryDownsampled :: DBHandle -> ReadingQuery -> IO [Reading]
+queryDownsampled h q = do
+  let wantDevice = rqDevice q /= "" && rqDevice q /= "all"
+      bucket = T.pack (show (rqDownsampleMs q))
+      selectCols = "(timestamp / " <> bucket <> ") * " <> bucket <> " AS timestamp, "
+                <> "device_id, device_type, device_ip, "
+                <> "AVG(pm01) AS pm01, AVG(pm02) AS pm02, AVG(pm10) AS pm10, "
+                <> "AVG(pm02_compensated) AS pm02_compensated, "
+                <> "CAST(AVG(rco2) AS INTEGER) AS rco2, "
+                <> "AVG(atmp) AS atmp, AVG(atmp_compensated) AS atmp_compensated, "
+                <> "AVG(rhum) AS rhum, AVG(rhum_compensated) AS rhum_compensated, "
+                <> "AVG(tvoc_index) AS tvoc_index, AVG(nox_index) AS nox_index, "
+                <> "CAST(AVG(wifi) AS INTEGER) AS wifi"
+      baseSql = "SELECT " <> selectCols <> " FROM readings WHERE "
+      (whereSql, params)
+        | wantDevice =
+            ( "device_id = :device AND timestamp >= :from AND timestamp <= :to"
+            , [ (":device", SQL.SQLText (rqDevice q))
+              , (":from",   SQL.SQLInteger (rqFrom q))
+              , (":to",     SQL.SQLInteger (rqTo q))
+              ]
+            )
+        | otherwise =
+            ( "timestamp >= :from AND timestamp <= :to"
+            , [ (":from", SQL.SQLInteger (rqFrom q))
+              , (":to",   SQL.SQLInteger (rqTo q))
+              ]
+            )
+      groupSql = " GROUP BY (timestamp / " <> bucket <> "), device_id ORDER BY timestamp ASC"
+      limitSql = if rqLimit q > 0
+                   then " LIMIT " <> T.pack (show (rqLimit q))
+                   else ""
+      fullSql = baseSql <> whereSql <> groupSql <> limitSql
+
+  bracket (SQL.prepare (dbConn h) fullSql) SQL.finalize $ \stmt -> do
+    SQL.bindNamed stmt params
+    collectDownsampledReadings stmt
+
+-- | Collect downsampled readings (no id column, 16 columns instead of 17).
+collectDownsampledReadings :: SQL.Statement -> IO [Reading]
+collectDownsampledReadings stmt = go []
+  where
+    go acc = do
+      result <- SQL.step stmt
+      case result of
+        SQL.Done -> pure (reverse acc)
+        SQL.Row -> do
+          cols <- SQL.columns stmt
+          case cols of
+            [c0, c1, c2, c3, c4, c5, c6, c7, c8,
+             c9, c10, c11, c12, c13, c14, c15] ->
+              let r = Reading
+                    { rdId              = 0
+                    , rdTimestamp       = sqlToInt64 c0
+                    , rdDeviceId        = sqlToText c1
+                    , rdDeviceType      = sqlToText c2
+                    , rdDeviceIp        = sqlToText c3
+                    , rdPm01            = sqlToMaybeFloat c4
+                    , rdPm02            = sqlToMaybeFloat c5
+                    , rdPm10            = sqlToMaybeFloat c6
+                    , rdPm02Compensated = sqlToMaybeFloat c7
+                    , rdRco2            = sqlToMaybeInt c8
+                    , rdAtmp            = sqlToMaybeFloat c9
+                    , rdAtmpCompensated = sqlToMaybeFloat c10
+                    , rdRhum            = sqlToMaybeFloat c11
+                    , rdRhumCompensated = sqlToMaybeFloat c12
+                    , rdTvocIndex       = sqlToMaybeFloat c13
+                    , rdNoxIndex        = sqlToMaybeFloat c14
+                    , rdWifi            = sqlToMaybeInt c15
+                    }
+              in go (r : acc)
+            _ -> go acc
 
 getLatestReadings :: DBHandle -> IO [Reading]
 getLatestReadings h =
@@ -298,30 +378,62 @@ getReadingsCount h =
           _   -> pure 0
       SQL.Done -> pure 0
 
+-- | Count readings with optional device filter and time range.
+getFilteredCount :: DBHandle -> Int64 -> Int64 -> T.Text -> IO Int64
+getFilteredCount h fromTs toTs device = do
+  let wantDevice = device /= "" && device /= "all"
+      (sql, params)
+        | wantDevice =
+            ( "SELECT COUNT(*) FROM readings WHERE timestamp >= :from AND timestamp <= :to AND device_id = :device"
+            , [ (":from",   SQL.SQLInteger fromTs)
+              , (":to",     SQL.SQLInteger toTs)
+              , (":device", SQL.SQLText device)
+              ]
+            )
+        | otherwise =
+            ( "SELECT COUNT(*) FROM readings WHERE timestamp >= :from AND timestamp <= :to"
+            , [ (":from", SQL.SQLInteger fromTs)
+              , (":to",   SQL.SQLInteger toTs)
+              ]
+            )
+  bracket (SQL.prepare (dbConn h) sql) SQL.finalize $ \stmt -> do
+    SQL.bindNamed stmt params
+    result <- SQL.step stmt
+    case result of
+      SQL.Row -> do
+        cols <- SQL.columns stmt
+        case cols of
+          [v] -> pure (sqlToInt64 v)
+          _   -> pure 0
+      SQL.Done -> pure 0
+
 checkpoint :: DBHandle -> IO ()
 checkpoint h = SQL.exec (dbConn h) "PRAGMA wal_checkpoint(TRUNCATE)"
 
 -- | Convert a Reading to a JSON Value for API responses.
+-- Downsampled rows have id=0 and omit the "id" field.
 readingToJSON :: Reading -> Value
-readingToJSON r = object
-  [ "id"               .= rdId r
-  , "timestamp"        .= rdTimestamp r
-  , "device_id"        .= rdDeviceId r
-  , "device_type"      .= rdDeviceType r
-  , "device_ip"        .= rdDeviceIp r
-  , "pm01"             .= rdPm01 r
-  , "pm02"             .= rdPm02 r
-  , "pm10"             .= rdPm10 r
-  , "pm02_compensated" .= rdPm02Compensated r
-  , "rco2"             .= rdRco2 r
-  , "atmp"             .= rdAtmp r
-  , "atmp_compensated" .= rdAtmpCompensated r
-  , "rhum"             .= rdRhum r
-  , "rhum_compensated" .= rdRhumCompensated r
-  , "tvoc_index"       .= rdTvocIndex r
-  , "nox_index"        .= rdNoxIndex r
-  , "wifi"             .= rdWifi r
-  ]
+readingToJSON r =
+  let idField = if rdId r == 0 then [] else ["id" .= rdId r]
+      fields = idField ++
+        [ "timestamp"        .= rdTimestamp r
+        , "device_id"        .= rdDeviceId r
+        , "device_type"      .= rdDeviceType r
+        , "device_ip"        .= rdDeviceIp r
+        , "pm01"             .= rdPm01 r
+        , "pm02"             .= rdPm02 r
+        , "pm10"             .= rdPm10 r
+        , "pm02_compensated" .= rdPm02Compensated r
+        , "rco2"             .= rdRco2 r
+        , "atmp"             .= rdAtmp r
+        , "atmp_compensated" .= rdAtmpCompensated r
+        , "rhum"             .= rdRhum r
+        , "rhum_compensated" .= rdRhumCompensated r
+        , "tvoc_index"       .= rdTvocIndex r
+        , "nox_index"        .= rdNoxIndex r
+        , "wifi"             .= rdWifi r
+        ]
+  in object fields
 
 deviceSummaryToJSON :: DeviceSummary -> Value
 deviceSummaryToJSON d = object

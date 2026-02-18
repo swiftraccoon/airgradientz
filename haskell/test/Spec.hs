@@ -15,7 +15,10 @@ import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
 import qualified Data.Text as T
 
-import DB
+import DB (DBHandle, Reading(..), ReadingQuery(..), DeviceSummary(..)
+          , withDB, insertReading, queryReadings, getLatestReadings
+          , getDevices, getReadingsCount, getFilteredCount, nowMillis
+          , readingToJSON, deviceSummaryToJSON, checkpoint)
 
 -- | Shared fixture data loaded from test-fixtures.json
 data Fixtures = Fixtures
@@ -79,7 +82,7 @@ dbTests fx =
       insertReading db "192.168.1.1" (fxIndoorFull fx)
       now <- nowMillis
       readings <- queryReadings db ReadingQuery
-        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 100 }
+        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 100, rqDownsampleMs = 0 }
       length readings @?= 1
       r <- firstOr readings
       rdDeviceId r @?= indoorSerial
@@ -93,7 +96,7 @@ dbTests fx =
       insertReading db "192.168.1.1" (fxAfterBoot fx)
       now <- nowMillis
       readings <- queryReadings db ReadingQuery
-        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 100 }
+        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 100, rqDownsampleMs = 0 }
       length readings @?= 1
       r <- firstOr readings
       isNothing (rdPm01 r) @? "pm01 should be Nothing after boot"
@@ -109,7 +112,7 @@ dbTests fx =
       insertReading db "192.168.1.1" (fxZeroCompensated fx)
       now <- nowMillis
       readings <- queryReadings db ReadingQuery
-        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 100 }
+        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 100, rqDownsampleMs = 0 }
       r <- firstOr readings
       rdPm02 r @?= Just 10
       rdPm02Compensated r @?= Just 0
@@ -123,28 +126,28 @@ dbTests fx =
       now <- nowMillis
 
       r1 <- queryReadings db ReadingQuery
-        { rqDevice = indoorSerial, rqFrom = 0, rqTo = now + 1000, rqLimit = 100 }
+        { rqDevice = indoorSerial, rqFrom = 0, rqTo = now + 1000, rqLimit = 100, rqDownsampleMs = 0 }
       length r1 @?= 1
       r1first <- firstOr r1
       rdDeviceId r1first @?= indoorSerial
 
       r2 <- queryReadings db ReadingQuery
-        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 100 }
+        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 100, rqDownsampleMs = 0 }
       length r2 @?= 2
 
       r3 <- queryReadings db ReadingQuery
-        { rqDevice = "", rqFrom = 0, rqTo = now + 1000, rqLimit = 100 }
+        { rqDevice = "", rqFrom = 0, rqTo = now + 1000, rqLimit = 100, rqDownsampleMs = 0 }
       length r3 @?= 2
 
       r4 <- queryReadings db ReadingQuery
-        { rqDevice = "nonexistent", rqFrom = 0, rqTo = now + 1000, rqLimit = 100 }
+        { rqDevice = "nonexistent", rqFrom = 0, rqTo = now + 1000, rqLimit = 100, rqDownsampleMs = 0 }
       length r4 @?= 0
 
   , testCase "query limit" $ withTestDB $ \db -> do
       mapM_ (\_ -> insertReading db "192.168.1.1" (fxIndoorFull fx)) [1..5 :: Int]
       now <- nowMillis
       readings <- queryReadings db ReadingQuery
-        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 3 }
+        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 3, rqDownsampleMs = 0 }
       length readings @?= 3
 
   , testCase "latest readings" $ withTestDB $ \db -> do
@@ -233,6 +236,78 @@ dbTests fx =
   , testCase "schema file exists" $ do
       exists <- BS.readFile "../schema.sql"
       assertBool "schema.sql should not be empty" (BS.length exists > 0)
+
+  , testCase "downsampled query" $ withTestDB $ \db -> do
+      -- Insert multiple readings that will be grouped into one bucket
+      insertReading db "192.168.1.1" (fxIndoorFull fx)
+      insertReading db "192.168.1.1" (fxIndoorFull fx)
+      insertReading db "192.168.1.1" (fxIndoorFull fx)
+      now <- nowMillis
+      -- Use a large bucket (1 week) so all readings fall in one bucket
+      readings <- queryReadings db ReadingQuery
+        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000
+        , rqLimit = 100, rqDownsampleMs = 604800000 }
+      length readings @?= 1
+      r <- firstOr readings
+      rdId r @?= 0  -- downsampled rows have id=0
+      rdDeviceId r @?= indoorSerial
+      -- Check that the JSON representation omits "id"
+      let json = readingToJSON r
+      case json of
+        Object km -> assertBool "downsampled reading should not have id field"
+                       (not (KM.member "id" km))
+        _ -> assertFailure "readingToJSON should return Object"
+
+  , testCase "downsampled query with device filter" $ withTestDB $ \db -> do
+      insertReading db "192.168.1.1" (fxIndoorFull fx)
+      insertReading db "192.168.1.2" (fxOutdoorFull fx)
+      now <- nowMillis
+      readings <- queryReadings db ReadingQuery
+        { rqDevice = indoorSerial, rqFrom = 0, rqTo = now + 1000
+        , rqLimit = 100, rqDownsampleMs = 604800000 }
+      length readings @?= 1
+      r <- firstOr readings
+      rdDeviceId r @?= indoorSerial
+
+  , testCase "filtered count" $ withTestDB $ \db -> do
+      insertReading db "192.168.1.1" (fxIndoorFull fx)
+      insertReading db "192.168.1.1" (fxIndoorFull fx)
+      insertReading db "192.168.1.2" (fxOutdoorFull fx)
+      now <- nowMillis
+      -- Count all
+      c1 <- getFilteredCount db 0 (now + 1000) "all"
+      c1 @?= 3
+      -- Count by device
+      c2 <- getFilteredCount db 0 (now + 1000) indoorSerial
+      c2 @?= 2
+      -- Count with empty string (same as "all")
+      c3 <- getFilteredCount db 0 (now + 1000) ""
+      c3 @?= 3
+      -- Count nonexistent device
+      c4 <- getFilteredCount db 0 (now + 1000) "nonexistent"
+      c4 @?= 0
+
+  , testCase "readingToJSON omits id when zero" $ do
+      let r = Reading 0 1700000000000 "test" "indoor" "1.1.1.1"
+                Nothing Nothing Nothing Nothing Nothing Nothing
+                Nothing Nothing Nothing Nothing Nothing Nothing
+      let json = readingToJSON r
+      case json of
+        Object km -> do
+          assertBool "id should not be present when 0"
+            (not (KM.member "id" km))
+          KM.lookup "timestamp" km @?= Just (Number 1700000000000)
+        _ -> assertFailure "readingToJSON should return Object"
+
+  , testCase "readingToJSON includes id when nonzero" $ do
+      let r = Reading 42 1700000000000 "test" "indoor" "1.1.1.1"
+                Nothing Nothing Nothing Nothing Nothing Nothing
+                Nothing Nothing Nothing Nothing Nothing Nothing
+      let json = readingToJSON r
+      case json of
+        Object km ->
+          KM.lookup "id" km @?= Just (Number 42)
+        _ -> assertFailure "readingToJSON should return Object"
   ]
 
 helperTests :: [TestTree]
@@ -242,7 +317,7 @@ helperTests =
       insertReading db "1.1.1.1" json
       now <- nowMillis
       readings <- queryReadings db ReadingQuery
-        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 1 }
+        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 1, rqDownsampleMs = 0 }
       r <- firstOr readings
       rdDeviceType r @?= "indoor"
 
@@ -251,7 +326,7 @@ helperTests =
       insertReading db "1.1.1.1" json
       now <- nowMillis
       readings <- queryReadings db ReadingQuery
-        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 1 }
+        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 1, rqDownsampleMs = 0 }
       r <- firstOr readings
       rdDeviceType r @?= "outdoor"
 
@@ -260,7 +335,7 @@ helperTests =
       insertReading db "1.1.1.1" json
       now <- nowMillis
       readings <- queryReadings db ReadingQuery
-        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 1 }
+        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 1, rqDownsampleMs = 0 }
       r <- firstOr readings
       rdDeviceType r @?= "outdoor"
 
@@ -269,7 +344,7 @@ helperTests =
       insertReading db "1.1.1.1" json
       now <- nowMillis
       readings <- queryReadings db ReadingQuery
-        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 1 }
+        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 1, rqDownsampleMs = 0 }
       r <- firstOr readings
       rdDeviceType r @?= "outdoor"
 
@@ -278,7 +353,7 @@ helperTests =
       insertReading db "1.1.1.1" json
       now <- nowMillis
       readings <- queryReadings db ReadingQuery
-        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 1 }
+        { rqDevice = "all", rqFrom = 0, rqTo = now + 1000, rqLimit = 1, rqDownsampleMs = 0 }
       r <- firstOr readings
       rdDeviceId r @?= "unknown"
   ]

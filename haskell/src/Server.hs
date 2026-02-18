@@ -33,7 +33,7 @@ import qualified Network.Socket.ByteString as NSB
 import Config (Config(..), DeviceConfig(..))
 import DB (DBHandle, ReadingQuery(..)
           , queryReadings, getLatestReadings, getDevices
-          , getReadingsCount, nowMillis
+          , getReadingsCount, getFilteredCount, nowMillis
           , readingToJSON, deviceSummaryToJSON)
 import Poller (PollerHandle, getHealthJSON, getPollStats)
 
@@ -154,6 +154,7 @@ handleRequest conn dbMVar cfg pollerH stats req
           qs   = reqQuery req
       case path of
         "/api/readings/latest" -> handleLatest conn dbMVar
+        "/api/readings/count"  -> handleReadingsCount conn dbMVar cfg qs
         "/api/readings"        -> handleReadings conn dbMVar cfg qs
         "/api/devices"         -> handleDevices conn dbMVar
         "/api/health"          -> handleHealth conn pollerH
@@ -171,11 +172,22 @@ handleReadings conn dbMVar cfg qs = do
       device = lookupParam "device" params
       rawLim = lookupIntParam "limit" (cfgMaxApiRows cfg) params
       effectiveLimit = min rawLim (cfgMaxApiRows cfg)
-      q = ReadingQuery
-            { rqDevice = T.pack (if null device then "all" else device)
-            , rqFrom   = from'
-            , rqTo     = to'
-            , rqLimit  = if effectiveLimit > 0 then effectiveLimit else cfgMaxApiRows cfg
+      dsParam = lookupParam "downsample" params
+  -- Validate downsample param if present
+  case dsParam of
+    "" -> doQuery conn dbMVar cfg from' to' device effectiveLimit 0
+    s  -> case downsampleBucket s of
+            Nothing -> sendErrorResponse conn 400 "Invalid downsample value"
+            Just bucket -> doQuery conn dbMVar cfg from' to' device effectiveLimit bucket
+
+doQuery :: NS.Socket -> MVar DBHandle -> Config -> Int64 -> Int64 -> String -> Int -> Int64 -> IO ()
+doQuery conn dbMVar cfg from' to' device effectiveLimit bucket = do
+  let q = ReadingQuery
+            { rqDevice       = T.pack (if null device then "all" else device)
+            , rqFrom         = from'
+            , rqTo           = to'
+            , rqLimit        = if effectiveLimit > 0 then effectiveLimit else cfgMaxApiRows cfg
+            , rqDownsampleMs = bucket
             }
   result <- try $ withMVar dbMVar $ \h -> queryReadings h q
   case result of
@@ -194,6 +206,30 @@ handleLatest conn dbMVar = do
       sendErrorResponse conn 500 "Internal server error"
     Right readings ->
       sendJSON conn (Aeson.encode (map readingToJSON readings))
+
+handleReadingsCount :: NS.Socket -> MVar DBHandle -> Config -> BS.ByteString -> IO ()
+handleReadingsCount conn dbMVar cfg qs = do
+  now <- nowMillis
+  let params = parseQueryString qs
+      defaultFrom = now - 24 * 60 * 60 * 1000
+      from'  = lookupInt64Param "from" defaultFrom params
+      to'    = lookupInt64Param "to" now params
+      device = lookupParam "device" params
+      devText = T.pack (if null device then "all" else device)
+  result <- try $ withMVar dbMVar $ \h -> getFilteredCount h from' to' devText
+  case result of
+    Left (e :: SomeException) -> do
+      hPutStrLn stderr $ "[api] readings_count error: " ++ show e
+      sendErrorResponse conn 500 "Internal server error"
+    Right count -> do
+      let body = Aeson.object
+            [ "count"              Aeson..= count
+            , "from"               Aeson..= from'
+            , "to"                 Aeson..= to'
+            , "device"             Aeson..= devText
+            , "downsampleThreshold" Aeson..= cfgDownsampleThreshold cfg
+            ]
+      sendJSON conn (Aeson.encode body)
 
 handleDevices :: NS.Socket -> MVar DBHandle -> IO ()
 handleDevices conn dbMVar = do
@@ -219,8 +255,9 @@ handleConfig conn cfg = do
              | d <- cfgDevices cfg
              ]
       body = Aeson.object
-        [ "pollIntervalMs" Aeson..= cfgPollIntervalMs cfg
-        , "devices"        Aeson..= devs
+        [ "pollIntervalMs"      Aeson..= cfgPollIntervalMs cfg
+        , "downsampleThreshold" Aeson..= cfgDownsampleThreshold cfg
+        , "devices"             Aeson..= devs
         ]
   sendJSON conn (Aeson.encode body)
 
@@ -379,6 +416,17 @@ takeExtension path =
   in case dropWhile (/= '.') (reverse name) of
        [] -> ""
        ext -> reverse ext
+
+-- Downsample bucket lookup
+downsampleBucket :: String -> Maybe Int64
+downsampleBucket "5m"  = Just 300000
+downsampleBucket "10m" = Just 600000
+downsampleBucket "15m" = Just 900000
+downsampleBucket "30m" = Just 1800000
+downsampleBucket "1h"  = Just 3600000
+downsampleBucket "1d"  = Just 86400000
+downsampleBucket "1w"  = Just 604800000
+downsampleBucket _     = Nothing
 
 -- Query string parsing
 
