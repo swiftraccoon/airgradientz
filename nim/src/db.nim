@@ -201,6 +201,50 @@ proc rowToReading(stmt: Sqlite3Stmt): Reading =
   result.hasWifi = not colIsNull(stmt, 16)
   if result.hasWifi: result.wifi = sqlite3_column_int64(stmt, 16)
 
+proc rowToReadingDownsampled(stmt: Sqlite3Stmt): Reading =
+  ## Read a downsampled row (no id column — starts at timestamp).
+  result.id = 0  # no id for downsampled rows
+  result.timestamp = sqlite3_column_int64(stmt, 0)
+  result.deviceId = colText(stmt, 1)
+  result.deviceType = colText(stmt, 2)
+  result.deviceIp = colText(stmt, 3)
+
+  result.hasPm01 = not colIsNull(stmt, 4)
+  if result.hasPm01: result.pm01 = sqlite3_column_double(stmt, 4)
+
+  result.hasPm02 = not colIsNull(stmt, 5)
+  if result.hasPm02: result.pm02 = sqlite3_column_double(stmt, 5)
+
+  result.hasPm10 = not colIsNull(stmt, 6)
+  if result.hasPm10: result.pm10 = sqlite3_column_double(stmt, 6)
+
+  result.hasPm02Compensated = not colIsNull(stmt, 7)
+  if result.hasPm02Compensated: result.pm02Compensated = sqlite3_column_double(stmt, 7)
+
+  result.hasRco2 = not colIsNull(stmt, 8)
+  if result.hasRco2: result.rco2 = sqlite3_column_int64(stmt, 8)
+
+  result.hasAtmp = not colIsNull(stmt, 9)
+  if result.hasAtmp: result.atmp = sqlite3_column_double(stmt, 9)
+
+  result.hasAtmpCompensated = not colIsNull(stmt, 10)
+  if result.hasAtmpCompensated: result.atmpCompensated = sqlite3_column_double(stmt, 10)
+
+  result.hasRhum = not colIsNull(stmt, 11)
+  if result.hasRhum: result.rhum = sqlite3_column_double(stmt, 11)
+
+  result.hasRhumCompensated = not colIsNull(stmt, 12)
+  if result.hasRhumCompensated: result.rhumCompensated = sqlite3_column_double(stmt, 12)
+
+  result.hasTvocIndex = not colIsNull(stmt, 13)
+  if result.hasTvocIndex: result.tvocIndex = sqlite3_column_double(stmt, 13)
+
+  result.hasNoxIndex = not colIsNull(stmt, 14)
+  if result.hasNoxIndex: result.noxIndex = sqlite3_column_double(stmt, 14)
+
+  result.hasWifi = not colIsNull(stmt, 15)
+  if result.hasWifi: result.wifi = sqlite3_column_int64(stmt, 15)
+
 proc queryReadings*(db: Sqlite3, q: ReadingQuery): seq[Reading] =
   let wantDevice = q.device.len > 0 and q.device != "all"
 
@@ -234,6 +278,54 @@ proc queryReadings*(db: Sqlite3, q: ReadingQuery): seq[Reading] =
 
   while sqlite3_step(stmt) == SQLITE_ROW:
     result.add rowToReading(stmt)
+
+  discard sqlite3_finalize(stmt)
+
+proc queryReadingsDownsampled*(db: Sqlite3, q: ReadingQuery, bucketMs: int64): seq[Reading] =
+  let wantDevice = q.device.len > 0 and q.device != "all"
+  let bucket = $bucketMs
+
+  var sql = "SELECT (timestamp / " & bucket & ") * " & bucket & " AS timestamp, " &
+    "device_id, device_type, device_ip, " &
+    "AVG(pm01) AS pm01, AVG(pm02) AS pm02, AVG(pm10) AS pm10, " &
+    "AVG(pm02_compensated) AS pm02_compensated, " &
+    "CAST(AVG(rco2) AS INTEGER) AS rco2, " &
+    "AVG(atmp) AS atmp, AVG(atmp_compensated) AS atmp_compensated, " &
+    "AVG(rhum) AS rhum, AVG(rhum_compensated) AS rhum_compensated, " &
+    "AVG(tvoc_index) AS tvoc_index, AVG(nox_index) AS nox_index, " &
+    "CAST(AVG(wifi) AS INTEGER) AS wifi " &
+    "FROM readings WHERE "
+  if wantDevice:
+    sql.add "device_id = ?3 AND "
+  sql.add "timestamp >= ?1 AND timestamp <= ?2 " &
+    "GROUP BY (timestamp / " & bucket & "), device_id " &
+    "ORDER BY timestamp ASC"
+
+  if q.limit > 0:
+    if wantDevice:
+      sql.add " LIMIT ?4"
+    else:
+      sql.add " LIMIT ?3"
+
+  var stmt: Sqlite3Stmt
+  let rc = sqlite3_prepare_v2(db, sql.cstring, -1.cint, addr stmt, nil)
+  if rc != SQLITE_OK:
+    stderr.writeLine "[db] prepare downsample query error: " & $sqlite3_errmsg(db)
+    return @[]
+
+  discard sqlite3_bind_int64(stmt, 1, q.fromTs)
+  discard sqlite3_bind_int64(stmt, 2, q.toTs)
+
+  if wantDevice and q.limit > 0:
+    discard sqlite3_bind_text(stmt, 3, q.device.cstring, -1.cint, SQLITE_TRANSIENT)
+    discard sqlite3_bind_int64(stmt, 4, q.limit)
+  elif wantDevice:
+    discard sqlite3_bind_text(stmt, 3, q.device.cstring, -1.cint, SQLITE_TRANSIENT)
+  elif q.limit > 0:
+    discard sqlite3_bind_int64(stmt, 3, q.limit)
+
+  while sqlite3_step(stmt) == SQLITE_ROW:
+    result.add rowToReadingDownsampled(stmt)
 
   discard sqlite3_finalize(stmt)
 
@@ -281,6 +373,29 @@ proc getDevices*(db: Sqlite3): seq[DeviceSummary] =
       lastSeen: sqlite3_column_int64(stmt, 3),
       readingCount: sqlite3_column_int64(stmt, 4)
     )
+
+  discard sqlite3_finalize(stmt)
+
+proc countReadingsFiltered*(db: Sqlite3, fromTs: int64, toTs: int64,
+                            device: string): int64 =
+  let wantDevice = device.len > 0 and device != "all"
+  var sql = "SELECT COUNT(*) FROM readings WHERE timestamp >= ?1 AND timestamp <= ?2"
+  if wantDevice:
+    sql.add " AND device_id = ?3"
+
+  var stmt: Sqlite3Stmt
+  let rc = sqlite3_prepare_v2(db, sql.cstring, -1.cint, addr stmt, nil)
+  if rc != SQLITE_OK:
+    stderr.writeLine "[db] prepare count error: " & $sqlite3_errmsg(db)
+    return 0
+
+  discard sqlite3_bind_int64(stmt, 1, fromTs)
+  discard sqlite3_bind_int64(stmt, 2, toTs)
+  if wantDevice:
+    discard sqlite3_bind_text(stmt, 3, device.cstring, -1.cint, SQLITE_TRANSIENT)
+
+  if sqlite3_step(stmt) == SQLITE_ROW:
+    result = sqlite3_column_int64(stmt, 0)
 
   discard sqlite3_finalize(stmt)
 
@@ -385,6 +500,50 @@ proc insertReading*(db: Sqlite3, ip: string, data: JsonNode): bool =
 proc readingToJson*(r: Reading): JsonNode =
   result = newJObject()
   result["id"] = newJInt(r.id)
+  result["timestamp"] = newJInt(r.timestamp)
+  result["device_id"] = newJString(r.deviceId)
+  result["device_type"] = newJString(r.deviceType)
+  result["device_ip"] = newJString(r.deviceIp)
+
+  if r.hasPm01: result["pm01"] = newJFloat(r.pm01)
+  else: result["pm01"] = newJNull()
+
+  if r.hasPm02: result["pm02"] = newJFloat(r.pm02)
+  else: result["pm02"] = newJNull()
+
+  if r.hasPm10: result["pm10"] = newJFloat(r.pm10)
+  else: result["pm10"] = newJNull()
+
+  if r.hasPm02Compensated: result["pm02_compensated"] = newJFloat(r.pm02Compensated)
+  else: result["pm02_compensated"] = newJNull()
+
+  if r.hasRco2: result["rco2"] = newJInt(r.rco2)
+  else: result["rco2"] = newJNull()
+
+  if r.hasAtmp: result["atmp"] = newJFloat(r.atmp)
+  else: result["atmp"] = newJNull()
+
+  if r.hasAtmpCompensated: result["atmp_compensated"] = newJFloat(r.atmpCompensated)
+  else: result["atmp_compensated"] = newJNull()
+
+  if r.hasRhum: result["rhum"] = newJFloat(r.rhum)
+  else: result["rhum"] = newJNull()
+
+  if r.hasRhumCompensated: result["rhum_compensated"] = newJFloat(r.rhumCompensated)
+  else: result["rhum_compensated"] = newJNull()
+
+  if r.hasTvocIndex: result["tvoc_index"] = newJFloat(r.tvocIndex)
+  else: result["tvoc_index"] = newJNull()
+
+  if r.hasNoxIndex: result["nox_index"] = newJFloat(r.noxIndex)
+  else: result["nox_index"] = newJNull()
+
+  if r.hasWifi: result["wifi"] = newJInt(r.wifi)
+  else: result["wifi"] = newJNull()
+
+proc readingToJsonDownsampled*(r: Reading): JsonNode =
+  ## Like readingToJson but without the id field (downsampled rows have no id).
+  result = newJObject()
   result["timestamp"] = newJInt(r.timestamp)
   result["device_id"] = newJString(r.deviceId)
   result["device_type"] = newJString(r.deviceType)

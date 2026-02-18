@@ -268,3 +268,112 @@ suite "JSON conversion":
     check j["device_type"].getStr() == "indoor"
     check j["device_ip"].getStr() == "10.0.0.1"
     check j["reading_count"].getInt() == 1
+
+
+proc runSql(dbHandle: Sqlite3, sql: string) =
+  var errmsg: cstring
+  let rc = sqlite3_exec(dbHandle, sql.cstring, nil, nil, addr errmsg)
+  if rc != SQLITE_OK:
+    let msg = if errmsg != nil: $errmsg else: "unknown"
+    if errmsg != nil: sqlite3_free(errmsg)
+    raise newException(CatchableError, "SQL failed: " & msg)
+
+
+suite "Downsample":
+  test "downsampled query groups readings into buckets":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    let now = nowMillis()
+    let bucketMs = 3600000'i64  # 1 hour
+
+    # Insert 3 readings in the same 1-hour bucket
+    for i in 0 ..< 3:
+      let ts = now - int64(i * 1000)
+      let pm02 = 10.0 + float64(i * 10)  # 10, 20, 30
+      runSql(testDb, "INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, raw_json) VALUES (" &
+        $ts & ", 'dev1', 'indoor', '1.1.1.1', " & $pm02 & ", '{}')")
+
+    # Insert 1 reading in a different bucket (2 hours ago)
+    let oldTs = now - 2 * bucketMs
+    runSql(testDb, "INSERT INTO readings (timestamp, device_id, device_type, device_ip, pm02, raw_json) VALUES (" &
+      $oldTs & ", 'dev1', 'indoor', '1.1.1.1', 100, '{}')")
+
+    let readings = queryReadingsDownsampled(testDb, ReadingQuery(
+      device: "all", fromTs: 0, toTs: now + 1000, limit: 100
+    ), bucketMs)
+
+    # Should produce 2 buckets
+    check readings.len == 2
+
+    # Downsampled rows have id == 0
+    for r in readings:
+      check r.id == 0
+
+    # Verify averages in the recent bucket (3 readings: pm02 = 10,20,30 => avg 20)
+    let recentBucket = readings[1]  # ordered ASC, recent is last
+    check recentBucket.hasPm02
+    check recentBucket.pm02 == 20.0
+
+  test "readingToJsonDownsampled omits id field":
+    var r: Reading
+    r.id = 0
+    r.timestamp = 1700000000000'i64
+    r.deviceId = "dev1"
+    r.deviceType = "indoor"
+    r.deviceIp = "1.1.1.1"
+    r.hasPm02 = true
+    r.pm02 = 15.0
+
+    let j = readingToJsonDownsampled(r)
+    check not j.hasKey("id")
+    check j["timestamp"].getInt() == 1700000000000
+    check j["pm02"].getFloat() == 15.0
+
+
+suite "Filtered count":
+  test "count all devices":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    let now = nowMillis()
+    runSql(testDb, "INSERT INTO readings (timestamp, device_id, device_type, device_ip, raw_json) VALUES (" &
+      $(now - 10000) & ", 'dev1', 'indoor', '1.1.1.1', '{}')")
+    runSql(testDb, "INSERT INTO readings (timestamp, device_id, device_type, device_ip, raw_json) VALUES (" &
+      $(now - 5000) & ", 'dev1', 'indoor', '1.1.1.1', '{}')")
+    runSql(testDb, "INSERT INTO readings (timestamp, device_id, device_type, device_ip, raw_json) VALUES (" &
+      $(now - 3000) & ", 'dev2', 'outdoor', '1.1.1.2', '{}')")
+
+    let count = countReadingsFiltered(testDb, 0, now + 1000, "all")
+    check count == 3
+
+  test "count single device":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    let now = nowMillis()
+    runSql(testDb, "INSERT INTO readings (timestamp, device_id, device_type, device_ip, raw_json) VALUES (" &
+      $(now - 10000) & ", 'dev1', 'indoor', '1.1.1.1', '{}')")
+    runSql(testDb, "INSERT INTO readings (timestamp, device_id, device_type, device_ip, raw_json) VALUES (" &
+      $(now - 5000) & ", 'dev1', 'indoor', '1.1.1.1', '{}')")
+    runSql(testDb, "INSERT INTO readings (timestamp, device_id, device_type, device_ip, raw_json) VALUES (" &
+      $(now - 3000) & ", 'dev2', 'outdoor', '1.1.1.2', '{}')")
+
+    let count = countReadingsFiltered(testDb, 0, now + 1000, "dev1")
+    check count == 2
+
+  test "count with time range filter":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    let now = nowMillis()
+    runSql(testDb, "INSERT INTO readings (timestamp, device_id, device_type, device_ip, raw_json) VALUES (" &
+      $(now - 10000) & ", 'dev1', 'indoor', '1.1.1.1', '{}')")
+    runSql(testDb, "INSERT INTO readings (timestamp, device_id, device_type, device_ip, raw_json) VALUES (" &
+      $(now - 5000) & ", 'dev1', 'indoor', '1.1.1.1', '{}')")
+    runSql(testDb, "INSERT INTO readings (timestamp, device_id, device_type, device_ip, raw_json) VALUES (" &
+      $(now - 3000) & ", 'dev2', 'outdoor', '1.1.1.2', '{}')")
+
+    # Only readings from last 7 seconds
+    let count = countReadingsFiltered(testDb, now - 7000, now + 1000, "all")
+    check count == 2

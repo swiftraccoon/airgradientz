@@ -1,4 +1,4 @@
-import std/[json, locks, os, posix, strutils]
+import std/[json, locks, os, posix, strutils, tables]
 import config, db, sqlite3_wrapper
 
 # ── Linux epoll FFI ──────────────────────────────────────────────────────
@@ -78,6 +78,10 @@ const
   MaxFileSize = 16 * 1024 * 1024  # 16 MB
   MaxResponseSize = 1 * 1024 * 1024  # 1 MB for HTTP client
   CheckpointIntervalPolls = 10
+
+  DownsampleMap = {"5m": 300000'i64, "10m": 600000'i64, "15m": 900000'i64,
+    "30m": 1800000'i64, "1h": 3600000'i64, "1d": 86400000'i64,
+    "1w": 604800000'i64}.toTable
 
 # ── Connection state ─────────────────────────────────────────────────────
 
@@ -463,6 +467,15 @@ proc handleReadings(req: HttpReq): string =
   let fromTs = parseI64Param(req.query, "from", defaultFrom)
   let toTs = parseI64Param(req.query, "to", now)
   let device = queryParam(req.query, "device")
+  let downsampleParam = queryParam(req.query, "downsample")
+
+  # Validate downsample param
+  var bucketMs: int64 = 0
+  if downsampleParam.len > 0:
+    if downsampleParam notin DownsampleMap:
+      return errorResponse(400, "Bad Request",
+        "Invalid downsample value. Valid: 5m, 10m, 15m, 30m, 1h, 1d, 1w")
+    bucketMs = DownsampleMap[downsampleParam]
 
   let maxRows = int64(gState.cfg.maxApiRows)
   let requestedLimit = parseI64Param(req.query, "limit", maxRows)
@@ -479,13 +492,37 @@ proc handleReadings(req: HttpReq): string =
   )
 
   var readings: seq[Reading]
-  withLock(dbLock):
-    readings = queryReadings(gState.db, q)
-  var arr = newJArray()
-  for r in readings:
-    arr.add readingToJson(r)
+  if bucketMs > 0:
+    withLock(dbLock):
+      readings = queryReadingsDownsampled(gState.db, q, bucketMs)
+    var arr = newJArray()
+    for r in readings:
+      arr.add readingToJsonDownsampled(r)
+    return jsonResponse(200, "OK", arr)
+  else:
+    withLock(dbLock):
+      readings = queryReadings(gState.db, q)
+    var arr = newJArray()
+    for r in readings:
+      arr.add readingToJson(r)
+    return jsonResponse(200, "OK", arr)
 
-  return jsonResponse(200, "OK", arr)
+proc handleReadingsCount(req: HttpReq): string =
+  let now = db.nowMillis()
+  let defaultFrom = now - 24 * 60 * 60 * 1000
+
+  let fromTs = parseI64Param(req.query, "from", defaultFrom)
+  let toTs = parseI64Param(req.query, "to", now)
+  let device = queryParam(req.query, "device")
+
+  var count: int64
+  withLock(dbLock):
+    count = countReadingsFiltered(gState.db, fromTs, toTs,
+      if device.len > 0: device else: "all")
+
+  var obj = newJObject()
+  obj["count"] = newJInt(count)
+  return jsonResponse(200, "OK", obj)
 
 proc handleReadingsLatest(): string =
   var readings: seq[Reading]
@@ -542,6 +579,7 @@ proc handleConfig(): string =
 
   var cfg = newJObject()
   cfg["pollIntervalMs"] = newJInt(int64(gState.cfg.pollIntervalMs))
+  cfg["downsampleThreshold"] = newJInt(int64(gState.cfg.downsampleThreshold))
   cfg["devices"] = devicesArr
 
   return jsonResponse(200, "OK", cfg)
@@ -635,8 +673,9 @@ proc routeRequest(req: HttpReq): string =
     return errorResponse(405, "Method Not Allowed", "Method not allowed")
 
   case req.path
-  of "/api/readings": return handleReadings(req)
+  of "/api/readings/count": return handleReadingsCount(req)
   of "/api/readings/latest": return handleReadingsLatest()
+  of "/api/readings": return handleReadings(req)
   of "/api/devices": return handleDevices()
   of "/api/health": return handleHealth()
   of "/api/config": return handleConfig()

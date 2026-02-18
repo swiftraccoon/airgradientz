@@ -16,6 +16,7 @@ type
     pollIntervalMs*: uint32
     fetchTimeoutMs*: uint32
     maxApiRows*: uint32
+    downsampleThreshold*: uint32
 
 proc readConfigFile(path: string): string =
   if not fileExists(path):
@@ -59,6 +60,7 @@ proc loadConfig*(): Config =
   result.pollIntervalMs = 15000
   result.fetchTimeoutMs = 5000
   result.maxApiRows = 10000
+  result.downsampleThreshold = 10000
 
   # 2. Config file overrides
   let content = findConfigFile()
@@ -98,6 +100,10 @@ proc loadConfig*(): Config =
           let n = defs["maxApiRows"].getInt()
           if n > 0:
             result.maxApiRows = uint32(n)
+        if defs.hasKey("downsampleThreshold"):
+          let n = defs["downsampleThreshold"].getInt()
+          if n > 0:
+            result.downsampleThreshold = uint32(n)
 
       # Top-level overrides (higher priority)
       if root.hasKey("devices") and root["devices"].kind == JArray:
@@ -126,6 +132,11 @@ proc loadConfig*(): Config =
         let n = root["maxApiRows"].getInt()
         if n > 0:
           result.maxApiRows = uint32(n)
+
+      if root.hasKey("downsampleThreshold"):
+        let n = root["downsampleThreshold"].getInt()
+        if n > 0:
+          result.downsampleThreshold = uint32(n)
 
     except JsonParsingError:
       stderr.writeLine "[config] JSON parse error"
