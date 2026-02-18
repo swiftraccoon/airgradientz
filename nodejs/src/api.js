@@ -2,7 +2,7 @@
 
 const fs = require('node:fs');
 const express = require('express');
-const { queryReadings, getDevices, getLatestReadings, getReadingsCount } = require('./db');
+const { DOWNSAMPLE_MAP, queryReadings, getDevices, getLatestReadings, getReadingsCount, getFilteredCount } = require('./db');
 const { getHealth, getPollStats } = require('./poller');
 const config = require('../config');
 
@@ -10,7 +10,14 @@ const router = express.Router();
 
 router.get('/readings', (req, res, next) => {
   try {
-    const { device, from, to, limit } = req.query;
+    const { device, from, to, limit, downsample } = req.query;
+
+    if (downsample !== undefined) {
+      const bucketMs = DOWNSAMPLE_MAP[downsample];
+      if (!bucketMs) {
+        return res.status(400).json({ error: 'invalid downsample value' });
+      }
+    }
 
     const now = Date.now();
     const effectiveFrom = from || String(now - 24 * 60 * 60 * 1000);
@@ -27,6 +34,7 @@ router.get('/readings', (req, res, next) => {
       from: effectiveFrom,
       to: effectiveTo,
       limit: effectiveLimit,
+      downsampleMs: downsample ? DOWNSAMPLE_MAP[downsample] : undefined,
     });
 
     res.json(readings);
@@ -51,6 +59,26 @@ router.get('/readings/latest', (_req, res, next) => {
   }
 });
 
+router.get('/readings/count', (req, res, next) => {
+  try {
+    const { device, from, to } = req.query;
+
+    const now = Date.now();
+    const effectiveFrom = from || '0';
+    const effectiveTo = to || String(now);
+
+    const count = getFilteredCount({
+      from: effectiveFrom,
+      to: effectiveTo,
+      device,
+    });
+
+    res.json({ count });
+  } catch (err) {
+    next(err);
+  }
+});
+
 router.get('/health', (_req, res) => {
   res.json(getHealth());
 });
@@ -58,6 +86,7 @@ router.get('/health', (_req, res) => {
 router.get('/config', (_req, res) => {
   res.json({
     pollIntervalMs: config.pollIntervalMs,
+    downsampleThreshold: config.downsampleThreshold,
     devices: config.devices.map(d => ({ ip: d.ip, label: d.label })),
   });
 });

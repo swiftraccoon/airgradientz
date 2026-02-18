@@ -39,6 +39,7 @@ const defaults = {
   pollIntervalMs: 15_000,
   fetchTimeoutMs: 5_000,
   maxApiRows: 10_000,
+  downsampleThreshold: 10_000,
   shutdownTimeoutMs: 5_000,
 };
 
@@ -61,6 +62,9 @@ if (fileConfig) {
   if (typeof fileDefs.maxApiRows === 'number' && fileDefs.maxApiRows > 0) {
     merged.maxApiRows = fileDefs.maxApiRows;
   }
+  if (typeof fileDefs.downsampleThreshold === 'number' && fileDefs.downsampleThreshold > 0) {
+    merged.downsampleThreshold = fileDefs.downsampleThreshold;
+  }
 
   // Apply top-level overrides (higher priority)
   if (Array.isArray(fileConfig.devices) && fileConfig.devices.length > 0) {
@@ -74,6 +78,9 @@ if (fileConfig) {
   }
   if (typeof fileConfig.maxApiRows === 'number' && fileConfig.maxApiRows > 0) {
     merged.maxApiRows = fileConfig.maxApiRows;
+  }
+  if (typeof fileConfig.downsampleThreshold === 'number' && fileConfig.downsampleThreshold > 0) {
+    merged.downsampleThreshold = fileConfig.downsampleThreshold;
   }
 }
 

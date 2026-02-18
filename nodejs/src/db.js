@@ -43,6 +43,16 @@ const queries = parseQueriesSql(fs.readFileSync(queriesPath, 'utf8'));
 // Column list from shared queries.sql (multiline -> single line)
 const QUERY_COLS = queries.get('reading_columns').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
 
+const DOWNSAMPLE_MAP = Object.freeze({
+  '5m':  300_000,
+  '10m': 600_000,
+  '15m': 900_000,
+  '30m': 1_800_000,
+  '1h':  3_600_000,
+  '1d':  86_400_000,
+  '1w':  604_800_000,
+});
+
 const insertStmt = db.prepare(queries.get('insert_reading').replace(/:([a-z_]+)/g, '@$1'));
 
 // Pre-prepared statements for all query variants (avoids per-request prepare leak)
@@ -82,7 +92,7 @@ function insertReading(deviceIp, data) {
   });
 }
 
-function queryReadings({ device, from, to, limit } = {}) {
+function queryReadings({ device, from, to, limit, downsampleMs } = {}) {
   const wantDevice = device && device !== 'all';
   const fromN = Number(from);
   const toN = Number(to);
@@ -98,6 +108,30 @@ function queryReadings({ device, from, to, limit } = {}) {
   }
 
   const limitN = limit !== undefined && limit !== null ? Math.floor(Number(limit)) : 0;
+
+  // Downsampled query: bucket_ms is a trusted integer from DOWNSAMPLE_MAP, interpolated directly
+  if (downsampleMs) {
+    const bucketMs = Number(downsampleMs);
+    const deviceClause = wantDevice ? 'device_id = @device AND ' : '';
+    const limitClause = limitN > 0 ? ' LIMIT @limit' : '';
+    if (limitN > 0) params.limit = limitN;
+
+    const sql = `SELECT (timestamp / ${bucketMs}) * ${bucketMs} AS timestamp,`
+      + ' device_id, device_type, device_ip,'
+      + ' AVG(pm01) AS pm01, AVG(pm02) AS pm02, AVG(pm10) AS pm10,'
+      + ' AVG(pm02_compensated) AS pm02_compensated,'
+      + ' CAST(AVG(rco2) AS INTEGER) AS rco2,'
+      + ' AVG(atmp) AS atmp, AVG(atmp_compensated) AS atmp_compensated,'
+      + ' AVG(rhum) AS rhum, AVG(rhum_compensated) AS rhum_compensated,'
+      + ' AVG(tvoc_index) AS tvoc_index, AVG(nox_index) AS nox_index,'
+      + ' CAST(AVG(wifi) AS INTEGER) AS wifi'
+      + ` FROM readings WHERE ${deviceClause}timestamp >= @from AND timestamp <= @to`
+      + ` GROUP BY (timestamp / ${bucketMs}), device_id ORDER BY timestamp ASC`
+      + limitClause;
+
+    return db.prepare(sql).all(params);
+  }
+
   if (limitN > 0) {
     params.limit = limitN;
     return (wantDevice ? queryStmts.oneDevRangeLimit : queryStmts.allDevRangeLimit).all(params);
@@ -120,6 +154,30 @@ function getReadingsCount() {
   return Object.values(countStmt.get())[0];
 }
 
+const filteredCountStmts = Object.freeze({
+  allDev: db.prepare('SELECT COUNT(*) AS count FROM readings WHERE timestamp >= @from AND timestamp <= @to'),
+  oneDev: db.prepare('SELECT COUNT(*) AS count FROM readings WHERE device_id = @device AND timestamp >= @from AND timestamp <= @to'),
+});
+
+function getFilteredCount({ from, to, device } = {}) {
+  const fromN = Number(from);
+  const toN = Number(to);
+
+  if (!Number.isFinite(fromN) || !Number.isFinite(toN)) {
+    return 0;
+  }
+
+  const wantDevice = device && device !== 'all';
+  const params = { from: fromN, to: toN };
+
+  if (wantDevice) {
+    params.device = String(device);
+    return filteredCountStmts.oneDev.get(params).count;
+  }
+
+  return filteredCountStmts.allDev.get(params).count;
+}
+
 function checkpoint() {
   db.pragma('wal_checkpoint(TRUNCATE)');
 }
@@ -128,4 +186,4 @@ function close() {
   db.close();
 }
 
-module.exports = { insertReading, queryReadings, getDevices, getLatestReadings, getReadingsCount, checkpoint, close };
+module.exports = { DOWNSAMPLE_MAP, insertReading, queryReadings, getDevices, getLatestReadings, getReadingsCount, getFilteredCount, checkpoint, close };

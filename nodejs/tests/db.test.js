@@ -234,6 +234,97 @@ describe('zero compensated values', () => {
   });
 });
 
+describe('queryReadings with downsample', () => {
+  before(() => {
+    const Database = require('better-sqlite3');
+    const rawDb = new Database(dbPath);
+    const stmt = rawDb.prepare(`
+      INSERT INTO readings (timestamp, device_id, device_type, device_ip,
+        pm02, rco2, atmp, wifi, raw_json)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    // Insert 6 readings within the same hour bucket (bucket = floor(ts / 3600000) * 3600000)
+    const baseTs = 3_600_000 * 1000; // a clean hour boundary
+    for (let i = 0; i < 6; i++) {
+      stmt.run(baseTs + i * 60_000, 'ds_test_device', 'indoor', '10.0.0.20', 10 + i, 400 + i * 10, 20.0 + i, -50 + i, '{}');
+    }
+    // Insert 2 readings in the next hour bucket
+    for (let i = 0; i < 2; i++) {
+      stmt.run(baseTs + 3_600_000 + i * 60_000, 'ds_test_device', 'indoor', '10.0.0.20', 30 + i, 500 + i * 10, 26.0 + i, -44 + i, '{}');
+    }
+    rawDb.close();
+  });
+
+  it('groups readings within the same hour into one row', () => {
+    const baseTs = 3_600_000 * 1000;
+    const results = db.queryReadings({
+      device: 'ds_test_device',
+      from: String(baseTs),
+      to: String(baseTs + 2 * 3_600_000),
+      downsampleMs: 3_600_000,
+    });
+    assert.equal(results.length, 2, 'Should have 2 buckets (one per hour)');
+  });
+
+  it('downsampled rows have no id field', () => {
+    const baseTs = 3_600_000 * 1000;
+    const results = db.queryReadings({
+      device: 'ds_test_device',
+      from: String(baseTs),
+      to: String(baseTs + 2 * 3_600_000),
+      downsampleMs: 3_600_000,
+    });
+    assert.ok(results.length > 0);
+    for (const r of results) {
+      assert.equal('id' in r, false, 'downsampled rows should not have id field');
+    }
+  });
+
+  it('downsampled values are averages', () => {
+    const baseTs = 3_600_000 * 1000;
+    const results = db.queryReadings({
+      device: 'ds_test_device',
+      from: String(baseTs),
+      to: String(baseTs + 3_600_000 - 1),
+      downsampleMs: 3_600_000,
+    });
+    assert.equal(results.length, 1);
+    // pm02 values were 10,11,12,13,14,15 -> avg = 12.5
+    assert.ok(Math.abs(results[0].pm02 - 12.5) < 0.01, `Expected pm02 ~12.5, got ${results[0].pm02}`);
+    // rco2 values were 400,410,420,430,440,450 -> avg = 425, cast to integer
+    assert.equal(results[0].rco2, 425);
+    // wifi values were -50,-49,-48,-47,-46,-45 -> avg = -47.5, cast to integer -> -47
+    assert.equal(results[0].wifi, -47);
+  });
+});
+
+describe('getFilteredCount', () => {
+  it('returns correct total count for time range', () => {
+    const now = Date.now();
+    const count = db.getFilteredCount({ from: '0', to: String(now + 60_000) });
+    assert.ok(typeof count === 'number');
+    assert.ok(count > 0);
+  });
+
+  it('returns 0 for empty time range', () => {
+    const count = db.getFilteredCount({ from: String(Date.now() + 100_000), to: String(Date.now() + 200_000) });
+    assert.equal(count, 0);
+  });
+
+  it('filters by device_id', () => {
+    const now = Date.now();
+    const allCount = db.getFilteredCount({ from: '0', to: String(now + 60_000) });
+    const deviceCount = db.getFilteredCount({ from: '0', to: String(now + 60_000), device: 'ds_test_device' });
+    assert.ok(deviceCount > 0);
+    assert.ok(deviceCount <= allCount);
+    assert.equal(deviceCount, 8, 'ds_test_device should have exactly 8 readings');
+  });
+
+  it('returns 0 for NaN from', () => {
+    assert.equal(db.getFilteredCount({ from: 'bad', to: String(Date.now()) }), 0);
+  });
+});
+
 describe('checkpoint', () => {
   it('does not throw', () => {
     assert.doesNotThrow(() => db.checkpoint());
