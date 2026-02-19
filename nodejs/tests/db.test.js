@@ -359,3 +359,119 @@ describe('checkpoint', () => {
     assert.doesNotThrow(() => db.checkpoint());
   });
 });
+
+// --- test-spec.json integration ---
+
+const testSpec = JSON.parse(fs.readFileSync(path.join(__dirname, '..', '..', 'test-spec.json'), 'utf8'));
+const config = require('../config');
+
+describe('response shapes (test-spec.json)', () => {
+  it('reading has all requiredFields and no forbiddenFields', () => {
+    const now = Date.now();
+    const results = db.queryReadings({ from: '0', to: String(now + 60_000) });
+    assert.ok(results.length > 0, 'need at least one reading');
+    const shape = testSpec.responseShapes.reading;
+    for (const r of results) {
+      for (const field of shape.requiredFields) {
+        assert.ok(field in r, `reading missing required field: ${field}`);
+      }
+      for (const field of shape.forbiddenFields) {
+        assert.equal(field in r, false, `reading has forbidden field: ${field}`);
+      }
+    }
+  });
+
+  it('downsampled reading omits id', () => {
+    const baseTs = 3_600_000 * 1000;
+    const results = db.queryReadings({
+      device: 'ds_test_device',
+      from: String(baseTs),
+      to: String(baseTs + 2 * 3_600_000),
+      downsampleMs: 3_600_000,
+    });
+    assert.ok(results.length > 0, 'need at least one downsampled reading');
+    const shape = testSpec.responseShapes.readingDownsampled;
+    for (const r of results) {
+      for (const field of shape.requiredFields) {
+        assert.ok(field in r, `downsampled reading missing required field: ${field}`);
+      }
+      for (const field of shape.forbiddenFields) {
+        assert.equal(field in r, false, `downsampled reading has forbidden field: ${field}`);
+      }
+    }
+  });
+
+  it('device summary has required fields and no first_seen', () => {
+    const devices = db.getDevices();
+    assert.ok(devices.length > 0, 'need at least one device');
+    const shape = testSpec.responseShapes.device;
+    for (const d of devices) {
+      for (const field of shape.requiredFields) {
+        assert.ok(field in d, `device missing required field: ${field}`);
+      }
+      for (const field of shape.forbiddenFields) {
+        assert.equal(field in d, false, `device has forbidden field: ${field}`);
+      }
+    }
+  });
+});
+
+describe('query edge cases (test-spec.json)', () => {
+  const readingsEdgeCases = testSpec.queryEdgeCases.filter(c => c.endpoint === '/api/readings');
+
+  for (const tc of readingsEdgeCases) {
+    // Invalid downsample is validated in the API layer, not the DB layer
+    if (tc.params.downsample) {
+      it(`${tc.name} — bucket not in config`, () => {
+        assert.equal(
+          tc.params.downsample in config.downsampleBuckets,
+          false,
+          `"${tc.params.downsample}" should not be a valid downsample bucket`,
+        );
+      });
+      continue;
+    }
+
+    it(tc.name, () => {
+      const now = Date.now();
+      const queryParams = {
+        from: tc.params.from || '0',
+        to: tc.params.to || String(now + 60_000),
+      };
+      if (tc.params.device !== undefined) {
+        queryParams.device = tc.params.device;
+      }
+      if (tc.params.limit !== undefined) {
+        queryParams.limit = Number(tc.params.limit);
+      }
+
+      const results = db.queryReadings(queryParams);
+
+      if (tc.expect.body !== undefined && Array.isArray(tc.expect.body)) {
+        assert.deepStrictEqual(results, tc.expect.body);
+      }
+      if (tc.expect.resultCount !== undefined) {
+        assert.equal(results.length, tc.expect.resultCount);
+      }
+      if (tc.expect.resultCapped === 'maxApiRows') {
+        assert.ok(results.length <= config.maxApiRows,
+          `result length ${results.length} should be <= maxApiRows ${config.maxApiRows}`);
+      }
+      if (tc.expect.hasResults === true) {
+        assert.ok(results.length > 0, 'expected non-empty results');
+      }
+    });
+  }
+});
+
+describe('downsample buckets (test-spec.json)', () => {
+  for (const bucket of testSpec.downsampleBuckets) {
+    it(`bucket "${bucket.param}" maps to ${bucket.expectMs}ms`, () => {
+      assert.equal(
+        config.downsampleBuckets[bucket.param],
+        bucket.expectMs,
+        `config.downsampleBuckets["${bucket.param}"] should be ${bucket.expectMs}`,
+      );
+    });
+  }
+});
