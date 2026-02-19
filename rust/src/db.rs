@@ -152,19 +152,6 @@ pub(crate) struct ReadingQuery {
     pub(crate) downsample_ms: Option<i64>,
 }
 
-pub(crate) fn downsample_bucket(s: &str) -> Option<i64> {
-    match s {
-        "5m" => Some(300_000),
-        "10m" => Some(600_000),
-        "15m" => Some(900_000),
-        "30m" => Some(1_800_000),
-        "1h" => Some(3_600_000),
-        "1d" => Some(86_400_000),
-        "1w" => Some(604_800_000),
-        _ => None,
-    }
-}
-
 #[derive(Debug)]
 pub(crate) struct Reading {
     id: i64,
@@ -698,24 +685,6 @@ mod tests {
         assert_eq!(json.get("device_id").unwrap().as_str(), Some("84fce602549c"));
         assert_eq!(json.get("device_type").unwrap().as_str(), Some("indoor"));
         assert_eq!(json.get("pm02").unwrap().as_f64(), Some(41.67));
-    }
-
-    #[test]
-    fn test_downsample_bucket_valid() {
-        assert_eq!(downsample_bucket("5m"), Some(300_000));
-        assert_eq!(downsample_bucket("10m"), Some(600_000));
-        assert_eq!(downsample_bucket("15m"), Some(900_000));
-        assert_eq!(downsample_bucket("30m"), Some(1_800_000));
-        assert_eq!(downsample_bucket("1h"), Some(3_600_000));
-        assert_eq!(downsample_bucket("1d"), Some(86_400_000));
-        assert_eq!(downsample_bucket("1w"), Some(604_800_000));
-    }
-
-    #[test]
-    fn test_downsample_bucket_invalid() {
-        assert_eq!(downsample_bucket("2m"), None);
-        assert_eq!(downsample_bucket("foo"), None);
-        assert_eq!(downsample_bucket(""), None);
     }
 
     #[test]

@@ -2,7 +2,6 @@ module api;
 
 import std.json : JSONValue;
 import std.conv : to;
-import std.stdio : stderr;
 
 import d2sqlite3 : Database;
 
@@ -11,14 +10,7 @@ import http.response : HttpResponse;
 import db;
 import state : AppState;
 import poller : getHealthJson, getPollStats;
-
-private bool isValidDownsample(string s) {
-    return db.isValidDownsample(s);
-}
-
-private long getDownsampleBucketMs(string s) {
-    return db.getDownsampleBucketMs(s);
-}
+import log : logf;
 
 HttpResponse handleReadings(AppState appState, HttpRequest req) {
     auto now = db.nowMillis();
@@ -49,17 +41,19 @@ HttpResponse handleReadings(AppState appState, HttpRequest req) {
         downsample = s;
 
     // Validate downsample param if present
+    long downsampleMs = 0;
     if (downsample !is null && downsample.length > 0) {
-        if (!isValidDownsample(downsample))
+        auto p = downsample in appState.config.downsampleBuckets;
+        if (p is null)
             return HttpResponse.badRequest("Invalid downsample value");
+        downsampleMs = *p;
     }
 
     try {
         Reading[] readings;
-        if (downsample !is null && downsample.length > 0) {
-            auto bucketMs = getDownsampleBucketMs(downsample);
+        if (downsampleMs > 0) {
             readings = appState.withDb((ref Database db_) {
-                return db.queryReadingsDownsampled(db_, device, from, to, limit, bucketMs);
+                return db.queryReadingsDownsampled(db_, device, from, to, limit, downsampleMs);
             });
         } else {
             readings = appState.withDb((ref Database db_) {
@@ -72,7 +66,7 @@ HttpResponse handleReadings(AppState appState, HttpRequest req) {
             items ~= r.toJson();
         return HttpResponse.okJson(JSONValue(items));
     } catch (Exception e) {
-        stderr.writefln("[api] query_readings error: %s", e.msg);
+        logf("[api] query_readings error: %s", e.msg);
         return HttpResponse.internalError("Internal server error");
     }
 }
@@ -103,7 +97,7 @@ HttpResponse handleReadingsCount(AppState appState, HttpRequest req) {
         obj["count"] = JSONValue(count);
         return HttpResponse.okJson(obj);
     } catch (Exception e) {
-        stderr.writefln("[api] readings_count error: %s", e.msg);
+        logf("[api] readings_count error: %s", e.msg);
         return HttpResponse.internalError("Internal server error");
     }
 }
@@ -119,7 +113,7 @@ HttpResponse handleReadingsLatest(AppState appState) {
             items ~= r.toJson();
         return HttpResponse.okJson(JSONValue(items));
     } catch (Exception e) {
-        stderr.writefln("[api] get_latest_readings error: %s", e.msg);
+        logf("[api] get_latest_readings error: %s", e.msg);
         return HttpResponse.internalError("Internal server error");
     }
 }
@@ -135,7 +129,7 @@ HttpResponse handleDevices(AppState appState) {
             items ~= d.toJson();
         return HttpResponse.okJson(JSONValue(items));
     } catch (Exception e) {
-        stderr.writefln("[api] get_devices error: %s", e.msg);
+        logf("[api] get_devices error: %s", e.msg);
         return HttpResponse.internalError("Internal server error");
     }
 }
@@ -154,9 +148,15 @@ HttpResponse handleConfig(AppState appState) {
         devicesJson ~= d;
     }
 
+    JSONValue bucketsJson;
+    bucketsJson = JSONValue((long[string]).init);
+    foreach (key, val; appState.config.downsampleBuckets) {
+        bucketsJson[key] = JSONValue(val);
+    }
+
     JSONValue cfg = JSONValue(string[string].init);
     cfg["pollIntervalMs"] = JSONValue(cast(long) appState.config.pollIntervalMs);
-    cfg["downsampleThreshold"] = JSONValue(cast(long) appState.config.downsampleThreshold);
+    cfg["downsampleBuckets"] = bucketsJson;
     cfg["devices"] = JSONValue(devicesJson);
 
     return HttpResponse.okJson(cfg);
@@ -204,7 +204,7 @@ HttpResponse handleStats(AppState appState) {
             return db.getReadingsCount(db_);
         });
     } catch (Exception e) {
-        stderr.writefln("[api] getReadingsCount error: %s", e.msg);
+        logf("[api] getReadingsCount error: %s", e.msg);
     }
 
     JSONValue obj = JSONValue(string[string].init);

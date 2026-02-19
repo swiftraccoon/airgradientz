@@ -2,7 +2,8 @@
 
 const fs = require('node:fs');
 const express = require('express');
-const { DOWNSAMPLE_MAP, queryReadings, getDevices, getLatestReadings, getReadingsCount, getFilteredCount } = require('./db');
+const { timestamp } = require('./log');
+const { queryReadings, getDevices, getLatestReadings, getReadingsCount, getFilteredCount } = require('./db');
 const { getHealth, getPollStats } = require('./poller');
 const config = require('../config');
 
@@ -13,8 +14,7 @@ router.get('/readings', (req, res, next) => {
     const { device, from, to, limit, downsample } = req.query;
 
     if (downsample !== undefined) {
-      const bucketMs = DOWNSAMPLE_MAP[downsample];
-      if (!bucketMs) {
+      if (!Object.hasOwn(config.downsampleBuckets, downsample)) {
         return res.status(400).json({ error: 'invalid downsample value' });
       }
     }
@@ -34,7 +34,8 @@ router.get('/readings', (req, res, next) => {
       from: effectiveFrom,
       to: effectiveTo,
       limit: effectiveLimit,
-      downsampleMs: downsample ? DOWNSAMPLE_MAP[downsample] : undefined,
+      // eslint-disable-next-line security/detect-object-injection -- validated via Object.hasOwn above
+      downsampleMs: downsample && Object.hasOwn(config.downsampleBuckets, downsample) ? config.downsampleBuckets[downsample] : undefined,
     });
 
     res.json(readings);
@@ -86,7 +87,7 @@ router.get('/health', (_req, res) => {
 router.get('/config', (_req, res) => {
   res.json({
     pollIntervalMs: config.pollIntervalMs,
-    downsampleThreshold: config.downsampleThreshold,
+    downsampleBuckets: config.downsampleBuckets,
     devices: config.devices.map(d => ({ ip: d.ip, label: d.label })),
   });
 });
@@ -117,7 +118,7 @@ router.get('/stats', (req, res) => {
 
 // JSON error handler — all DB or unexpected errors return JSON, not HTML
 router.use((err, _req, res, _next) => {
-  console.error('[api] Unhandled error:', err);
+  console.error(`${timestamp()} [api] Unhandled error:`, err);
   res.status(500).json({ error: 'Internal server error' });
 });
 

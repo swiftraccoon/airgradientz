@@ -5,7 +5,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"net"
 	"net/http"
 	"os"
@@ -69,14 +68,15 @@ func RunServer(ctx context.Context, db *sql.DB, cfg *Config, poller *Poller) {
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
 		defer cancel()
 		if err := srv.Shutdown(shutdownCtx); err != nil {
-			log.Printf("[server] Shutdown error: %v", err)
+			logf("[server] Shutdown error: %v", err)
 		}
 	}()
 
-	log.Printf("[server] Listening on http://localhost:%d", cfg.Port)
+	logf("[server] Listening on http://localhost:%d", cfg.Port)
 
 	if err := srv.ListenAndServe(); err != http.ErrServerClosed {
-		log.Fatalf("[server] ListenAndServe: %v", err)
+		logf("[server] ListenAndServe: %v", err)
+		os.Exit(1)
 	}
 }
 
@@ -123,7 +123,7 @@ func (h *handler) handleReadings(w http.ResponseWriter, r *http.Request) {
 	// Parse downsample parameter
 	var downsampleMs int64
 	if ds := r.URL.Query().Get("downsample"); ds != "" {
-		bucketMs, ok := DownsampleMap[ds]
+		bucketMs, ok := h.cfg.DownsampleBuckets[ds]
 		if !ok {
 			writeError(w, http.StatusBadRequest, "invalid downsample value")
 			return
@@ -150,7 +150,7 @@ func (h *handler) handleReadings(w http.ResponseWriter, r *http.Request) {
 
 	readings, err := QueryReadings(h.db, q)
 	if err != nil {
-		log.Printf("[api] query_readings error: %v", err)
+		logf("[api] query_readings error: %v", err)
 		writeError(w, http.StatusInternalServerError, "Internal server error")
 		return
 	}
@@ -165,7 +165,7 @@ func (h *handler) handleReadings(w http.ResponseWriter, r *http.Request) {
 func (h *handler) handleReadingsLatest(w http.ResponseWriter, _ *http.Request) {
 	readings, err := GetLatestReadings(h.db)
 	if err != nil {
-		log.Printf("[api] get_latest_readings error: %v", err)
+		logf("[api] get_latest_readings error: %v", err)
 		writeError(w, http.StatusInternalServerError, "Internal server error")
 		return
 	}
@@ -186,7 +186,7 @@ func (h *handler) handleReadingsCount(w http.ResponseWriter, r *http.Request) {
 
 	count, err := GetFilteredCount(h.db, from, to, device)
 	if err != nil {
-		log.Printf("[api] get_filtered_count error: %v", err)
+		logf("[api] get_filtered_count error: %v", err)
 		writeError(w, http.StatusInternalServerError, "Internal server error")
 		return
 	}
@@ -197,7 +197,7 @@ func (h *handler) handleReadingsCount(w http.ResponseWriter, r *http.Request) {
 func (h *handler) handleDevices(w http.ResponseWriter, _ *http.Request) {
 	devices, err := GetDevices(h.db)
 	if err != nil {
-		log.Printf("[api] get_devices error: %v", err)
+		logf("[api] get_devices error: %v", err)
 		writeError(w, http.StatusInternalServerError, "Internal server error")
 		return
 	}
@@ -221,7 +221,7 @@ func (h *handler) handleConfig(w http.ResponseWriter, _ *http.Request) {
 
 	writeJSON(w, map[string]any{
 		"pollIntervalMs":      h.cfg.PollIntervalMs,
-		"downsampleThreshold": h.cfg.DownsampleThreshold,
+		"downsampleBuckets": h.cfg.DownsampleBuckets,
 		"devices":             devices,
 	})
 }
@@ -232,7 +232,7 @@ func (h *handler) handleStats(w http.ResponseWriter, _ *http.Request) {
 
 	readingsCount, err := GetReadingsCount(h.db)
 	if err != nil {
-		log.Printf("[api] get_readings_count error: %v", err)
+		logf("[api] get_readings_count error: %v", err)
 	}
 
 	var dbSizeBytes int64

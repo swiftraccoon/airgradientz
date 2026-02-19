@@ -25,6 +25,9 @@
     <button data-range="7776000000">90d</button>
     <button data-range="31536000000">1y</button>
     <button data-range="0">All</button>
+    <select id="downsample-select">
+      <option value="">Raw (15s)</option>
+    </select>
   </nav>
 
   <main id="charts">
@@ -53,16 +56,6 @@
       <canvas id="chart-nox"></canvas>
     </div>
   </main>
-
-  <dialog id="downsample-dialog">
-    <h3 id="downsample-heading"></h3>
-    <p id="downsample-description"></p>
-    <div id="downsample-options"></div>
-    <div class="dialog-actions">
-      <button id="downsample-cancel" type="button">Cancel</button>
-      <button id="downsample-load" type="button">Load</button>
-    </div>
-  </dialog>
 
   <script src="app.js"></script>
 </body>

@@ -6,6 +6,7 @@
 #include "sqlite3.h"
 #include "strbuf.h"
 #include "json.h"
+#include "config.h"
 #include "db.h"
 #include "api.h"
 
@@ -1190,16 +1191,27 @@ static void insert_raw_reading(sqlite3 *db, int64_t ts, const char *device_id,
 
 static void test_downsample_lookup(void)
 {
-    ASSERT_INT_EQ(downsample_lookup("5m"),  300000);
-    ASSERT_INT_EQ(downsample_lookup("10m"), 600000);
-    ASSERT_INT_EQ(downsample_lookup("15m"), 900000);
-    ASSERT_INT_EQ(downsample_lookup("30m"), 1800000);
-    ASSERT_INT_EQ(downsample_lookup("1h"),  3600000);
-    ASSERT_INT_EQ(downsample_lookup("1d"),  86400000);
-    ASSERT_INT_EQ(downsample_lookup("1w"),  604800000);
-    ASSERT_INT_EQ(downsample_lookup("invalid"), 0);
-    ASSERT_INT_EQ(downsample_lookup(NULL),  0);
-    ASSERT_INT_EQ(downsample_lookup(""),    0);
+    Config cfg;
+    memset(&cfg, 0, sizeof(cfg));
+    cfg.downsample_bucket_count = 7;
+    snprintf(cfg.downsample_buckets[0].key, 8, "5m");   cfg.downsample_buckets[0].ms = 300000;
+    snprintf(cfg.downsample_buckets[1].key, 8, "10m");  cfg.downsample_buckets[1].ms = 600000;
+    snprintf(cfg.downsample_buckets[2].key, 8, "15m");  cfg.downsample_buckets[2].ms = 900000;
+    snprintf(cfg.downsample_buckets[3].key, 8, "30m");  cfg.downsample_buckets[3].ms = 1800000;
+    snprintf(cfg.downsample_buckets[4].key, 8, "1h");   cfg.downsample_buckets[4].ms = 3600000;
+    snprintf(cfg.downsample_buckets[5].key, 8, "1d");   cfg.downsample_buckets[5].ms = 86400000;
+    snprintf(cfg.downsample_buckets[6].key, 8, "1w");   cfg.downsample_buckets[6].ms = 604800000;
+
+    ASSERT_INT_EQ(downsample_lookup(&cfg, "5m"),  300000);
+    ASSERT_INT_EQ(downsample_lookup(&cfg, "10m"), 600000);
+    ASSERT_INT_EQ(downsample_lookup(&cfg, "15m"), 900000);
+    ASSERT_INT_EQ(downsample_lookup(&cfg, "30m"), 1800000);
+    ASSERT_INT_EQ(downsample_lookup(&cfg, "1h"),  3600000);
+    ASSERT_INT_EQ(downsample_lookup(&cfg, "1d"),  86400000);
+    ASSERT_INT_EQ(downsample_lookup(&cfg, "1w"),  604800000);
+    ASSERT_INT_EQ(downsample_lookup(&cfg, "invalid"), 0);
+    ASSERT_INT_EQ(downsample_lookup(&cfg, NULL),  0);
+    ASSERT_INT_EQ(downsample_lookup(&cfg, ""),    0);
 }
 
 static void test_db_downsample_grouping(void)
@@ -1233,7 +1245,7 @@ static void test_db_downsample_grouping(void)
     ASSERT_INT_EQ(rl.items[1].id, 0);
 
     /* Verify averages in the recent bucket (3 readings: pm02 = 10,20,30 => avg 20) */
-    Reading *recent = &rl.items[1]; /* ordered ASC, recent is last */
+    const Reading *recent = &rl.items[1]; /* ordered ASC, recent is last */
     ASSERT(recent->has_pm02);
     ASSERT_DBL_EQ(recent->pm02, 20.0);
 

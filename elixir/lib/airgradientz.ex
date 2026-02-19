@@ -4,6 +4,11 @@ defmodule Airgradientz do
 
   @impl true
   def start(_type, _args) do
+    Logger.configure_backend(:console,
+      format: {Airgradientz.LogFormatter, :format},
+      metadata: []
+    )
+
     config = Airgradientz.Config.load()
 
     children = [

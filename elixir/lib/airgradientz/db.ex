@@ -66,18 +66,6 @@ defmodule Airgradientz.DB do
   @latest_sql Map.fetch!(@queries, "select_latest")
   @count_sql Map.fetch!(@queries, "count_readings")
 
-  @downsample_map %{
-    "5m" => 300_000,
-    "10m" => 600_000,
-    "15m" => 900_000,
-    "30m" => 1_800_000,
-    "1h" => 3_600_000,
-    "1d" => 86_400_000,
-    "1w" => 604_800_000
-  }
-
-  def downsample_map, do: @downsample_map
-
   # Downsampled query columns (no id)
   @ds_columns "device_id, device_type, device_ip"
   @ds_agg_columns """

@@ -43,7 +43,8 @@ func TestLoadConfigFromFile(t *testing.T) {
 		"devices": [{"ip": "10.0.0.1", "label": "sensor1"}],
 		"pollIntervalMs": 30000,
 		"fetchTimeoutMs": 10000,
-		"maxApiRows": 5000
+		"maxApiRows": 5000,
+		"downsampleBuckets": {"5m": 300000, "1h": 3600000}
 	}`
 	if err := os.WriteFile(configPath, []byte(content), 0o644); err != nil {
 		t.Fatal(err)
@@ -110,55 +111,6 @@ func TestEnvPortValidation(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Setenv("PORT", tt.portEnv)
-			t.Setenv("DB_PATH", "")
-			cfg := LoadConfig()
-			if cfg.Port != tt.want {
-				t.Errorf("Port = %d, want %d", cfg.Port, tt.want)
-			}
-		})
-	}
-}
-
-func TestConfigFileInvalidJSON(t *testing.T) {
-	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "bad.json")
-	if err := os.WriteFile(configPath, []byte("{invalid json}"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-
-	t.Setenv("CONFIG_PATH", configPath)
-	t.Setenv("PORT", "")
-	t.Setenv("DB_PATH", "")
-
-	cfg := LoadConfig()
-	// Should fall back to defaults
-	if cfg.Port != 3016 {
-		t.Errorf("Port = %d, want 3016 (defaults after bad JSON)", cfg.Port)
-	}
-}
-
-func TestConfigFilePortBounds(t *testing.T) {
-	tmp := t.TempDir()
-
-	tests := []struct {
-		name    string
-		json    string
-		want    uint16
-	}{
-		{"valid port", `{"ports":{"go":8080}}`, 8080},
-		{"zero port", `{"ports":{"go":0}}`, 3016},
-		{"negative port", `{"ports":{"go":-1}}`, 3016},
-		{"too large port", `{"ports":{"go":70000}}`, 3016},
-		{"wrong key", `{"ports":{"rust":8080}}`, 3016},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			configPath := filepath.Join(tmp, tt.name+".json")
-			if err := os.WriteFile(configPath, []byte(tt.json), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			t.Setenv("CONFIG_PATH", configPath)
-			t.Setenv("PORT", "")
 			t.Setenv("DB_PATH", "")
 			cfg := LoadConfig()
 			if cfg.Port != tt.want {

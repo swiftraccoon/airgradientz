@@ -128,12 +128,22 @@ trap cleanup EXIT
 # Write minimal config for testing
 cat > "${TEST_DIR}/airgradientz.json" <<'CONF'
 {
+    "ports": {"asm": 3018},
     "devices": [
         {"ip": "192.168.1.100", "label": "test-device"}
     ],
     "pollIntervalMs": 600000,
     "fetchTimeoutMs": 1000,
-    "maxApiRows": 10000
+    "maxApiRows": 10000,
+    "downsampleBuckets": {
+        "5m": 300000,
+        "10m": 600000,
+        "15m": 900000,
+        "30m": 1800000,
+        "1h": 3600000,
+        "1d": 86400000,
+        "1w": 604800000
+    }
 }
 CONF
 
@@ -193,8 +203,6 @@ echo "--- Config endpoint ---"
 
 body=$(curl -sf "${BASE}/api/config")
 assert_json_field "config pollIntervalMs" "${body}" '.pollIntervalMs' "600000"
-assert_json_field "config fetchTimeoutMs" "${body}" '.fetchTimeoutMs' "1000"
-assert_json_field "config maxApiRows" "${body}" '.maxApiRows' "10000"
 config_devices=$(jq '.devices | length' <<< "${body}")
 assert_eq "config has 1 device" "1" "${config_devices}"
 assert_json_field "config device ip" "${body}" '.devices[0].ip' "192.168.1.100"
@@ -495,13 +503,17 @@ assert_eq "readings/count for indoor device is 2" "2" "${device_count}"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════
-# CONFIG DOWNSAMPLE THRESHOLD
+# CONFIG DOWNSAMPLE BUCKETS
 # ═══════════════════════════════════════════════════════════════════
 
-echo "--- Config downsampleThreshold ---"
+echo "--- Config downsampleBuckets ---"
 
 body=$(curl -sf "${BASE}/api/config")
-assert_json_field "config has downsampleThreshold" "${body}" '.downsampleThreshold' "10000"
+assert_json_field "config has downsampleBuckets.5m" "${body}" '.downsampleBuckets["5m"]' "300000"
+assert_json_field "config has downsampleBuckets.1h" "${body}" '.downsampleBuckets["1h"]' "3600000"
+assert_json_field "config has downsampleBuckets.1w" "${body}" '.downsampleBuckets["1w"]' "604800000"
+bucket_count=$(jq '.downsampleBuckets | length' <<< "${body}")
+assert_eq "config downsampleBuckets has 7 entries" "7" "${bucket_count}"
 
 echo ""
 

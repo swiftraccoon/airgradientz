@@ -13,7 +13,7 @@ import Control.Exception (SomeException, try)
 import Data.Aeson (Value(..), object, (.=), eitherDecodeStrict')
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
-import System.IO (hPutStrLn, stderr)
+import Log (logMsg)
 
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
@@ -69,7 +69,7 @@ startPoller dbMVar cfg = do
         , phFailures = failRef
         }
   _ <- forkIO (pollerLoop dbMVar cfg h)
-  hPutStrLn stderr $ "[poller] Starting — polling "
+  logMsg $ "[poller] Starting — polling "
     ++ show (length (cfgDevices cfg)) ++ " devices every "
     ++ show (fromIntegral (cfgPollIntervalMs cfg) / 1000 :: Double) ++ "s"
   pure h
@@ -90,7 +90,7 @@ pollerLoop dbMVar cfg h = do
           result <- try $ withMVar dbMVar $ \db -> checkpoint db
           case result of
             Left (e :: SomeException) ->
-              hPutStrLn stderr $ "[poller] checkpoint error: " ++ show e
+              logMsg $ "[poller] checkpoint error: " ++ show e
             Right () -> pure ()
         else pure ()
       go newCount
@@ -135,7 +135,7 @@ setSuccess h idx = do
 setError :: PollerHandle -> Int -> DeviceConfig -> String -> IO ()
 setError h idx dev msg = do
   now <- nowMillis
-  hPutStrLn stderr $ "[poller] " ++ T.unpack (deviceLabel dev)
+  logMsg $ "[poller] " ++ T.unpack (deviceLabel dev)
     ++ " (" ++ T.unpack (deviceIp dev) ++ "): " ++ msg
   atomicModifyIORef' (phFailures h) (\n -> (n + 1, ()))
   modifyMVar_ (phHealth h) $ \hs ->
@@ -175,7 +175,7 @@ getPollStats h = do
 
 logPoll :: DeviceConfig -> BS.ByteString -> IO ()
 logPoll dev _ =
-  hPutStrLn stderr $ "[poller] " ++ T.unpack (deviceLabel dev)
+  logMsg $ "[poller] " ++ T.unpack (deviceLabel dev)
     ++ " (" ++ T.unpack (deviceIp dev) ++ "): ok"
 
 -- | Minimal HTTP client using raw sockets with timeout.

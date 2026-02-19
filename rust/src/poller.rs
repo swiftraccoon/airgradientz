@@ -8,6 +8,7 @@ use crate::db;
 use crate::http::client::http_get;
 use crate::json;
 use crate::json::{json_array, json_object, JsonValue};
+use crate::log::log;
 use crate::AppState;
 
 const CHECKPOINT_INTERVAL_POLLS: u32 = 10; // ~5min at 30s intervals
@@ -132,7 +133,7 @@ fn fetch_device(state: &AppState, ip: &str, label: &str) {
         Err(e) => {
             POLL_FAILURES.fetch_add(1, Ordering::Relaxed);
             let msg = e.to_string();
-            eprintln!("[poller] {label} ({ip}): fetch failed: {msg}");
+            log!("[poller] {label} ({ip}): fetch failed: {msg}");
             let mut health = state.health.write().unwrap_or_else(std::sync::PoisonError::into_inner);
             record_failure(&mut health, ip, msg);
         }
@@ -140,7 +141,7 @@ fn fetch_device(state: &AppState, ip: &str, label: &str) {
             Err(e) => {
                 POLL_FAILURES.fetch_add(1, Ordering::Relaxed);
                 let msg = format!("JSON parse error: {e}");
-                eprintln!("[poller] {label} ({ip}): {msg}");
+                log!("[poller] {label} ({ip}): {msg}");
                 let mut health = state.health.write().unwrap_or_else(std::sync::PoisonError::into_inner);
                 record_failure(&mut health, ip, msg);
             }
@@ -148,7 +149,7 @@ fn fetch_device(state: &AppState, ip: &str, label: &str) {
                 if !data.is_object() {
                     POLL_FAILURES.fetch_add(1, Ordering::Relaxed);
                     let msg = "unexpected response type: not an object".to_string();
-                    eprintln!("[poller] {label} ({ip}): {msg}");
+                    log!("[poller] {label} ({ip}): {msg}");
                     let mut health = state.health.write().unwrap_or_else(std::sync::PoisonError::into_inner);
                     record_failure(&mut health, ip, msg);
                     return;
@@ -162,7 +163,7 @@ fn fetch_device(state: &AppState, ip: &str, label: &str) {
                 if let Err(e) = db_result {
                     POLL_FAILURES.fetch_add(1, Ordering::Relaxed);
                     let msg = format!("DB insert failed: {e}");
-                    eprintln!("[poller] {label} ({ip}): {msg}");
+                    log!("[poller] {label} ({ip}): {msg}");
                     let mut health = state.health.write().unwrap_or_else(std::sync::PoisonError::into_inner);
                     record_failure(&mut health, ip, msg);
                 } else {
@@ -173,7 +174,7 @@ fn fetch_device(state: &AppState, ip: &str, label: &str) {
 
                     let mut health = state.health.write().unwrap_or_else(std::sync::PoisonError::into_inner);
                     record_success(&mut health, ip);
-                    eprintln!(
+                    log!(
                         "[poller] {label} ({ip}): OK — PM2.5={}, CO2={}, T={}°C",
                         format_optional(pm02),
                         format_optional(rco2),
@@ -194,7 +195,7 @@ fn poll_all(state: &AppState) {
 pub(crate) fn run(state: &Arc<AppState>) {
     let poll_interval = Duration::from_millis(u64::from(state.config.poll_interval_ms));
 
-    eprintln!(
+    log!(
         "[poller] Starting — polling {} devices every {}s",
         state.config.devices.len(),
         state.config.poll_interval_ms / 1000,
@@ -209,7 +210,7 @@ pub(crate) fn run(state: &Arc<AppState>) {
         thread::sleep(poll_interval);
 
         if state.shutdown.load(std::sync::atomic::Ordering::Relaxed) {
-            eprintln!("[poller] Stopped");
+            log!("[poller] Stopped");
             break;
         }
 
@@ -219,7 +220,7 @@ pub(crate) fn run(state: &Arc<AppState>) {
         if poll_count.is_multiple_of(CHECKPOINT_INTERVAL_POLLS) {
             let conn = state.db.lock().unwrap_or_else(std::sync::PoisonError::into_inner);
             if let Err(e) = db::checkpoint(&conn) {
-                eprintln!("[poller] WAL checkpoint failed: {e}");
+                log!("[poller] WAL checkpoint failed: {e}");
             }
         }
     }

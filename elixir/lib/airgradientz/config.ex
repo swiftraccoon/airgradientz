@@ -1,16 +1,15 @@
 defmodule Airgradientz.Config do
   @moduledoc false
 
-  defstruct port: 3013,
-            db_path: Path.join(File.cwd!(), "airgradientz.db"),
-            devices: [
-              %{ip: "192.168.88.6", label: "outdoor"},
-              %{ip: "192.168.88.159", label: "indoor"}
-            ],
-            poll_interval_ms: 15_000,
-            fetch_timeout_ms: 5_000,
-            max_api_rows: 10_000,
-            downsample_threshold: 10_000
+  require Logger
+
+  defstruct port: nil,
+            db_path: nil,
+            devices: nil,
+            poll_interval_ms: nil,
+            fetch_timeout_ms: nil,
+            max_api_rows: nil,
+            downsample_buckets: nil
 
   @type t :: %__MODULE__{
           port: pos_integer(),
@@ -19,32 +18,21 @@ defmodule Airgradientz.Config do
           poll_interval_ms: pos_integer(),
           fetch_timeout_ms: pos_integer(),
           max_api_rows: pos_integer(),
-          downsample_threshold: pos_integer()
+          downsample_buckets: %{String.t() => pos_integer()}
         }
 
   @spec load() :: t()
   def load do
-    config = %__MODULE__{}
+    json = load_config_file!()
 
-    config
-    |> merge_file()
+    json
+    |> build_config()
+    |> validate!()
     |> merge_env()
     |> log_config()
   end
 
-  defp merge_file(config) do
-    case find_config_file() do
-      {:ok, path, json} ->
-        :logger.info(~c"[config] Loaded config from #{Path.expand(path)}")
-        apply_json(config, json)
-
-      :none ->
-        :logger.info(~c"[config] No config file found, using defaults")
-        config
-    end
-  end
-
-  defp find_config_file do
+  defp load_config_file! do
     candidates =
       Enum.filter(
         [
@@ -55,66 +43,117 @@ defmodule Airgradientz.Config do
         &(&1 != nil)
       )
 
-    Enum.reduce_while(candidates, :none, fn path, acc ->
-      case File.read(path) do
-        {:ok, content} ->
-          case Jason.decode(content) do
-            {:ok, json} when is_map(json) -> {:halt, {:ok, path, json}}
-            _invalid -> {:cont, acc}
-          end
+    result =
+      Enum.reduce_while(candidates, :none, fn path, acc ->
+        case File.read(path) do
+          {:ok, content} ->
+            case Jason.decode(content) do
+              {:ok, json} when is_map(json) ->
+                Logger.info("[config] Loaded config from #{Path.expand(path)}")
+                {:halt, {:ok, json}}
 
-        {:error, _reason} ->
-          if path == System.get_env("CONFIG_PATH") do
-            :logger.warning(~c"[config] CONFIG_PATH set but unreadable: #{path}")
-          end
+              _invalid ->
+                {:cont, acc}
+            end
 
-          {:cont, acc}
-      end
-    end)
-  end
+          {:error, _reason} ->
+            if path == System.get_env("CONFIG_PATH") do
+              Logger.warning("[config] CONFIG_PATH set but unreadable: #{path}")
+            end
 
-  defp apply_json(config, json) do
-    defaults = Map.get(json, "defaults", %{})
-
-    config
-    |> maybe_put_devices(defaults)
-    |> maybe_put_positive_int(:poll_interval_ms, defaults, "pollIntervalMs")
-    |> maybe_put_positive_int(:fetch_timeout_ms, defaults, "fetchTimeoutMs")
-    |> maybe_put_positive_int(:max_api_rows, defaults, "maxApiRows")
-    |> maybe_put_positive_int(:downsample_threshold, defaults, "downsampleThreshold")
-    |> maybe_put_port(json)
-    |> maybe_put_devices(json)
-    |> maybe_put_positive_int(:poll_interval_ms, json, "pollIntervalMs")
-    |> maybe_put_positive_int(:fetch_timeout_ms, json, "fetchTimeoutMs")
-    |> maybe_put_positive_int(:max_api_rows, json, "maxApiRows")
-    |> maybe_put_positive_int(:downsample_threshold, json, "downsampleThreshold")
-  end
-
-  defp maybe_put_port(config, %{"ports" => %{"elixir" => port}})
-       when is_number(port) and port > 0 and port <= 65_535 do
-    %{config | port: trunc(port)}
-  end
-
-  defp maybe_put_port(config, _json), do: config
-
-  defp maybe_put_devices(config, %{"devices" => devices})
-       when is_list(devices) and devices != [] do
-    parsed =
-      Enum.map(devices, fn d ->
-        %{ip: Map.get(d, "ip", ""), label: Map.get(d, "label", "")}
+            {:cont, acc}
+        end
       end)
 
-    %{config | devices: parsed}
-  end
+    case result do
+      {:ok, json} ->
+        json
 
-  defp maybe_put_devices(config, _json), do: config
-
-  defp maybe_put_positive_int(config, key, json, json_key) do
-    case Map.get(json, json_key) do
-      val when is_number(val) and val > 0 -> Map.put(config, key, trunc(val))
-      _other -> config
+      :none ->
+        IO.write(:stderr, "fatal: no config file found (searched: #{Enum.join(candidates, ", ")})\n")
+        System.halt(1)
     end
   end
+
+  defp build_config(json) do
+    port = get_port(json)
+    devices = get_devices(json)
+    poll = get_positive_int(json, "pollIntervalMs")
+    fetch = get_positive_int(json, "fetchTimeoutMs")
+    max_rows = get_positive_int(json, "maxApiRows")
+    buckets = get_downsample_buckets(json)
+
+    %__MODULE__{
+      port: port,
+      db_path: Path.join(File.cwd!(), "airgradientz.db"),
+      devices: devices,
+      poll_interval_ms: poll,
+      fetch_timeout_ms: fetch,
+      max_api_rows: max_rows,
+      downsample_buckets: buckets
+    }
+  end
+
+  defp get_port(json) do
+    case json do
+      %{"ports" => %{"elixir" => port}} when is_number(port) and port > 0 and port <= 65_535 ->
+        trunc(port)
+
+      _other ->
+        nil
+    end
+  end
+
+  defp get_devices(%{"devices" => devices}) when is_list(devices) and devices != [] do
+    valid =
+      Enum.all?(devices, fn d ->
+        is_map(d) and is_binary(Map.get(d, "ip")) and Map.get(d, "ip") != "" and
+          is_binary(Map.get(d, "label")) and Map.get(d, "label") != ""
+      end)
+
+    if valid do
+      Enum.map(devices, fn d -> %{ip: d["ip"], label: d["label"]} end)
+    else
+      nil
+    end
+  end
+
+  defp get_devices(_json), do: nil
+
+  defp get_positive_int(json, key) do
+    case Map.get(json, key) do
+      val when is_number(val) and val > 0 -> trunc(val)
+      _other -> nil
+    end
+  end
+
+  defp get_downsample_buckets(%{"downsampleBuckets" => buckets}) when is_map(buckets) and map_size(buckets) > 0 do
+    valid = Enum.all?(buckets, fn {k, v} -> is_binary(k) and is_number(v) and v > 0 end)
+    if valid, do: Map.new(buckets, fn {k, v} -> {k, trunc(v)} end), else: nil
+  end
+  defp get_downsample_buckets(_json), do: nil
+
+  defp validate!(config) do
+    missing =
+      []
+      |> check_key(config.poll_interval_ms, "pollIntervalMs")
+      |> check_key(config.fetch_timeout_ms, "fetchTimeoutMs")
+      |> check_key(config.max_api_rows, "maxApiRows")
+      |> check_key(config.downsample_buckets, "downsampleBuckets")
+      |> check_key(config.devices, "devices")
+      |> check_key(config.port, "ports.elixir")
+      |> Enum.reverse()
+
+    if missing != [] do
+      IO.write(:stderr, "fatal: missing required config keys: #{Enum.join(missing, ", ")}\n")
+      System.halt(1)
+    end
+
+    config
+  end
+
+  defp check_key(acc, nil, key), do: [key | acc]
+  defp check_key(acc, _val, _key), do: acc
 
   defp merge_env(config) do
     config
@@ -145,8 +184,8 @@ defmodule Airgradientz.Config do
   defp log_config(config) do
     device_list = Enum.map_join(config.devices, ", ", &"#{&1.label}(#{&1.ip})")
 
-    :logger.info(
-      ~c"[config] port=#{config.port} devices=[#{device_list}] poll=#{config.poll_interval_ms}ms"
+    Logger.info(
+      "[config] port=#{config.port} devices=[#{device_list}] poll=#{config.poll_interval_ms}ms"
     )
 
     config

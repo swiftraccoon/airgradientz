@@ -6,6 +6,7 @@ extern pthread_rwlock_wrlock, pthread_rwlock_unlock
 extern nanosleep, clock_gettime, snprintf, strstr, sscanf, fprintf
 extern strlen, strdup, free
 extern stderr
+extern log_ts
 
 extern g_devices, g_device_count, g_health, g_health_lock
 extern g_shutdown, g_poll_successes, g_poll_failures, g_started_at
@@ -560,6 +561,7 @@ poll_device:
     lock inc qword [g_poll_successes]
 
     ; Log success
+    call log_ts
     mov rdi, [rel stderr wrt ..got]
     mov rdi, [rdi]
     lea rsi, [log_poll_success]
@@ -609,6 +611,7 @@ poll_device:
     lock inc qword [g_poll_failures]
 
     ; Log error
+    call log_ts
     mov rdi, [rel stderr wrt ..got]
     mov rdi, [rdi]
     lea rsi, [log_poll_error]

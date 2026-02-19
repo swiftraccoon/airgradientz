@@ -82,9 +82,10 @@ int     db_checkpoint(sqlite3 *db);
 int64_t db_get_readings_count(sqlite3 *db);
 int64_t db_get_filtered_count(sqlite3 *db, int64_t from, int64_t to, const char *device);
 
-/* Downsample map: maps human-readable bucket names to millisecond durations.
-   Returns 0 if the key is not found. */
-int64_t downsample_lookup(const char *key);
+/* Downsample lookup: maps human-readable bucket names to millisecond durations
+   using the Config's downsample_buckets array. Returns 0 if the key is not found. */
+typedef struct Config Config;
+int64_t downsample_lookup(const Config *cfg, const char *key);
 
 int64_t db_now_millis(void);
 

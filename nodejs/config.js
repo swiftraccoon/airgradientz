@@ -2,6 +2,7 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
+const { timestamp } = require('./src/log');
 
 function loadConfigFile() {
   const candidates = [
@@ -16,11 +17,11 @@ function loadConfigFile() {
       // or hardcoded ./airgradientz.json and ../airgradientz.json. Not user input.
       const content = fs.readFileSync(p, 'utf8'); // eslint-disable-line security/detect-non-literal-fs-filename
       const label = p === process.env.CONFIG_PATH ? `CONFIG_PATH: ${p}` : p;
-      console.error(`[config] Loaded config from ${label}`);
+      console.error(`${timestamp()} [config] Loaded config from ${label}`);
       return JSON.parse(content);
     } catch {
       if (p === process.env.CONFIG_PATH) {
-        console.error(`[config] CONFIG_PATH set but unreadable: ${p}`);
+        console.error(`${timestamp()} [config] CONFIG_PATH set but unreadable: ${p}`);
       }
     }
   }
@@ -28,82 +29,61 @@ function loadConfigFile() {
 }
 
 const fileConfig = loadConfigFile();
+if (!fileConfig) {
+  console.error('fatal: config file not found (searched CONFIG_PATH, ./airgradientz.json, ../airgradientz.json)');
+  process.exit(1);
+}
 
-const defaults = {
-  port: 3010,
-  dbPath: path.join(__dirname, 'airgradientz.db'),
-  devices: [
-    { ip: '192.168.88.6', label: 'outdoor' },
-    { ip: '192.168.88.159', label: 'indoor' },
-  ],
-  pollIntervalMs: 15_000,
-  fetchTimeoutMs: 5_000,
-  maxApiRows: 10_000,
-  downsampleThreshold: 10_000,
+// Validate required keys
+const missing = [];
+if (typeof fileConfig.pollIntervalMs !== 'number' || fileConfig.pollIntervalMs <= 0) {
+  missing.push('pollIntervalMs');
+}
+if (typeof fileConfig.fetchTimeoutMs !== 'number' || fileConfig.fetchTimeoutMs <= 0) {
+  missing.push('fetchTimeoutMs');
+}
+if (typeof fileConfig.maxApiRows !== 'number' || fileConfig.maxApiRows <= 0) {
+  missing.push('maxApiRows');
+}
+if (!fileConfig.downsampleBuckets || typeof fileConfig.downsampleBuckets !== 'object' || Object.keys(fileConfig.downsampleBuckets).length === 0) {
+  missing.push('downsampleBuckets');
+}
+if (!Array.isArray(fileConfig.devices) || fileConfig.devices.length === 0) {
+  missing.push('devices');
+} else if (fileConfig.devices.some(d => !d.ip || !d.label)) {
+  missing.push('devices (each entry needs ip and label)');
+}
+if (fileConfig.ports?.nodejs === undefined || fileConfig.ports?.nodejs === null) {
+  missing.push('ports.nodejs');
+}
+if (missing.length > 0) {
+  console.error(`fatal: missing required config keys: ${missing.join(', ')}`);
+  process.exit(1);
+}
+
+// Read values directly from config file
+const merged = {
+  port: Number(fileConfig.ports.nodejs),
+  dbPath: process.env.DB_PATH || path.join(__dirname, 'airgradientz.db'),
+  devices: fileConfig.devices,
+  pollIntervalMs: fileConfig.pollIntervalMs,
+  fetchTimeoutMs: fileConfig.fetchTimeoutMs,
+  maxApiRows: fileConfig.maxApiRows,
+  downsampleBuckets: fileConfig.downsampleBuckets,
   shutdownTimeoutMs: 5_000,
 };
 
-// Merge: defaults < config file defaults < config file top-level < env vars
-const merged = { ...defaults };
-
-if (fileConfig) {
-  const fileDefs = fileConfig.defaults || {};
-
-  // Apply file defaults first (lower priority)
-  if (Array.isArray(fileDefs.devices) && fileDefs.devices.length > 0) {
-    merged.devices = fileDefs.devices;
-  }
-  if (typeof fileDefs.pollIntervalMs === 'number' && fileDefs.pollIntervalMs > 0) {
-    merged.pollIntervalMs = fileDefs.pollIntervalMs;
-  }
-  if (typeof fileDefs.fetchTimeoutMs === 'number' && fileDefs.fetchTimeoutMs > 0) {
-    merged.fetchTimeoutMs = fileDefs.fetchTimeoutMs;
-  }
-  if (typeof fileDefs.maxApiRows === 'number' && fileDefs.maxApiRows > 0) {
-    merged.maxApiRows = fileDefs.maxApiRows;
-  }
-  if (typeof fileDefs.downsampleThreshold === 'number' && fileDefs.downsampleThreshold > 0) {
-    merged.downsampleThreshold = fileDefs.downsampleThreshold;
-  }
-
-  // Apply top-level overrides (higher priority)
-  if (Array.isArray(fileConfig.devices) && fileConfig.devices.length > 0) {
-    merged.devices = fileConfig.devices;
-  }
-  if (typeof fileConfig.pollIntervalMs === 'number' && fileConfig.pollIntervalMs > 0) {
-    merged.pollIntervalMs = fileConfig.pollIntervalMs;
-  }
-  if (typeof fileConfig.fetchTimeoutMs === 'number' && fileConfig.fetchTimeoutMs > 0) {
-    merged.fetchTimeoutMs = fileConfig.fetchTimeoutMs;
-  }
-  if (typeof fileConfig.maxApiRows === 'number' && fileConfig.maxApiRows > 0) {
-    merged.maxApiRows = fileConfig.maxApiRows;
-  }
-  if (typeof fileConfig.downsampleThreshold === 'number' && fileConfig.downsampleThreshold > 0) {
-    merged.downsampleThreshold = fileConfig.downsampleThreshold;
-  }
-}
-
-if (fileConfig?.ports?.nodejs !== undefined && fileConfig?.ports?.nodejs !== null) {
-  const port = Number(fileConfig.ports.nodejs);
-  if (port > 0 && port <= 65535) {
-    merged.port = port;
-  }
-}
-
-// Env var overrides (highest priority)
+// PORT env var overrides (highest priority)
 if (process.env.PORT) {
   const port = Number(process.env.PORT);
   if (port > 0 && port <= 65535) {
     merged.port = port;
   }
 }
-if (process.env.DB_PATH) {
-  merged.dbPath = process.env.DB_PATH;
-}
 
 // Freeze everything
 merged.devices = Object.freeze(merged.devices.map(d => Object.freeze(d)));
+Object.freeze(merged.downsampleBuckets);
 const config = Object.freeze(merged);
 
 module.exports = config;

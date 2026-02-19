@@ -20,33 +20,49 @@ find_config_file() {
 
 load_config() {
     local config_file
-    if config_file=$(find_config_file); then
-        local config
-        config=$(< "${config_file}")
-
-        AGTZ_PORT=$(jq -r '.ports.bash // empty' <<< "${config}")
-        AGTZ_POLL_INTERVAL_MS=$(jq -r '.pollIntervalMs // .defaults.pollIntervalMs // empty' <<< "${config}")
-        AGTZ_FETCH_TIMEOUT_MS=$(jq -r '.fetchTimeoutMs // .defaults.fetchTimeoutMs // empty' <<< "${config}")
-        AGTZ_MAX_API_ROWS=$(jq -r '.maxApiRows // .defaults.maxApiRows // empty' <<< "${config}")
-        AGTZ_DOWNSAMPLE_THRESHOLD=$(jq -r '.downsampleThreshold // .defaults.downsampleThreshold // empty' <<< "${config}")
-        AGTZ_DEVICES_JSON=$(jq -c '.devices // .defaults.devices // []' <<< "${config}")
-
-        log "Loaded config from ${config_file}"
-    else
-        log "No config file found, using defaults"
-        AGTZ_DEVICES_JSON='[]'
+    if ! config_file=$(find_config_file); then
+        printf 'fatal: no config file found (tried CONFIG_PATH, ./airgradientz.json, ../airgradientz.json)\n' >&2
+        exit 1
     fi
 
-    # Env vars override config file; config file overrides defaults
-    AGTZ_PORT="${PORT:-${AGTZ_PORT:-3017}}"
+    local config
+    config=$(< "${config_file}")
+
+    AGTZ_POLL_INTERVAL_MS=$(jq -r '.pollIntervalMs // empty' <<< "${config}")
+    AGTZ_FETCH_TIMEOUT_MS=$(jq -r '.fetchTimeoutMs // empty' <<< "${config}")
+    AGTZ_MAX_API_ROWS=$(jq -r '.maxApiRows // empty' <<< "${config}")
+    AGTZ_DOWNSAMPLE_BUCKETS=$(jq -c '.downsampleBuckets // empty' <<< "${config}")
+    AGTZ_DEVICES_JSON=$(jq -c '.devices // empty' <<< "${config}")
+    AGTZ_PORT=$(jq -r '.ports.bash // empty' <<< "${config}")
+
+    log "Loaded config from ${config_file}"
+
+    # Validate required keys
+    local missing=()
+    [[ -z "${AGTZ_POLL_INTERVAL_MS}" ]] && missing+=("pollIntervalMs")
+    [[ -z "${AGTZ_FETCH_TIMEOUT_MS}" ]] && missing+=("fetchTimeoutMs")
+    [[ -z "${AGTZ_MAX_API_ROWS}" ]] && missing+=("maxApiRows")
+    if [[ -z "${AGTZ_DOWNSAMPLE_BUCKETS}" ]] || [[ "${AGTZ_DOWNSAMPLE_BUCKETS}" == "null" ]] || [[ "${AGTZ_DOWNSAMPLE_BUCKETS}" == "{}" ]]; then
+        missing+=("downsampleBuckets")
+    fi
+    if [[ -z "${AGTZ_DEVICES_JSON}" ]] || [[ "${AGTZ_DEVICES_JSON}" == "[]" ]] || [[ "${AGTZ_DEVICES_JSON}" == "null" ]]; then
+        missing+=("devices")
+    fi
+    [[ -z "${AGTZ_PORT}" ]] && missing+=("ports.bash")
+
+    if [[ ${#missing[@]} -gt 0 ]]; then
+        local joined
+        joined=$(printf '%s, ' "${missing[@]}")
+        printf 'fatal: missing required config keys: %s\n' "${joined%, }" >&2
+        exit 1
+    fi
+
+    # PORT env var overrides config; DB_PATH defaults to ./airgradientz.db
+    AGTZ_PORT="${PORT:-${AGTZ_PORT}}"
     AGTZ_DB_PATH="${DB_PATH:-./airgradientz.db}"
-    AGTZ_POLL_INTERVAL_MS="${AGTZ_POLL_INTERVAL_MS:-15000}"
-    AGTZ_FETCH_TIMEOUT_MS="${AGTZ_FETCH_TIMEOUT_MS:-5000}"
-    AGTZ_MAX_API_ROWS="${AGTZ_MAX_API_ROWS:-10000}"
-    AGTZ_DOWNSAMPLE_THRESHOLD="${AGTZ_DOWNSAMPLE_THRESHOLD:-10000}"
 
     export AGTZ_PORT AGTZ_DB_PATH AGTZ_POLL_INTERVAL_MS AGTZ_FETCH_TIMEOUT_MS
-    export AGTZ_MAX_API_ROWS AGTZ_DOWNSAMPLE_THRESHOLD AGTZ_DEVICES_JSON
+    export AGTZ_MAX_API_ROWS AGTZ_DOWNSAMPLE_BUCKETS AGTZ_DEVICES_JSON
     export AGTZ_SCRIPT_DIR
 }
 

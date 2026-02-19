@@ -1,6 +1,5 @@
 module poller;
 
-import std.stdio : stderr;
 import std.format : format;
 import std.json : JSONValue, parseJSON, JSONType;
 import std.conv : to;
@@ -13,6 +12,7 @@ import d2sqlite3 : Database;
 import http.client : httpGet;
 import db;
 import state : AppState;
+import log : logf, logln;
 
 enum CHECKPOINT_INTERVAL_POLLS = 10;
 
@@ -98,7 +98,7 @@ private void fetchDevice(AppState appState, string ip, string label) {
         body_ = httpGet(ip, "/measures/current", dur!"msecs"(appState.config.fetchTimeoutMs));
     } catch (Exception e) {
         auto msg = e.msg;
-        stderr.writefln("[poller] %s (%s): fetch failed: %s", label, ip, msg);
+        logf("[poller] %s (%s): fetch failed: %s", label, ip, msg);
         atomicOp!"+="(g_pollFailures, 1L);
         appState.withHealthWrite((ref DeviceHealth[string] health) {
             recordFailure(health, ip, msg);
@@ -111,7 +111,7 @@ private void fetchDevice(AppState appState, string ip, string label) {
         data = parseJSON(body_);
     } catch (Exception e) {
         auto msg = "JSON parse error: " ~ e.msg;
-        stderr.writefln("[poller] %s (%s): %s", label, ip, msg);
+        logf("[poller] %s (%s): %s", label, ip, msg);
         atomicOp!"+="(g_pollFailures, 1L);
         appState.withHealthWrite((ref DeviceHealth[string] health) {
             recordFailure(health, ip, msg);
@@ -121,7 +121,7 @@ private void fetchDevice(AppState appState, string ip, string label) {
 
     if (data.type != JSONType.object) {
         auto msg = "unexpected response type: not an object";
-        stderr.writefln("[poller] %s (%s): %s", label, ip, msg);
+        logf("[poller] %s (%s): %s", label, ip, msg);
         atomicOp!"+="(g_pollFailures, 1L);
         appState.withHealthWrite((ref DeviceHealth[string] health) {
             recordFailure(health, ip, msg);
@@ -136,7 +136,7 @@ private void fetchDevice(AppState appState, string ip, string label) {
         });
     } catch (Exception e) {
         auto msg = "DB insert failed: " ~ e.msg;
-        stderr.writefln("[poller] %s (%s): %s", label, ip, msg);
+        logf("[poller] %s (%s): %s", label, ip, msg);
         atomicOp!"+="(g_pollFailures, 1L);
         appState.withHealthWrite((ref DeviceHealth[string] health) {
             recordFailure(health, ip, msg);
@@ -165,7 +165,7 @@ private void fetchDevice(AppState appState, string ip, string label) {
         recordSuccess(health, ip);
     });
 
-    stderr.writefln("[poller] %s (%s): OK — PM2.5=%s, CO2=%s, T=%s°C",
+    logf("[poller] %s (%s): OK — PM2.5=%s, CO2=%s, T=%s°C",
         label, ip, pm02Str, rco2Str, atmpStr);
 }
 
@@ -184,7 +184,7 @@ void startPoller(AppState appState) {
 }
 
 private void runPoller(AppState appState) {
-    stderr.writefln("[poller] Starting — polling %d devices every %ds",
+    logf("[poller] Starting — polling %d devices every %ds",
         appState.config.devices.length,
         appState.config.pollIntervalMs / 1000);
 
@@ -214,10 +214,10 @@ private void runPoller(AppState appState) {
                     db.checkpoint(db_);
                 });
             } catch (Exception e) {
-                stderr.writefln("[poller] WAL checkpoint failed: %s", e.msg);
+                logf("[poller] WAL checkpoint failed: %s", e.msg);
             }
         }
     }
 
-    stderr.writeln("[poller] Stopped");
+    logln("[poller] Stopped");
 }

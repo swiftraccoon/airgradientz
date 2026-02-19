@@ -3,6 +3,46 @@ const config_mod = @import("config.zig");
 const db_mod = @import("db.zig");
 const poller_mod = @import("poller.zig");
 const http_server = @import("http_server.zig");
+const time_c = @cImport(@cInclude("time.h"));
+
+pub const std_options: std.Options = .{
+    .logFn = timestampedLog,
+};
+
+fn timestampedLog(
+    comptime level: std.log.Level,
+    comptime scope: @Type(.enum_literal),
+    comptime format: []const u8,
+    args: anytype,
+) void {
+    // Skip timestamps for fatal exit messages
+    const is_fatal = comptime std.mem.indexOf(u8, format, "FATAL") != null;
+
+    var buffer: [64]u8 = undefined;
+    const stderr = std.debug.lockStderrWriter(&buffer);
+    defer std.debug.unlockStderrWriter();
+
+    if (!is_fatal) {
+        // Get wall-clock time via libc
+        var now: time_c.time_t = undefined;
+        _ = time_c.time(&now);
+        var tm: time_c.struct_tm = undefined;
+        _ = time_c.localtime_r(&now, &tm);
+
+        nosuspend stderr.print("[{d:0>4}-{d:0>2}-{d:0>2} {d:0>2}:{d:0>2}:{d:0>2}] ", .{
+            @as(u32, @intCast(tm.tm_year)) + 1900,
+            @as(u32, @intCast(tm.tm_mon)) + 1,
+            @as(u32, @intCast(tm.tm_mday)),
+            @as(u32, @intCast(tm.tm_hour)),
+            @as(u32, @intCast(tm.tm_min)),
+            @as(u32, @intCast(tm.tm_sec)),
+        }) catch return;
+    }
+
+    _ = level;
+    _ = scope;
+    nosuspend stderr.print(format ++ "\n", args) catch return;
+}
 
 var g_shutdown = std.atomic.Value(bool).init(false);
 

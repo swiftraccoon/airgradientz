@@ -24,7 +24,7 @@ import Data.Int (Int64)
 import Data.Maybe (fromMaybe)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import System.Directory (doesFileExist)
-import System.IO (hPutStrLn, stderr)
+import Log (logMsg)
 
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
@@ -165,12 +165,12 @@ loadQueries = do
   exists <- doesFileExist "../queries.sql"
   if not exists
     then do
-      hPutStrLn stderr "[db] queries.sql not found, using defaults"
+      logMsg "[db] queries.sql not found, using defaults"
       pure []
     else do
       content <- readFileText "../queries.sql"
       let qs = parseQueriesSQL content
-      hPutStrLn stderr $ "[db] loaded " ++ show (length qs) ++ " queries from queries.sql"
+      logMsg $ "[db] loaded " ++ show (length qs) ++ " queries from queries.sql"
       pure qs
 
 parseQueriesSQL :: T.Text -> [(String, T.Text)]

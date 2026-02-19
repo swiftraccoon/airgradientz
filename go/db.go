@@ -4,7 +4,6 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"log"
 	"os"
 	"regexp"
 	"strconv"
@@ -14,6 +13,8 @@ import (
 
 	_ "github.com/mattn/go-sqlite3"
 )
+
+const deviceAll = "all"
 
 type Reading struct {
 	DeviceType      string
@@ -51,17 +52,6 @@ type ReadingQuery struct {
 	DownsampleMs int64
 }
 
-// DownsampleMap maps human-readable bucket names to millisecond durations.
-var DownsampleMap = map[string]int64{
-	"5m":  300000,
-	"10m": 600000,
-	"15m": 900000,
-	"30m": 1800000,
-	"1h":  3600000,
-	"1d":  86400000,
-	"1w":  604800000,
-}
-
 // Package-level SQL loaded from queries.sql (or hardcoded fallbacks).
 var (
 	queryCols string
@@ -79,7 +69,7 @@ func loadQueries() {
 	loadQueriesOnce.Do(func() {
 		content, err := os.ReadFile("../queries.sql")
 		if err != nil {
-			log.Printf("[db] queries.sql not found (%v), using defaults", err)
+			logf("[db] queries.sql not found (%v), using defaults", err)
 			setDefaultQueries()
 			return
 		}
@@ -115,7 +105,7 @@ func loadQueries() {
 			countSQL = defaultCountSQL
 		}
 
-		log.Printf("[db] loaded %d queries from queries.sql", len(queries))
+		logf("[db] loaded %d queries from queries.sql", len(queries))
 	})
 }
 
@@ -253,7 +243,7 @@ func QueryReadings(db *sql.DB, q ReadingQuery) ([]Reading, error) {
 		return queryDownsampled(db, q)
 	}
 
-	wantDevice := q.Device != "" && q.Device != "all"
+	wantDevice := q.Device != "" && q.Device != deviceAll
 
 	var b strings.Builder
 	var args []any
@@ -285,7 +275,7 @@ func QueryReadings(db *sql.DB, q ReadingQuery) ([]Reading, error) {
 }
 
 func queryDownsampled(db *sql.DB, q ReadingQuery) ([]Reading, error) {
-	wantDevice := q.Device != "" && q.Device != "all"
+	wantDevice := q.Device != "" && q.Device != deviceAll
 	bucketMs := q.DownsampleMs
 
 	var b strings.Builder
@@ -363,7 +353,7 @@ func GetReadingsCount(db *sql.DB) (int64, error) {
 }
 
 func GetFilteredCount(db *sql.DB, from, to int64, device string) (int64, error) {
-	wantDevice := device != "" && device != "all"
+	wantDevice := device != "" && device != deviceAll
 
 	var b strings.Builder
 	var args []any
@@ -547,5 +537,5 @@ func logInsertResult(label, ip string, data map[string]any) {
 		atmps = fmt.Sprintf("%.1f", v)
 	}
 
-	log.Printf("[poller] %s (%s): OK — PM2.5=%s, CO2=%s, T=%s°C", label, ip, pm02s, rco2s, atmps)
+	logf("[poller] %s (%s): OK — PM2.5=%s, CO2=%s, T=%s°C", label, ip, pm02s, rco2s, atmps)
 }

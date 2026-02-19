@@ -1,5 +1,5 @@
 import std/[json, locks, os, posix, strutils, tables]
-import config, db, sqlite3_wrapper
+import config, db, log, sqlite3_wrapper
 
 # ── Linux epoll FFI ──────────────────────────────────────────────────────
 
@@ -78,10 +78,6 @@ const
   MaxFileSize = 16 * 1024 * 1024  # 16 MB
   MaxResponseSize = 1 * 1024 * 1024  # 1 MB for HTTP client
   CheckpointIntervalPolls = 10
-
-  DownsampleMap = {"5m": 300000'i64, "10m": 600000'i64, "15m": 900000'i64,
-    "30m": 1800000'i64, "1h": 3600000'i64, "1d": 86400000'i64,
-    "1w": 604800000'i64}.toTable
 
 # ── Connection state ─────────────────────────────────────────────────────
 
@@ -385,7 +381,7 @@ proc fetchDevice(idx: int) =
   let (ok, bodyOrErr) = httpGet(ip, "/measures/current", gState.cfg.fetchTimeoutMs)
 
   if not ok:
-    stderr.writeLine "[poller] " & label & " (" & ip & "): fetch failed: " & bodyOrErr
+    logTs "[poller] " & label & " (" & ip & "): fetch failed: " & bodyOrErr
     gState.pollFailures += 1
     gState.health[idx].status = hsError
     gState.health[idx].lastError = db.nowMillis()
@@ -398,7 +394,7 @@ proc fetchDevice(idx: int) =
     data = parseJson(bodyOrErr)
   except JsonParsingError:
     let msg = "JSON parse error"
-    stderr.writeLine "[poller] " & label & " (" & ip & "): " & msg
+    logTs "[poller] " & label & " (" & ip & "): " & msg
     gState.pollFailures += 1
     gState.health[idx].status = hsError
     gState.health[idx].lastError = db.nowMillis()
@@ -408,7 +404,7 @@ proc fetchDevice(idx: int) =
 
   if data.kind != JObject:
     let msg = "unexpected response type: not an object"
-    stderr.writeLine "[poller] " & label & " (" & ip & "): " & msg
+    logTs "[poller] " & label & " (" & ip & "): " & msg
     gState.pollFailures += 1
     gState.health[idx].status = hsError
     gState.health[idx].lastError = db.nowMillis()
@@ -421,7 +417,7 @@ proc fetchDevice(idx: int) =
     insertOk = insertReading(gState.db, ip, data)
   if not insertOk:
     let msg = "DB insert failed"
-    stderr.writeLine "[poller] " & label & " (" & ip & "): " & msg
+    logTs "[poller] " & label & " (" & ip & "): " & msg
     gState.pollFailures += 1
     gState.health[idx].status = hsError
     gState.health[idx].lastError = db.nowMillis()
@@ -438,8 +434,9 @@ proc fetchDevice(idx: int) =
     if data["pm02"].kind == JFloat: pm02s = formatFloat(data["pm02"].getFloat(), ffDecimal, 2)
     elif data["pm02"].kind == JInt: pm02s = $data["pm02"].getInt()
 
-  if data.hasKey("rco2") and data["rco2"].kind == JInt:
-    rco2s = $data["rco2"].getInt()
+  if data.hasKey("rco2"):
+    if data["rco2"].kind == JInt: rco2s = $data["rco2"].getInt()
+    elif data["rco2"].kind == JFloat: rco2s = $int64(data["rco2"].getFloat())
 
   if data.hasKey("atmp"):
     if data["atmp"].kind == JFloat: atmps = formatFloat(data["atmp"].getFloat(), ffDecimal, 2)
@@ -451,7 +448,7 @@ proc fetchDevice(idx: int) =
   gState.health[idx].lastErrorMessage = ""
   gState.health[idx].consecutiveFailures = 0
 
-  stderr.writeLine "[poller] " & label & " (" & ip & "): OK — PM2.5=" &
+  logTs "[poller] " & label & " (" & ip & "): OK — PM2.5=" &
     pm02s & ", CO2=" & rco2s & ", T=" & atmps & "°C"
 
 proc pollAll() =
@@ -472,10 +469,10 @@ proc handleReadings(req: HttpReq): string =
   # Validate downsample param
   var bucketMs: int64 = 0
   if downsampleParam.len > 0:
-    if downsampleParam notin DownsampleMap:
+    if downsampleParam notin gState.cfg.downsampleBuckets:
       return errorResponse(400, "Bad Request",
         "Invalid downsample value. Valid: 5m, 10m, 15m, 30m, 1h, 1d, 1w")
-    bucketMs = DownsampleMap[downsampleParam]
+    bucketMs = gState.cfg.downsampleBuckets[downsampleParam]
 
   let maxRows = int64(gState.cfg.maxApiRows)
   let requestedLimit = parseI64Param(req.query, "limit", maxRows)
@@ -579,7 +576,10 @@ proc handleConfig(): string =
 
   var cfg = newJObject()
   cfg["pollIntervalMs"] = newJInt(int64(gState.cfg.pollIntervalMs))
-  cfg["downsampleThreshold"] = newJInt(int64(gState.cfg.downsampleThreshold))
+  var bucketsObj = newJObject()
+  for key, val in gState.cfg.downsampleBuckets:
+    bucketsObj[key] = newJInt(val)
+  cfg["downsampleBuckets"] = bucketsObj
   cfg["devices"] = devicesArr
 
   return jsonResponse(200, "OK", cfg)
@@ -694,7 +694,7 @@ proc closeConn(epollFd: cint, fd: cint) =
 
 proc pollerThread(arg: pointer) {.thread.} =
   {.cast(gcsafe).}:
-    stderr.writeLine "[poller] Starting — polling " & $gState.cfg.deviceCount &
+    logTs "[poller] Starting — polling " & $gState.cfg.deviceCount &
       " devices every " & $(gState.cfg.pollIntervalMs div 1000) & "s"
 
     # Initial poll
@@ -721,7 +721,7 @@ proc pollerThread(arg: pointer) {.thread.} =
         withLock(dbLock):
           discard dbCheckpoint(gState.db)
 
-    stderr.writeLine "[poller] Stopped"
+    logTs "[poller] Stopped"
 
 # ── Main ─────────────────────────────────────────────────────────────────
 
@@ -743,14 +743,14 @@ proc main() =
   initLock(dbLock)
 
   # Open database
-  stderr.writeLine "[server] Opening database at " & gState.cfg.dbPath
+  logTs "[server] Opening database at " & gState.cfg.dbPath
   let rc = sqlite3_open(gState.cfg.dbPath.cstring, addr gState.db)
   if rc != SQLITE_OK:
-    stderr.writeLine "[server] Failed to open database: " & $sqlite3_errmsg(gState.db)
+    logTs "[server] Failed to open database: " & $sqlite3_errmsg(gState.db)
     quit(1)
 
   if not dbInitialize(gState.db):
-    stderr.writeLine "[server] Failed to initialize database"
+    logTs "[server] Failed to initialize database"
     discard sqlite3_close(gState.db)
     quit(1)
 
@@ -766,7 +766,7 @@ proc main() =
   # Create listen socket
   let listenFd = cint(posix.socket(AF_INET, SOCK_STREAM, 0))
   if listenFd < 0:
-    stderr.writeLine "[server] socket: " & $strerror(errno)
+    logTs "[server] socket: " & $strerror(errno)
     quit(1)
 
   var optVal: cint = 1
@@ -779,23 +779,23 @@ proc main() =
   saddr.sin_port = htons(gState.cfg.port)
 
   if bindSocket(SocketHandle(listenFd), cast[ptr SockAddr](addr saddr), SockLen(sizeof(saddr))) < 0:
-    stderr.writeLine "[server] bind: " & $strerror(errno)
+    logTs "[server] bind: " & $strerror(errno)
     discard c_close(listenFd)
     quit(1)
 
   if listen(SocketHandle(listenFd), 128) < 0:
-    stderr.writeLine "[server] listen: " & $strerror(errno)
+    logTs "[server] listen: " & $strerror(errno)
     discard c_close(listenFd)
     quit(1)
 
   if not setNonblocking(listenFd):
-    stderr.writeLine "[server] set_nonblocking(listen_fd) failed"
+    logTs "[server] set_nonblocking(listen_fd) failed"
     discard c_close(listenFd)
     quit(1)
 
   let epollFd = epoll_create1(EPOLL_CLOEXEC)
   if epollFd < 0:
-    stderr.writeLine "[server] epoll_create1: " & $strerror(errno)
+    logTs "[server] epoll_create1: " & $strerror(errno)
     discard c_close(listenFd)
     quit(1)
 
@@ -803,12 +803,12 @@ proc main() =
   ev.events = EPOLLIN or EPOLLET
   ev.data.fd = listenFd
   if epoll_ctl(epollFd, EPOLL_CTL_ADD, listenFd, addr ev) < 0:
-    stderr.writeLine "[server] epoll_ctl(listen): " & $strerror(errno)
+    logTs "[server] epoll_ctl(listen): " & $strerror(errno)
     discard c_close(epollFd)
     discard c_close(listenFd)
     quit(1)
 
-  stderr.writeLine "[server] Listening on http://localhost:" & $gState.cfg.port
+  logTs "[server] Listening on http://localhost:" & $gState.cfg.port
 
   # Zero connection table
   for i in 0 ..< MaxConns:
@@ -820,7 +820,7 @@ proc main() =
     let nfds = epoll_wait(epollFd, addr events[0], MaxEvents.cint, 1000)
     if nfds < 0:
       if errno == EINTR: continue
-      stderr.writeLine "[server] epoll_wait: " & $strerror(errno)
+      logTs "[server] epoll_wait: " & $strerror(errno)
       break
 
     for i in 0 ..< nfds:
@@ -833,17 +833,17 @@ proc main() =
           let clientFd = cint(accept(SocketHandle(listenFd), nil, nil))
           if clientFd < 0:
             if errno == EAGAIN or errno == EWOULDBLOCK: break
-            stderr.writeLine "[server] accept: " & $strerror(errno)
+            logTs "[server] accept: " & $strerror(errno)
             break
 
           if clientFd >= MaxConns or gState.activeConnections >= MaxConns:
-            stderr.writeLine "[server] connection limit reached (fd=" & $clientFd &
+            logTs "[server] connection limit reached (fd=" & $clientFd &
               ", active=" & $gState.activeConnections & "), rejecting"
             discard c_close(clientFd)
             continue
 
           if not setNonblocking(clientFd):
-            stderr.writeLine "[server] set_nonblocking(client) failed"
+            logTs "[server] set_nonblocking(client) failed"
             discard c_close(clientFd)
             continue
 
@@ -855,7 +855,7 @@ proc main() =
           cev.events = EPOLLIN or EPOLLET
           cev.data.fd = clientFd
           if epoll_ctl(epollFd, EPOLL_CTL_ADD, clientFd, addr cev) < 0:
-            stderr.writeLine "[server] epoll_ctl(add client): " & $strerror(errno)
+            logTs "[server] epoll_ctl(add client): " & $strerror(errno)
             connReset(clientFd)
             discard c_close(clientFd)
             continue
@@ -965,6 +965,6 @@ proc main() =
 
   discard sqlite3_close(gState.db)
   deinitLock(dbLock)
-  stderr.writeLine "[server] Shut down cleanly"
+  logTs "[server] Shut down cleanly"
 
 main()

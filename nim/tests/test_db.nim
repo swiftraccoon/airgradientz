@@ -1,5 +1,5 @@
 import unittest
-import std/[json, algorithm, os]
+import std/[json, algorithm, os, strutils]
 import sqlite3_wrapper
 import db
 
@@ -435,3 +435,78 @@ suite "Filtered count":
     # Only readings from last 7 seconds
     let count = countReadingsFiltered(testDb, now - 7000, now + 1000, "all")
     check count == 2
+
+
+suite "JSON number formatting":
+  test "whole-number floats serialize as integers":
+    ## Regression: Nim's newJFloat(3.0) serializes as "3.0" but the API
+    ## spec and all other implementations output "3" for whole numbers.
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    let now = nowMillis()
+    runSql(testDb, "INSERT INTO readings (timestamp, device_id, device_type, device_ip, " &
+      "pm01, pm02, pm10, atmp, rhum, rco2, wifi, raw_json) VALUES (" &
+      $now & ", 'dev1', 'indoor', '1.1.1.1', 3.0, 5.0, 10.0, 21.0, 45.0, 400, -50, '{}')")
+
+    let readings = queryReadings(testDb, ReadingQuery(
+      device: "all", fromTs: 0, toTs: now + 1000, limit: 100
+    ))
+    check readings.len == 1
+
+    let j = readingToJson(readings[0])
+    let s = $j
+
+    # Whole-number floats must NOT have ".0" suffix
+    check "\"pm01\":3," in s or "\"pm01\":3}" in s
+    check "\"pm01\":3.0" notin s
+    check "\"pm02\":5," in s or "\"pm02\":5}" in s
+    check "\"pm02\":5.0" notin s
+    check "\"atmp\":21," in s or "\"atmp\":21}" in s
+    check "\"atmp\":21.0" notin s
+    check "\"rhum\":45," in s or "\"rhum\":45}" in s
+    check "\"rhum\":45.0" notin s
+
+  test "fractional floats stay as floats":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    let now = nowMillis()
+    runSql(testDb, "INSERT INTO readings (timestamp, device_id, device_type, device_ip, " &
+      "pm02, atmp, raw_json) VALUES (" &
+      $now & ", 'dev1', 'indoor', '1.1.1.1', 41.67, 20.78, '{}')")
+
+    let readings = queryReadings(testDb, ReadingQuery(
+      device: "all", fromTs: 0, toTs: now + 1000, limit: 100
+    ))
+    check readings.len == 1
+
+    let j = readingToJson(readings[0])
+    check j["pm02"].getFloat() == 41.67
+    check j["atmp"].getFloat() == 20.78
+
+  test "downsampled whole-number floats serialize as integers":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    var r: Reading
+    r.timestamp = 1700000000000'i64
+    r.deviceId = "dev1"
+    r.deviceType = "indoor"
+    r.deviceIp = "1.1.1.1"
+    r.hasPm01 = true
+    r.pm01 = 7.0
+    r.hasPm02 = true
+    r.pm02 = 12.0
+    r.hasAtmp = true
+    r.atmp = 22.0
+
+    let j = readingToJsonDownsampled(r)
+    let s = $j
+
+    check "\"pm01\":7," in s or "\"pm01\":7}" in s
+    check "\"pm01\":7.0" notin s
+    check "\"pm02\":12," in s or "\"pm02\":12}" in s
+    check "\"pm02\":12.0" notin s
+    check "\"atmp\":22," in s or "\"atmp\":22}" in s
+    check "\"atmp\":22.0" notin s

@@ -1,4 +1,3 @@
-{-# LANGUAGE LambdaCase #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 module Config
@@ -8,17 +7,20 @@ module Config
   ) where
 
 import Data.Aeson (FromJSON(..), (.:), (.:?), withObject, eitherDecodeStrict')
-import Data.Maybe (fromMaybe)
+import Data.Int (Int64)
+import Data.List (intercalate)
 import Data.Word (Word16)
 import System.Directory (doesFileExist)
 import System.Environment (lookupEnv)
+import System.Exit (die)
 import System.FilePath ((</>))
-import System.IO (hPutStrLn, stderr)
+import Log (logMsg)
 import Text.Read (readMaybe)
 
 import qualified Data.Aeson.Key as Key
 import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 
 data DeviceConfig = DeviceConfig
@@ -37,7 +39,7 @@ data Config = Config
   , cfgPollIntervalMs      :: !Int
   , cfgFetchTimeoutMs      :: !Int
   , cfgMaxApiRows          :: !Int
-  , cfgDownsampleThreshold :: !Int
+  , cfgDownsampleBuckets   :: !(Map.Map String Int64)
   } deriving (Show)
 
 data ConfigFile = ConfigFile
@@ -46,8 +48,7 @@ data ConfigFile = ConfigFile
   , cfPollIntervalMs       :: !(Maybe Int)
   , cfFetchTimeoutMs       :: !(Maybe Int)
   , cfMaxApiRows           :: !(Maybe Int)
-  , cfDownsampleThreshold  :: !(Maybe Int)
-  , cfDefaults             :: !(Maybe ConfigFile)
+  , cfDownsampleBuckets    :: !(Maybe (Map.Map String Int))
   }
 
 instance FromJSON ConfigFile where
@@ -58,54 +59,30 @@ instance FromJSON ConfigFile where
       <*> o .:? "pollIntervalMs"
       <*> o .:? "fetchTimeoutMs"
       <*> o .:? "maxApiRows"
-      <*> o .:? "downsampleThreshold"
-      <*> o .:? "defaults"
-
-defaultPort :: Word16
-defaultPort = 3019
-
-defaultPollIntervalMs, defaultFetchTimeoutMs, defaultMaxApiRows, defaultDownsampleThreshold :: Int
-defaultPollIntervalMs = 15000
-defaultFetchTimeoutMs = 5000
-defaultMaxApiRows = 10000
-defaultDownsampleThreshold = 10000
+      <*> o .:? "downsampleBuckets"
 
 maxConfigFileSize :: Int
 maxConfigFileSize = 1048576
 
 loadConfig :: IO Config
 loadConfig = do
-  let baseCfg = Config
-        { cfgPort                = defaultPort
-        , cfgDBPath              = "./airgradientz.db"
-        , cfgDevices             = defaultDevices
-        , cfgPollIntervalMs      = defaultPollIntervalMs
-        , cfgFetchTimeoutMs      = defaultFetchTimeoutMs
-        , cfgMaxApiRows          = defaultMaxApiRows
-        , cfgDownsampleThreshold = defaultDownsampleThreshold
-        }
-  cfg <- loadFromFile baseCfg
+  cf <- loadFromFile
+  let cfg = applyConfigFile cf
+  validateConfig cfg
   applyEnvOverrides cfg
-  where
-    defaultDevices =
-      [ DeviceConfig "192.168.88.6" "outdoor"
-      , DeviceConfig "192.168.88.159" "indoor"
-      ]
 
-loadFromFile :: Config -> IO Config
-loadFromFile cfg = do
+loadFromFile :: IO ConfigFile
+loadFromFile = do
   mContent <- findConfigFile
   case mContent of
-    Nothing -> do
-      hPutStrLn stderr "[config] No config file found, using defaults"
-      pure cfg
+    Nothing ->
+      die "fatal: config file not found"
     Just (content, path) -> do
-      hPutStrLn stderr $ "[config] Loaded config from " ++ path
+      logMsg $ "[config] Loaded config from " ++ path
       case eitherDecodeStrict' content of
-        Left err -> do
-          hPutStrLn stderr $ "[config] JSON parse error: " ++ err
-          pure cfg
-        Right cf -> pure (applyConfigFile cfg cf)
+        Left err ->
+          die $ "fatal: config file parse error: " ++ err
+        Right cf -> pure cf
 
 findConfigFile :: IO (Maybe (BS.ByteString, FilePath))
 findConfigFile = do
@@ -125,32 +102,36 @@ findConfigFile = do
             else pure (Just (content, p))
         else go ps
 
-applyConfigFile :: Config -> ConfigFile -> Config
-applyConfigFile cfg cf =
-  let withDefaults = case cfDefaults cf of
-        Just defs -> applyValues cfg defs
-        Nothing   -> cfg
-      withTopLevel = applyValues withDefaults cf
-  in applyPort withTopLevel cf
+applyConfigFile :: ConfigFile -> Config
+applyConfigFile cf =
+  let port = case cfPorts cf >>= KM.lookup (Key.fromString "haskell") of
+               Just p | p > 0 && p <= 65535 -> fromIntegral p
+               _ -> 0
+  in Config
+    { cfgPort                = port
+    , cfgDBPath              = "./airgradientz.db"
+    , cfgDevices             = maybe [] id (cfDevices cf)
+    , cfgPollIntervalMs      = maybe 0 id (cfPollIntervalMs cf)
+    , cfgFetchTimeoutMs      = maybe 0 id (cfFetchTimeoutMs cf)
+    , cfgMaxApiRows          = maybe 0 id (cfMaxApiRows cf)
+    , cfgDownsampleBuckets   = case cfDownsampleBuckets cf of
+        Just m | not (Map.null m) -> Map.map fromIntegral m
+        _ -> Map.empty
+    }
 
-applyValues :: Config -> ConfigFile -> Config
-applyValues cfg cf = cfg
-  { cfgDevices             = fromMaybe (cfgDevices cfg) (cfDevices cf)
-  , cfgPollIntervalMs      = applyPositive (cfgPollIntervalMs cfg) (cfPollIntervalMs cf)
-  , cfgFetchTimeoutMs      = applyPositive (cfgFetchTimeoutMs cfg) (cfFetchTimeoutMs cf)
-  , cfgMaxApiRows          = applyPositive (cfgMaxApiRows cfg) (cfMaxApiRows cf)
-  , cfgDownsampleThreshold = applyPositive (cfgDownsampleThreshold cfg) (cfDownsampleThreshold cf)
-  }
-
-applyPositive :: Int -> Maybe Int -> Int
-applyPositive current = \case
-  Just v | v > 0 -> v
-  _              -> current
-
-applyPort :: Config -> ConfigFile -> Config
-applyPort cfg cf = case cfPorts cf >>= KM.lookup (Key.fromString "haskell") of
-  Just p | p > 0 && p <= 65535 -> cfg { cfgPort = fromIntegral p }
-  _ -> cfg
+validateConfig :: Config -> IO ()
+validateConfig cfg = do
+  let missing = concat
+        [ ["pollIntervalMs"      | cfgPollIntervalMs cfg <= 0]
+        , ["fetchTimeoutMs"      | cfgFetchTimeoutMs cfg <= 0]
+        , ["maxApiRows"          | cfgMaxApiRows cfg <= 0]
+        , ["downsampleBuckets" | Map.null (cfgDownsampleBuckets cfg)]
+        , ["devices"             | null (cfgDevices cfg)]
+        , ["ports.haskell"       | cfgPort cfg == 0]
+        ]
+  if null missing
+    then pure ()
+    else die $ "fatal: missing required config keys: " ++ intercalate ", " missing
 
 applyEnvOverrides :: Config -> IO Config
 applyEnvOverrides cfg = do
@@ -171,6 +152,6 @@ logConfig cfg = do
         [ deviceLabel d <> "(" <> deviceIp d <> ")"
         | d <- cfgDevices cfg
         ]
-  hPutStrLn stderr $ "[config] port=" ++ show (cfgPort cfg)
+  logMsg $ "[config] port=" ++ show (cfgPort cfg)
     ++ " devices=[" ++ T.unpack devList ++ "]"
     ++ " poll=" ++ show (cfgPollIntervalMs cfg) ++ "ms"

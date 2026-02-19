@@ -2,6 +2,7 @@
 
 const { insertReading, checkpoint } = require('./db');
 const config = require('../config');
+const { timestamp } = require('./log');
 
 const CHECKPOINT_INTERVAL_MS = 5 * 60 * 1000;
 
@@ -39,7 +40,7 @@ async function fetchDevice(device) {
     if (!res.ok) {
       const msg = `HTTP ${res.status}`;
       recordFailure(h, msg);
-      console.error(`[poller] ${device.label} (${device.ip}): ${msg}`);
+      console.error(`${timestamp()} [poller] ${device.label} (${device.ip}): ${msg}`);
       return;
     }
     // Keep timeout active through body read — if body stalls, abort fires
@@ -49,7 +50,7 @@ async function fetchDevice(device) {
     if (typeof data !== 'object' || data === null || Array.isArray(data)) {
       const msg = `unexpected response type: ${typeof data}`;
       recordFailure(h, msg);
-      console.error(`[poller] ${device.label} (${device.ip}): ${msg}`);
+      console.error(`${timestamp()} [poller] ${device.label} (${device.ip}): ${msg}`);
       return;
     }
 
@@ -58,17 +59,17 @@ async function fetchDevice(device) {
     } catch (dbErr) {
       const msg = `DB insert failed: ${dbErr.message}`;
       recordFailure(h, msg);
-      console.error(`[poller] ${device.label} (${device.ip}): ${msg}`);
+      console.error(`${timestamp()} [poller] ${device.label} (${device.ip}): ${msg}`);
       return;
     }
 
     recordSuccess(h);
-    console.log(`[poller] ${device.label} (${device.ip}): OK — PM2.5=${data.pm02}, CO2=${data.rco2}, T=${data.atmp}°C`);
+    console.log(`${timestamp()} [poller] ${device.label} (${device.ip}): OK — PM2.5=${data.pm02}, CO2=${data.rco2}, T=${data.atmp}°C`);
   } catch (err) {
     clearTimeout(timeout);
     const msg = err.name === 'AbortError' ? `timeout after ${config.fetchTimeoutMs}ms` : err.message;
     recordFailure(h, msg);
-    console.error(`[poller] ${device.label} (${device.ip}): fetch failed: ${msg}`);
+    console.error(`${timestamp()} [poller] ${device.label} (${device.ip}): fetch failed: ${msg}`);
   }
 }
 
@@ -101,13 +102,13 @@ function getPollStats() {
 }
 
 function startPoller() {
-  console.log(`[poller] Starting — polling ${config.devices.length} devices every ${config.pollIntervalMs / 1000}s`);
+  console.log(`${timestamp()} [poller] Starting — polling ${config.devices.length} devices every ${config.pollIntervalMs / 1000}s`);
   initHealth();
   pollAll();
   pollIntervalId = setInterval(pollAll, config.pollIntervalMs);
   checkpointIntervalId = setInterval(() => {
     try { checkpoint(); } catch (err) {
-      console.error(`[poller] WAL checkpoint failed: ${err.message}`);
+      console.error(`${timestamp()} [poller] WAL checkpoint failed: ${err.message}`);
     }
   }, CHECKPOINT_INTERVAL_MS);
 }
@@ -121,7 +122,7 @@ function stopPoller() {
     clearInterval(checkpointIntervalId);
     checkpointIntervalId = null;
   }
-  console.log('[poller] Stopped');
+  console.log(`${timestamp()} [poller] Stopped`);
 }
 
 module.exports = { startPoller, stopPoller, getHealth, getPollStats, initHealth, pollAll };

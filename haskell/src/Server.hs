@@ -17,7 +17,7 @@ import Data.Int (Int64)
 import Data.List (isPrefixOf)
 import Data.Maybe (fromMaybe)
 import System.Directory (doesFileExist, canonicalizePath)
-import System.IO (hPutStrLn, stderr)
+import Log (logMsg)
 import System.Posix.Files (FileStatus, getFileStatus, fileSize)
 import System.Posix.Process (getProcessID)
 import Text.Read (readMaybe)
@@ -26,6 +26,7 @@ import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
 import qualified Data.ByteString.Lazy as LBS
+import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Network.Socket as NS
 import qualified Network.Socket.ByteString as NSB
@@ -75,7 +76,7 @@ runServer dbMVar cfg pollerH stats = do
     NS.setSocketOption sock NS.ReuseAddr 1
     NS.bind sock (NS.addrAddress addr)
     NS.listen sock 128
-    hPutStrLn stderr $ "[server] Listening on http://localhost:" ++ port
+    logMsg $ "[server] Listening on http://localhost:" ++ port
     acceptLoop sock dbMVar cfg pollerH stats
   where
     openSocket addr = NS.openSocket addr
@@ -175,7 +176,7 @@ handleReadings conn dbMVar cfg qs = do
   -- Validate downsample param if present
   case dsParam of
     "" -> doQuery conn dbMVar cfg from' to' device effectiveLimit 0
-    s  -> case downsampleBucket s of
+    s  -> case Map.lookup s (cfgDownsampleBuckets cfg) of
             Nothing -> sendErrorResponse conn 400 "Invalid downsample value"
             Just bucket -> doQuery conn dbMVar cfg from' to' device effectiveLimit bucket
 
@@ -191,7 +192,7 @@ doQuery conn dbMVar cfg from' to' device effectiveLimit bucket = do
   result <- try $ withMVar dbMVar $ \h -> queryReadings h q
   case result of
     Left (e :: SomeException) -> do
-      hPutStrLn stderr $ "[api] query_readings error: " ++ show e
+      logMsg $ "[api] query_readings error: " ++ show e
       sendErrorResponse conn 500 "Internal server error"
     Right readings ->
       sendJSON conn (Aeson.encode (map readingToJSON readings))
@@ -201,7 +202,7 @@ handleLatest conn dbMVar = do
   result <- try $ withMVar dbMVar $ \h -> getLatestReadings h
   case result of
     Left (e :: SomeException) -> do
-      hPutStrLn stderr $ "[api] get_latest_readings error: " ++ show e
+      logMsg $ "[api] get_latest_readings error: " ++ show e
       sendErrorResponse conn 500 "Internal server error"
     Right readings ->
       sendJSON conn (Aeson.encode (map readingToJSON readings))
@@ -217,7 +218,7 @@ handleReadingsCount conn dbMVar qs = do
   result <- try $ withMVar dbMVar $ \h -> getFilteredCount h from' to' devText
   case result of
     Left (e :: SomeException) -> do
-      hPutStrLn stderr $ "[api] readings_count error: " ++ show e
+      logMsg $ "[api] readings_count error: " ++ show e
       sendErrorResponse conn 500 "Internal server error"
     Right count -> do
       let body = Aeson.object [ "count" Aeson..= count ]
@@ -228,7 +229,7 @@ handleDevices conn dbMVar = do
   result <- try $ withMVar dbMVar $ \h -> getDevices h
   case result of
     Left (e :: SomeException) -> do
-      hPutStrLn stderr $ "[api] get_devices error: " ++ show e
+      logMsg $ "[api] get_devices error: " ++ show e
       sendErrorResponse conn 500 "Internal server error"
     Right devs ->
       sendJSON conn (Aeson.encode (map deviceSummaryToJSON devs))
@@ -248,7 +249,7 @@ handleConfig conn cfg = do
              ]
       body = Aeson.object
         [ "pollIntervalMs"      Aeson..= cfgPollIntervalMs cfg
-        , "downsampleThreshold" Aeson..= cfgDownsampleThreshold cfg
+        , "downsampleBuckets"   Aeson..= cfgDownsampleBuckets cfg
         , "devices"             Aeson..= devs
         ]
   sendJSON conn (Aeson.encode body)
@@ -408,17 +409,6 @@ takeExtension path =
   in case dropWhile (/= '.') (reverse name) of
        [] -> ""
        ext -> reverse ext
-
--- Downsample bucket lookup
-downsampleBucket :: String -> Maybe Int64
-downsampleBucket "5m"  = Just 300000
-downsampleBucket "10m" = Just 600000
-downsampleBucket "15m" = Just 900000
-downsampleBucket "30m" = Just 1800000
-downsampleBucket "1h"  = Just 3600000
-downsampleBucket "1d"  = Just 86400000
-downsampleBucket "1w"  = Just 604800000
-downsampleBucket _     = Nothing
 
 -- Query string parsing
 

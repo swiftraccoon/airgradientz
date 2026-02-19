@@ -210,7 +210,7 @@ defmodule Airgradientz.HttpServer do
     device = Map.get(params, "device", "all")
     downsample_param = Map.get(params, "downsample")
 
-    ds_map = Airgradientz.DB.downsample_map()
+    ds_map = config.downsample_buckets
 
     cond do
       downsample_param != nil and not Map.has_key?(ds_map, downsample_param) ->
@@ -256,7 +256,7 @@ defmodule Airgradientz.HttpServer do
   defp route(socket, "GET", "/api/config", _query, config) do
     payload = %{
       pollIntervalMs: config.poll_interval_ms,
-      downsampleThreshold: config.downsample_threshold,
+      downsampleBuckets: config.downsample_buckets,
       devices: Enum.map(config.devices, &%{ip: &1.ip, label: &1.label})
     }
 

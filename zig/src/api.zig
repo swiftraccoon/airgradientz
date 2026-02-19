@@ -3,6 +3,15 @@ const db_mod = @import("db.zig");
 const poller_mod = @import("poller.zig");
 const http_server = @import("http_server.zig");
 
+fn configDownsampleLookup(state: *http_server.ServerState, key: []const u8) ?i64 {
+    for (0..state.config.downsample_bucket_count) |i| {
+        if (std.mem.eql(u8, key, state.config.downsample_keys[i])) {
+            return state.config.downsample_values[i];
+        }
+    }
+    return null;
+}
+
 pub const ReadingsError = error{ InvalidDownsample, InternalError };
 
 pub fn handleReadings(allocator: std.mem.Allocator, state: *http_server.ServerState, query: []const u8) ReadingsError!std.json.Value {
@@ -21,7 +30,7 @@ pub fn handleReadings(allocator: std.mem.Allocator, state: *http_server.ServerSt
     var downsample_ms: i64 = 0;
     if (http_server.queryParam(query, "downsample")) |ds| {
         if (ds.len > 0) {
-            downsample_ms = db_mod.downsampleLookup(ds) orelse return ReadingsError.InvalidDownsample;
+            downsample_ms = configDownsampleLookup(state, ds) orelse return ReadingsError.InvalidDownsample;
         }
     }
 
@@ -176,9 +185,14 @@ pub fn handleConfig(allocator: std.mem.Allocator, state: *http_server.ServerStat
         try devices_arr.append(.{ .object = d });
     }
 
+    var buckets = std.json.ObjectMap.init(allocator);
+    for (0..state.config.downsample_bucket_count) |i| {
+        try buckets.put(state.config.downsample_keys[i], .{ .integer = state.config.downsample_values[i] });
+    }
+
     var cfg = std.json.ObjectMap.init(allocator);
     try cfg.put("pollIntervalMs", .{ .integer = @as(i64, state.config.poll_interval_ms) });
-    try cfg.put("downsampleThreshold", .{ .integer = @as(i64, state.config.downsample_threshold) });
+    try cfg.put("downsampleBuckets", .{ .object = buckets });
     try cfg.put("devices", .{ .array = devices_arr });
 
     return .{ .object = cfg };

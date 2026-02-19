@@ -101,7 +101,7 @@ Active configuration. Returns a JSON object.
 | Field            | Type   | Description                                  |
 |------------------|--------|----------------------------------------------|
 | `pollIntervalMs`      | integer| Polling interval in milliseconds             |
-| `downsampleThreshold` | integer| Row count above which dashboard suggests downsampling |
+| `downsampleBuckets`   | object | Map of label to milliseconds (e.g. `{"5m": 300000, "1h": 3600000}`) |
 | `devices`             | array  | Array of `{ip: string, label: string}` objects|
 
 ## GET /api/stats

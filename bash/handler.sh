@@ -30,17 +30,15 @@ handle_readings() {
     downsample=$(parse_query_param "${QUERY_STRING}" "downsample" "")
 
     # Validate downsample parameter
-    case "${downsample}" in
-        5m)  bucket_ms=300000 ;;
-        10m) bucket_ms=600000 ;;
-        15m) bucket_ms=900000 ;;
-        30m) bucket_ms=1800000 ;;
-        1h)  bucket_ms=3600000 ;;
-        1d)  bucket_ms=86400000 ;;
-        1w)  bucket_ms=604800000 ;;
-        "")  bucket_ms=0 ;;
-        *)   send_error "400 Bad Request" "invalid downsample value"; return ;;
-    esac
+    if [[ -n "${downsample}" ]]; then
+        bucket_ms=$(jq -r --arg key "${downsample}" '.[$key] // empty' <<< "${AGTZ_DOWNSAMPLE_BUCKETS}")
+        if [[ -z "${bucket_ms}" ]]; then
+            send_error "400 Bad Request" "invalid downsample value"
+            return
+        fi
+    else
+        bucket_ms=0
+    fi
 
     # Validate integers
     [[ "${from_ts}" =~ ^-?[0-9]+$ ]] || from_ts="${default_from}"
@@ -116,9 +114,9 @@ handle_config() {
     devices_arr=$(jq -c '[.[] | {ip, label}]' <<< "${AGTZ_DEVICES_JSON}")
     local result
     result=$(jq -cn --argjson interval "${AGTZ_POLL_INTERVAL_MS}" \
-                    --argjson threshold "${AGTZ_DOWNSAMPLE_THRESHOLD}" \
+                    --argjson buckets "${AGTZ_DOWNSAMPLE_BUCKETS}" \
                     --argjson devices "${devices_arr}" \
-                    '{"pollIntervalMs": $interval, "downsampleThreshold": $threshold, "devices": $devices}')
+                    '{"pollIntervalMs": $interval, "downsampleBuckets": $buckets, "devices": $devices}')
     send_json "200 OK" "${result}"
 }
 

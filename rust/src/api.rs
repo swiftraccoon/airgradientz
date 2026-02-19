@@ -4,6 +4,7 @@ use crate::db::{self, ReadingQuery};
 use crate::http::request::HttpRequest;
 use crate::http::response::HttpResponse;
 use crate::json::{json_array, json_object, JsonValue};
+use crate::log::log;
 use crate::poller;
 use crate::AppState;
 
@@ -40,8 +41,8 @@ pub(crate) fn handle_readings(state: &AppState, req: &HttpRequest) -> HttpRespon
 
     // Parse downsample parameter
     let downsample_ms = if let Some(ds) = req.query_param("downsample") {
-        match db::downsample_bucket(&ds) {
-            Some(bucket) => Some(bucket),
+        match state.config.downsample_buckets.iter().find(|(k, _)| k == &ds) {
+            Some((_, ms)) => Some(*ms),
             None => return HttpResponse::bad_request("invalid downsample value"),
         }
     } else {
@@ -62,7 +63,7 @@ pub(crate) fn handle_readings(state: &AppState, req: &HttpRequest) -> HttpRespon
             HttpResponse::ok_json(&json_array(items))
         }
         Err(e) => {
-            eprintln!("[api] query_readings error: {e}");
+            log!("[api] query_readings error: {e}");
             HttpResponse::internal_error("Internal server error")
         }
     }
@@ -93,7 +94,7 @@ pub(crate) fn handle_readings_count(state: &AppState, req: &HttpRequest) -> Http
             HttpResponse::ok_json(&body)
         }
         Err(e) => {
-            eprintln!("[api] get_filtered_count error: {e}");
+            log!("[api] get_filtered_count error: {e}");
             HttpResponse::internal_error("Internal server error")
         }
     }
@@ -110,7 +111,7 @@ pub(crate) fn handle_readings_latest(state: &AppState) -> HttpResponse {
             HttpResponse::ok_json(&json_array(items))
         }
         Err(e) => {
-            eprintln!("[api] get_latest_readings error: {e}");
+            log!("[api] get_latest_readings error: {e}");
             HttpResponse::internal_error("Internal server error")
         }
     }
@@ -127,7 +128,7 @@ pub(crate) fn handle_devices(state: &AppState) -> HttpResponse {
             HttpResponse::ok_json(&json_array(items))
         }
         Err(e) => {
-            eprintln!("[api] get_devices error: {e}");
+            log!("[api] get_devices error: {e}");
             HttpResponse::internal_error("Internal server error")
         }
     }
@@ -151,14 +152,21 @@ pub(crate) fn handle_config(state: &AppState) -> HttpResponse {
         })
         .collect();
 
+    let buckets: Vec<(String, JsonValue)> = state
+        .config
+        .downsample_buckets
+        .iter()
+        .map(|(key, ms)| (key.clone(), JsonValue::from_i64(*ms)))
+        .collect();
+
     let config = json_object(vec![
         (
             "pollIntervalMs",
             JsonValue::Number(f64::from(state.config.poll_interval_ms)),
         ),
         (
-            "downsampleThreshold",
-            JsonValue::Number(f64::from(state.config.downsample_threshold)),
+            "downsampleBuckets",
+            JsonValue::Object(buckets),
         ),
         ("devices", json_array(devices)),
     ]);

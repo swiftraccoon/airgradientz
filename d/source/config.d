@@ -10,27 +10,24 @@ struct DeviceConfig {
 }
 
 struct Config {
-    ushort port = 3014;
+    ushort port;
     string dbPath = "./airgradientz.db";
     DeviceConfig[] devices;
-    uint pollIntervalMs = 15_000;
-    uint fetchTimeoutMs = 5_000;
-    uint maxApiRows = 10_000;
-    uint downsampleThreshold = 10_000;
+    uint pollIntervalMs;
+    uint fetchTimeoutMs;
+    uint maxApiRows;
+    long[string] downsampleBuckets;
 
     static Config fromEnv() {
+        import core.stdc.stdlib : exit;
+        import std.stdio : stderr;
+
         Config c;
 
-        // 1. Hardcoded defaults
-        c.devices = [
-            DeviceConfig("192.168.88.6", "outdoor"),
-            DeviceConfig("192.168.88.159", "indoor"),
-        ];
-
-        // 2. Config file overrides
+        // 1. Config file (mandatory)
         loadConfigFile(c);
 
-        // 3. Env var overrides (highest priority)
+        // 2. Env var overrides (highest priority)
         if (auto p = environment.get("PORT")) {
             try {
                 int port = p.to!int;
@@ -42,25 +39,49 @@ struct Config {
         if (auto db = environment.get("DB_PATH"))
             c.dbPath = db;
 
+        // 3. Validate required keys
+        string[] missing;
+        if (c.pollIntervalMs == 0)
+            missing ~= "pollIntervalMs";
+        if (c.fetchTimeoutMs == 0)
+            missing ~= "fetchTimeoutMs";
+        if (c.maxApiRows == 0)
+            missing ~= "maxApiRows";
+        if (c.downsampleBuckets.length == 0)
+            missing ~= "downsampleBuckets";
+        if (c.devices.length == 0)
+            missing ~= "devices";
+        if (c.port == 0)
+            missing ~= "ports.d";
+
+        if (missing.length > 0) {
+            import std.array : join;
+            stderr.writefln("fatal: missing required config keys: %s", missing.join(", "));
+            exit(1);
+        }
+
         return c;
     }
 }
 
 private void loadConfigFile(ref Config c) {
-    import std.file : exists, readText;
+    import std.file : readText;
     import std.json : parseJSON, JSONType;
     import std.stdio : stderr;
+    import core.stdc.stdlib : exit;
 
     string path = findConfigPath();
-    if (path is null)
-        return;
+    if (path is null) {
+        stderr.writefln("fatal: config file not found");
+        exit(1);
+    }
 
     string content;
     try {
         content = readText(path);
     } catch (Exception e) {
         stderr.writefln("[config] Failed to read %s: %s", path, e.msg);
-        return;
+        exit(1);
     }
 
     typeof(parseJSON("")) root;
@@ -68,19 +89,15 @@ private void loadConfigFile(ref Config c) {
         root = parseJSON(content);
     } catch (Exception e) {
         stderr.writefln("[config] JSON parse error: %s", e.msg);
-        return;
+        exit(1);
     }
 
-    if (root.type != JSONType.object)
-        return;
-
-    // Apply defaults first (lower priority)
-    if (auto defaultsVal = "defaults" in root) {
-        if (defaultsVal.type == JSONType.object)
-            applyConfigValues(c, *defaultsVal);
+    if (root.type != JSONType.object) {
+        stderr.writefln("[config] JSON root is not an object");
+        exit(1);
     }
 
-    // Apply top-level overrides (higher priority)
+    // Read values from top-level keys
     applyConfigValues(c, root);
 
     // Port from ports.d
@@ -142,35 +159,40 @@ private void applyConfigValues(ref Config c, ref const JSONValue obj) {
         }
     }
 
-    if (auto v = "downsampleThreshold" in obj) {
-        if (v.type == JSONType.integer || v.type == JSONType.uinteger) {
-            auto n = v.get!long;
-            if (n > 0)
-                c.downsampleThreshold = cast(uint) n;
+    if (auto v = "downsampleBuckets" in obj) {
+        if (v.type == JSONType.object) {
+            long[string] buckets;
+            foreach (key, val; v.object) {
+                if (val.type == JSONType.integer || val.type == JSONType.uinteger) {
+                    buckets[key] = val.get!long;
+                }
+            }
+            if (buckets.length > 0)
+                c.downsampleBuckets = buckets;
         }
     }
 }
 
 private string findConfigPath() {
     import std.file : exists;
-    import std.stdio : stderr;
     import std.process : environment;
+    import log : logf;
 
     if (auto envPath = environment.get("CONFIG_PATH")) {
         if (exists(envPath)) {
-            stderr.writefln("[config] Loaded config from CONFIG_PATH: %s", envPath);
+            logf("[config] Loaded config from CONFIG_PATH: %s", envPath);
             return envPath;
         }
-        stderr.writefln("[config] CONFIG_PATH set but unreadable: %s", envPath);
+        logf("[config] CONFIG_PATH set but unreadable: %s", envPath);
     }
 
     if (exists("./airgradientz.json")) {
-        stderr.writefln("[config] Loaded config from ./airgradientz.json");
+        logf("[config] Loaded config from ./airgradientz.json");
         return "./airgradientz.json";
     }
 
     if (exists("../airgradientz.json")) {
-        stderr.writefln("[config] Loaded config from ../airgradientz.json");
+        logf("[config] Loaded config from ../airgradientz.json");
         return "../airgradientz.json";
     }
 

@@ -221,8 +221,11 @@ fmt_stats_json:
 
 global fmt_config_json
 fmt_config_json:
-    db `{"pollIntervalMs":%d,"fetchTimeoutMs":%d,"maxApiRows":%d,`
-    db `"downsampleThreshold":%d,"devices":[`, 0
+    db `{"pollIntervalMs":%d,"downsampleBuckets":{`, 0
+
+global fmt_config_devices_hdr
+fmt_config_devices_hdr:
+    db `},"devices":[`, 0
 
 global fmt_config_device
 fmt_config_device:
@@ -321,9 +324,9 @@ global str_key_asm
 str_key_asm:
     db `"asm"`, 0
 
-global str_key_downsample_threshold
-str_key_downsample_threshold:
-    db `"downsampleThreshold"`, 0
+global str_key_downsample_buckets
+str_key_downsample_buckets:
+    db `"downsampleBuckets"`, 0
 
 ; ── AirGradient response keys ────────────────────────────────────────────────
 
@@ -527,6 +530,16 @@ global log_signal
 log_signal:
     db `[server] Received signal %d, shutting down`, 10, 0
 
+; ── Timestamp logging ────────────────────────────────────────────────────────
+
+global log_ts_datefmt
+log_ts_datefmt:
+    db `%Y-%m-%d %H:%M:%S`, 0
+
+global log_ts_prefix
+log_ts_prefix:
+    db `[%s] `, 0
+
 ; ── Query param keys ─────────────────────────────────────────────────────────
 
 global str_param_from
@@ -549,28 +562,13 @@ global str_param_downsample
 str_param_downsample:
     db `downsample`, 0
 
-; Downsample valid values
-global str_ds_5m
-str_ds_5m:
-    db `5m`, 0
-global str_ds_10m
-str_ds_10m:
-    db `10m`, 0
-global str_ds_15m
-str_ds_15m:
-    db `15m`, 0
-global str_ds_30m
-str_ds_30m:
-    db `30m`, 0
-global str_ds_1h
-str_ds_1h:
-    db `1h`, 0
-global str_ds_1d
-str_ds_1d:
-    db `1d`, 0
-global str_ds_1w
-str_ds_1w:
-    db `1w`, 0
+; Downsample bucket format for config response
+global fmt_ds_bucket_first
+fmt_ds_bucket_first:
+    db `"%s":%lld`, 0
+global fmt_ds_bucket_rest
+fmt_ds_bucket_rest:
+    db `,"%s":%lld`, 0
 
 ; ── Misc format strings ──────────────────────────────────────────────────────
 

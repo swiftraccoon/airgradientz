@@ -7,8 +7,10 @@
 #include <stdio.h>
 
 #include "json.h"
+#include "log.h"
 
 #define MAX_DEVICES 8
+#define MAX_DOWNSAMPLE_BUCKETS 16
 
 typedef struct {
     const char *ip;
@@ -16,6 +18,11 @@ typedef struct {
 } DeviceConfig;
 
 typedef struct {
+    char key[8];    /* "5m", "10m", etc. */
+    int64_t ms;
+} DownsampleBucket;
+
+typedef struct Config {
     uint16_t      port;
     char          db_path[256];
     DeviceConfig  devices[MAX_DEVICES];
@@ -23,7 +30,8 @@ typedef struct {
     uint32_t      poll_interval_ms;
     uint32_t      fetch_timeout_ms;
     uint32_t      max_api_rows;
-    uint32_t      downsample_threshold;
+    DownsampleBucket downsample_buckets[MAX_DOWNSAMPLE_BUCKETS];
+    size_t        downsample_bucket_count;
 } Config;
 
 /* Try to read a config file. Returns malloc'd content or NULL. */
@@ -57,20 +65,24 @@ static inline char *config_find_file(void) {
     if (env_path) {
         char *content = config_read_file(env_path);
         if (content) {
+            log_timestamp();
             fprintf(stderr, "[config] Loaded config from CONFIG_PATH: %s\n", env_path);
             return content;
         }
+        log_timestamp();
         fprintf(stderr, "[config] CONFIG_PATH set but unreadable: %s\n", env_path);
     }
 
     char *content = config_read_file("./airgradientz.json");
     if (content) {
+        log_timestamp();
         fprintf(stderr, "[config] Loaded config from ./airgradientz.json\n");
         return content;
     }
 
     content = config_read_file("../airgradientz.json");
     if (content) {
+        log_timestamp();
         fprintf(stderr, "[config] Loaded config from ../airgradientz.json\n");
         return content;
     }
@@ -78,13 +90,14 @@ static inline char *config_find_file(void) {
     return NULL;
 }
 
-/* Apply devices and scalar config values from a JSON object. */
-static inline void config_apply_values(Config *c, const JsonValue *obj) {
-    if (!json_is_object(obj)) return;
+/* Apply parsed JSON config to Config struct. */
+static inline void config_apply_json(Config *c, const JsonValue *root) {
+    if (!json_is_object(root)) return;
 
     bool ok;
 
-    const JsonValue *devices = json_get(obj, "devices");
+    /* Devices */
+    const JsonValue *devices = json_get(root, "devices");
     if (devices && devices->type == JSON_ARRAY && devices->u.array.count > 0) {
         size_t count = devices->u.array.count;
         if (count > MAX_DEVICES) count = MAX_DEVICES;
@@ -101,44 +114,45 @@ static inline void config_apply_values(Config *c, const JsonValue *obj) {
 
     const JsonValue *v;
 
-    v = json_get(obj, "pollIntervalMs");
+    v = json_get(root, "pollIntervalMs");
     if (v) {
         int64_t n = json_as_i64(v, &ok);
         if (ok && n > 0) c->poll_interval_ms = (uint32_t)n;
     }
 
-    v = json_get(obj, "fetchTimeoutMs");
+    v = json_get(root, "fetchTimeoutMs");
     if (v) {
         int64_t n = json_as_i64(v, &ok);
         if (ok && n > 0) c->fetch_timeout_ms = (uint32_t)n;
     }
 
-    v = json_get(obj, "maxApiRows");
+    v = json_get(root, "maxApiRows");
     if (v) {
         int64_t n = json_as_i64(v, &ok);
         if (ok && n > 0) c->max_api_rows = (uint32_t)n;
     }
 
-    v = json_get(obj, "downsampleThreshold");
-    if (v) {
-        int64_t n = json_as_i64(v, &ok);
-        if (ok && n > 0) c->downsample_threshold = (uint32_t)n;
+    /* downsampleBuckets: {"5m": 300000, "10m": 600000, ...} */
+    const JsonValue *buckets = json_get(root, "downsampleBuckets");
+    if (buckets && json_is_object(buckets)) {
+        size_t bcount = buckets->u.object.count;
+        if (bcount > MAX_DOWNSAMPLE_BUCKETS) bcount = MAX_DOWNSAMPLE_BUCKETS;
+        c->downsample_bucket_count = 0;
+        for (size_t i = 0; i < bcount; i++) {
+            const char *bkey = buckets->u.object.pairs[i].key;
+            const JsonValue *bval = buckets->u.object.pairs[i].value;
+            if (!bkey || strlen(bkey) >= sizeof(c->downsample_buckets[0].key))
+                continue;
+            int64_t ms = json_as_i64(bval, &ok);
+            if (!ok || ms <= 0) continue;
+            DownsampleBucket *b = &c->downsample_buckets[c->downsample_bucket_count];
+            snprintf(b->key, sizeof(b->key), "%s", bkey);
+            b->ms = ms;
+            c->downsample_bucket_count++;
+        }
     }
-}
-
-/* Apply parsed JSON config to Config struct. Does not touch db_path. */
-static inline void config_apply_json(Config *c, const JsonValue *root) {
-    if (!json_is_object(root)) return;
-
-    /* Apply defaults first (lower priority) */
-    const JsonValue *defaults = json_get(root, "defaults");
-    if (defaults) config_apply_values(c, defaults);
-
-    /* Apply top-level overrides (higher priority) */
-    config_apply_values(c, root);
 
     /* Port from ports.c */
-    bool ok;
     const JsonValue *ports = json_get(root, "ports");
     if (ports && json_is_object(ports)) {
         const JsonValue *my_port = json_get(ports, "c");
@@ -153,36 +167,63 @@ static inline Config config_from_env(void) {
     Config c;
     memset(&c, 0, sizeof(c));
 
-    /* 1. Hardcoded defaults */
-    c.port = 3011;
+    /* Default db_path only */
     snprintf(c.db_path, sizeof(c.db_path), "./airgradientz.db");
 
-    c.devices[0].ip    = "192.168.88.6";
-    c.devices[0].label = "outdoor";
-    c.devices[1].ip    = "192.168.88.159";
-    c.devices[1].label = "indoor";
-    c.device_count     = 2;
-
-    c.poll_interval_ms = 15000;
-    c.fetch_timeout_ms = 5000;
-    c.max_api_rows     = 10000;
-    c.downsample_threshold = 10000;
-
-    /* 2. Config file overrides */
+    /* Config file is mandatory */
     char *file_content = config_find_file();
-    if (file_content) {
-        JsonError err;
-        JsonValue *root = json_parse(file_content, strlen(file_content), &err);
-        if (root) {
-            config_apply_json(&c, root);
-            json_free(root);
-        } else {
-            fprintf(stderr, "[config] JSON parse error at position %zu\n", err.pos);
-        }
-        free(file_content);
+    if (!file_content) {
+        fprintf(stderr, "fatal: config file not found\n");
+        exit(1);
     }
 
-    /* 3. Env var overrides (highest priority) */
+    JsonError err;
+    JsonValue *root = json_parse(file_content, strlen(file_content), &err);
+    if (!root) {
+        fprintf(stderr, "[config] JSON parse error at position %zu\n", err.pos);
+        free(file_content);
+        exit(1);
+    }
+
+    config_apply_json(&c, root);
+    json_free(root);
+    free(file_content);
+
+    /* Validate required keys */
+    char missing_buf[256];
+    size_t off = 0;
+
+    if (c.poll_interval_ms == 0) {
+        off += (size_t)snprintf(missing_buf + off, sizeof(missing_buf) - off,
+                                "%spollIntervalMs", off ? ", " : "");
+    }
+    if (c.fetch_timeout_ms == 0) {
+        off += (size_t)snprintf(missing_buf + off, sizeof(missing_buf) - off,
+                                "%sfetchTimeoutMs", off ? ", " : "");
+    }
+    if (c.max_api_rows == 0) {
+        off += (size_t)snprintf(missing_buf + off, sizeof(missing_buf) - off,
+                                "%smaxApiRows", off ? ", " : "");
+    }
+    if (c.downsample_bucket_count == 0) {
+        off += (size_t)snprintf(missing_buf + off, sizeof(missing_buf) - off,
+                                "%sdownsampleBuckets", off ? ", " : "");
+    }
+    if (c.device_count == 0) {
+        off += (size_t)snprintf(missing_buf + off, sizeof(missing_buf) - off,
+                                "%sdevices", off ? ", " : "");
+    }
+    if (c.port == 0) {
+        off += (size_t)snprintf(missing_buf + off, sizeof(missing_buf) - off,
+                                "%sports.c", off ? ", " : "");
+    }
+
+    if (off > 0) {
+        fprintf(stderr, "fatal: missing required config keys: %s\n", missing_buf);
+        exit(1);
+    }
+
+    /* Env var overrides (highest priority) */
     const char *port_str = getenv("PORT");
     if (port_str) {
         long p = strtol(port_str, NULL, 10);

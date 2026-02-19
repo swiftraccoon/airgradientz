@@ -3,6 +3,7 @@
 #include "db.h"
 #include "http_client.h"
 #include "json.h"
+#include "log.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -59,6 +60,7 @@ static void fetch_device(AppState *state, size_t idx)
                           errbuf, sizeof(errbuf));
 
     if (!body) {
+        log_timestamp();
         fprintf(stderr, "[poller] %s (%s): fetch failed: %s\n", label, ip, errbuf);
         atomic_fetch_add(&poll_failures, 1);
         pthread_rwlock_wrlock(&state->health_lock);
@@ -74,6 +76,7 @@ static void fetch_device(AppState *state, size_t idx)
     if (!data) {
         char msg[256];
         snprintf(msg, sizeof(msg), "JSON parse error at pos %zu", jerr.pos);
+        log_timestamp();
         fprintf(stderr, "[poller] %s (%s): %s\n", label, ip, msg);
         atomic_fetch_add(&poll_failures, 1);
         pthread_rwlock_wrlock(&state->health_lock);
@@ -84,6 +87,7 @@ static void fetch_device(AppState *state, size_t idx)
 
     if (!json_is_object(data)) {
         const char *msg = "unexpected response type: not an object";
+        log_timestamp();
         fprintf(stderr, "[poller] %s (%s): %s\n", label, ip, msg);
         atomic_fetch_add(&poll_failures, 1);
         pthread_rwlock_wrlock(&state->health_lock);
@@ -100,6 +104,7 @@ static void fetch_device(AppState *state, size_t idx)
 
     if (rc != 0) {
         const char *msg = "DB insert failed";
+        log_timestamp();
         fprintf(stderr, "[poller] %s (%s): %s\n", label, ip, msg);
         atomic_fetch_add(&poll_failures, 1);
         pthread_rwlock_wrlock(&state->health_lock);
@@ -128,6 +133,7 @@ static void fetch_device(AppState *state, size_t idx)
     record_success(&state->health[idx]);
     pthread_rwlock_unlock(&state->health_lock);
 
+    log_timestamp();
     fprintf(stderr, "[poller] %s (%s): OK — PM2.5=%s, CO2=%s, T=%s°C\n",
             label, ip, pm02_s, rco2_s, atmp_s);
 
@@ -145,6 +151,7 @@ void *poller_run(void *arg)
 {
     AppState *state = (AppState *)arg;
 
+    log_timestamp();
     fprintf(stderr, "[poller] Starting — polling %zu devices every %us\n",
             state->config.device_count, state->config.poll_interval_ms / 1000u);
 
@@ -174,6 +181,7 @@ void *poller_run(void *arg)
         nanosleep(&sleep_ts, NULL);
 
         if (atomic_load(&state->shutdown)) {
+            log_timestamp();
             fprintf(stderr, "[poller] Stopped\n");
             break;
         }
@@ -184,6 +192,7 @@ void *poller_run(void *arg)
         if (poll_count % CHECKPOINT_INTERVAL_POLLS == 0) {
             pthread_mutex_lock(&state->db_mutex);
             if (db_checkpoint(state->db) != 0) {
+                log_timestamp();
                 fprintf(stderr, "[poller] WAL checkpoint failed\n");
             }
             pthread_mutex_unlock(&state->db_mutex);

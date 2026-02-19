@@ -9,6 +9,7 @@ extern poller_thread_main
 extern pthread_create, pthread_join, pthread_mutex_init, pthread_rwlock_init
 extern sigaction, fprintf, clock_gettime, exit
 extern memset, snprintf
+extern localtime_r, strftime
 
 extern stderr
 
@@ -89,6 +90,44 @@ section .rodata
 .sig_msg_len equ $ - .sig_msg
 
 section .text
+
+; ── log_ts() — print "[YYYY-MM-DD HH:MM:SS] " timestamp prefix to stderr ────
+extern log_ts_datefmt, log_ts_prefix
+
+global log_ts
+log_ts:
+    push rbp
+    mov rbp, rsp
+    sub rsp, 96             ; timespec(16) + tm(56) + buf(24)
+
+    ; clock_gettime(CLOCK_REALTIME, &ts)
+    xor edi, edi            ; CLOCK_REALTIME
+    lea rsi, [rsp]
+    call clock_gettime wrt ..plt
+
+    ; localtime_r(&tv_sec, &tm)
+    lea rdi, [rsp]          ; &tv_sec (first 8 bytes of timespec)
+    lea rsi, [rsp + 16]     ; &tm
+    call localtime_r wrt ..plt
+
+    ; strftime(buf, 20, "%Y-%m-%d %H:%M:%S", &tm)
+    lea rdi, [rsp + 72]     ; buf
+    mov esi, 20
+    lea rdx, [log_ts_datefmt]
+    lea rcx, [rsp + 16]     ; &tm
+    call strftime wrt ..plt
+
+    ; fprintf(stderr, "[%s] ", buf)
+    mov rdi, [rel stderr wrt ..got]
+    mov rdi, [rdi]
+    lea rsi, [log_ts_prefix]
+    lea rdx, [rsp + 72]
+    xor eax, eax
+    call fprintf wrt ..plt
+
+    add rsp, 96
+    pop rbp
+    ret
 
 ; ── Main entry ───────────────────────────────────────────────────────────────
 
@@ -215,6 +254,7 @@ main:
     call db_close
 
     ; Log shutdown
+    call log_ts
     mov rdi, [rel stderr wrt ..got]
     mov rdi, [rdi]
     lea rsi, [log_server_stop]

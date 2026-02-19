@@ -1,5 +1,5 @@
 import std/[json, times, tables, strutils]
-import sqlite3_wrapper
+import sqlite3_wrapper, log
 
 type
   Reading* = object
@@ -113,7 +113,7 @@ proc ensureQueriesLoaded() =
     if "count_readings" in queries:
       loadedCountSql = queries["count_readings"]
   except IOError:
-    stderr.writeLine "[db] queries.sql not found, using defaults"
+    logTs "[db] queries.sql not found, using defaults"
 
 proc getQueryCols(): string =
   if loadedQueryCols.len > 0: loadedQueryCols else: QueryCols
@@ -128,7 +128,7 @@ proc dbInitialize*(db: Sqlite3): bool =
   var errmsg: cstring
   var rc = sqlite3_exec(db, pragmas.cstring, nil, nil, addr errmsg)
   if rc != SQLITE_OK:
-    stderr.writeLine "[db] pragma error: " & (if errmsg != nil: $errmsg else: "unknown")
+    logTs "[db] pragma error: " & (if errmsg != nil: $errmsg else: "unknown")
     if errmsg != nil: sqlite3_free(errmsg)
     return false
 
@@ -137,12 +137,12 @@ proc dbInitialize*(db: Sqlite3): bool =
   try:
     schema = readFile("../schema.sql")
   except IOError:
-    stderr.writeLine "[db] failed to read ../schema.sql"
+    logTs "[db] failed to read ../schema.sql"
     return false
 
   rc = sqlite3_exec(db, schema.cstring, nil, nil, addr errmsg)
   if rc != SQLITE_OK:
-    stderr.writeLine "[db] schema error: " & (if errmsg != nil: $errmsg else: "unknown")
+    logTs "[db] schema error: " & (if errmsg != nil: $errmsg else: "unknown")
     if errmsg != nil: sqlite3_free(errmsg)
     return false
 
@@ -262,7 +262,7 @@ proc queryReadings*(db: Sqlite3, q: ReadingQuery): seq[Reading] =
   var stmt: Sqlite3Stmt
   let rc = sqlite3_prepare_v2(db, sql.cstring, -1.cint, addr stmt, nil)
   if rc != SQLITE_OK:
-    stderr.writeLine "[db] prepare query error: " & $sqlite3_errmsg(db)
+    logTs "[db] prepare query error: " & $sqlite3_errmsg(db)
     return @[]
 
   discard sqlite3_bind_int64(stmt, 1, q.fromTs)
@@ -310,7 +310,7 @@ proc queryReadingsDownsampled*(db: Sqlite3, q: ReadingQuery, bucketMs: int64): s
   var stmt: Sqlite3Stmt
   let rc = sqlite3_prepare_v2(db, sql.cstring, -1.cint, addr stmt, nil)
   if rc != SQLITE_OK:
-    stderr.writeLine "[db] prepare downsample query error: " & $sqlite3_errmsg(db)
+    logTs "[db] prepare downsample query error: " & $sqlite3_errmsg(db)
     return @[]
 
   discard sqlite3_bind_int64(stmt, 1, q.fromTs)
@@ -345,7 +345,7 @@ proc getLatestReadings*(db: Sqlite3): seq[Reading] =
   var stmt: Sqlite3Stmt
   let rc = sqlite3_prepare_v2(db, sql.cstring, -1.cint, addr stmt, nil)
   if rc != SQLITE_OK:
-    stderr.writeLine "[db] prepare latest error: " & $sqlite3_errmsg(db)
+    logTs "[db] prepare latest error: " & $sqlite3_errmsg(db)
     return @[]
 
   while sqlite3_step(stmt) == SQLITE_ROW:
@@ -362,7 +362,7 @@ proc getDevices*(db: Sqlite3): seq[DeviceSummary] =
   var stmt: Sqlite3Stmt
   let rc = sqlite3_prepare_v2(db, sql.cstring, -1.cint, addr stmt, nil)
   if rc != SQLITE_OK:
-    stderr.writeLine "[db] prepare devices error: " & $sqlite3_errmsg(db)
+    logTs "[db] prepare devices error: " & $sqlite3_errmsg(db)
     return @[]
 
   while sqlite3_step(stmt) == SQLITE_ROW:
@@ -386,7 +386,7 @@ proc countReadingsFiltered*(db: Sqlite3, fromTs: int64, toTs: int64,
   var stmt: Sqlite3Stmt
   let rc = sqlite3_prepare_v2(db, sql.cstring, -1.cint, addr stmt, nil)
   if rc != SQLITE_OK:
-    stderr.writeLine "[db] prepare count error: " & $sqlite3_errmsg(db)
+    logTs "[db] prepare count error: " & $sqlite3_errmsg(db)
     return 0
 
   discard sqlite3_bind_int64(stmt, 1, fromTs)
@@ -415,7 +415,7 @@ proc dbCheckpoint*(db: Sqlite3): bool =
   var errmsg: cstring
   let rc = sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE);".cstring, nil, nil, addr errmsg)
   if rc != SQLITE_OK:
-    stderr.writeLine "[db] checkpoint error: " & (if errmsg != nil: $errmsg else: "unknown")
+    logTs "[db] checkpoint error: " & (if errmsg != nil: $errmsg else: "unknown")
     if errmsg != nil: sqlite3_free(errmsg)
     return false
   return true
@@ -465,7 +465,7 @@ proc insertReading*(db: Sqlite3, ip: string, data: JsonNode): bool =
   var stmt: Sqlite3Stmt
   var rc = sqlite3_prepare_v2(db, sql.cstring, -1.cint, addr stmt, nil)
   if rc != SQLITE_OK:
-    stderr.writeLine "[db] prepare insert error: " & $sqlite3_errmsg(db)
+    logTs "[db] prepare insert error: " & $sqlite3_errmsg(db)
     return false
 
   discard sqlite3_bind_int64(stmt, 1, nowMillis())
@@ -492,10 +492,22 @@ proc insertReading*(db: Sqlite3, ip: string, data: JsonNode): bool =
   discard sqlite3_finalize(stmt)
 
   if rc != SQLITE_DONE:
-    stderr.writeLine "[db] insert step error: " & $sqlite3_errmsg(db)
+    logTs "[db] insert step error: " & $sqlite3_errmsg(db)
     return false
 
   return true
+
+proc jsonNum(v: float64): JsonNode =
+  ## Serialize whole-number floats as JSON integers (3 not 3.0) to match
+  ## other implementations. SQLite REAL columns return float64 even for
+  ## whole numbers like pm01=3.
+  if v != v: return newJFloat(v)  # NaN
+  if v > 9.007199254740992e15 or v < -9.007199254740992e15:
+    return newJFloat(v)  # outside safe integer range
+  let i = int64(v)
+  if float64(i) == v:
+    return newJInt(i)
+  return newJFloat(v)
 
 proc readingToJson*(r: Reading): JsonNode =
   result = newJObject()
@@ -505,37 +517,37 @@ proc readingToJson*(r: Reading): JsonNode =
   result["device_type"] = newJString(r.deviceType)
   result["device_ip"] = newJString(r.deviceIp)
 
-  if r.hasPm01: result["pm01"] = newJFloat(r.pm01)
+  if r.hasPm01: result["pm01"] = jsonNum(r.pm01)
   else: result["pm01"] = newJNull()
 
-  if r.hasPm02: result["pm02"] = newJFloat(r.pm02)
+  if r.hasPm02: result["pm02"] = jsonNum(r.pm02)
   else: result["pm02"] = newJNull()
 
-  if r.hasPm10: result["pm10"] = newJFloat(r.pm10)
+  if r.hasPm10: result["pm10"] = jsonNum(r.pm10)
   else: result["pm10"] = newJNull()
 
-  if r.hasPm02Compensated: result["pm02_compensated"] = newJFloat(r.pm02Compensated)
+  if r.hasPm02Compensated: result["pm02_compensated"] = jsonNum(r.pm02Compensated)
   else: result["pm02_compensated"] = newJNull()
 
   if r.hasRco2: result["rco2"] = newJInt(r.rco2)
   else: result["rco2"] = newJNull()
 
-  if r.hasAtmp: result["atmp"] = newJFloat(r.atmp)
+  if r.hasAtmp: result["atmp"] = jsonNum(r.atmp)
   else: result["atmp"] = newJNull()
 
-  if r.hasAtmpCompensated: result["atmp_compensated"] = newJFloat(r.atmpCompensated)
+  if r.hasAtmpCompensated: result["atmp_compensated"] = jsonNum(r.atmpCompensated)
   else: result["atmp_compensated"] = newJNull()
 
-  if r.hasRhum: result["rhum"] = newJFloat(r.rhum)
+  if r.hasRhum: result["rhum"] = jsonNum(r.rhum)
   else: result["rhum"] = newJNull()
 
-  if r.hasRhumCompensated: result["rhum_compensated"] = newJFloat(r.rhumCompensated)
+  if r.hasRhumCompensated: result["rhum_compensated"] = jsonNum(r.rhumCompensated)
   else: result["rhum_compensated"] = newJNull()
 
-  if r.hasTvocIndex: result["tvoc_index"] = newJFloat(r.tvocIndex)
+  if r.hasTvocIndex: result["tvoc_index"] = jsonNum(r.tvocIndex)
   else: result["tvoc_index"] = newJNull()
 
-  if r.hasNoxIndex: result["nox_index"] = newJFloat(r.noxIndex)
+  if r.hasNoxIndex: result["nox_index"] = jsonNum(r.noxIndex)
   else: result["nox_index"] = newJNull()
 
   if r.hasWifi: result["wifi"] = newJInt(r.wifi)
@@ -549,37 +561,37 @@ proc readingToJsonDownsampled*(r: Reading): JsonNode =
   result["device_type"] = newJString(r.deviceType)
   result["device_ip"] = newJString(r.deviceIp)
 
-  if r.hasPm01: result["pm01"] = newJFloat(r.pm01)
+  if r.hasPm01: result["pm01"] = jsonNum(r.pm01)
   else: result["pm01"] = newJNull()
 
-  if r.hasPm02: result["pm02"] = newJFloat(r.pm02)
+  if r.hasPm02: result["pm02"] = jsonNum(r.pm02)
   else: result["pm02"] = newJNull()
 
-  if r.hasPm10: result["pm10"] = newJFloat(r.pm10)
+  if r.hasPm10: result["pm10"] = jsonNum(r.pm10)
   else: result["pm10"] = newJNull()
 
-  if r.hasPm02Compensated: result["pm02_compensated"] = newJFloat(r.pm02Compensated)
+  if r.hasPm02Compensated: result["pm02_compensated"] = jsonNum(r.pm02Compensated)
   else: result["pm02_compensated"] = newJNull()
 
   if r.hasRco2: result["rco2"] = newJInt(r.rco2)
   else: result["rco2"] = newJNull()
 
-  if r.hasAtmp: result["atmp"] = newJFloat(r.atmp)
+  if r.hasAtmp: result["atmp"] = jsonNum(r.atmp)
   else: result["atmp"] = newJNull()
 
-  if r.hasAtmpCompensated: result["atmp_compensated"] = newJFloat(r.atmpCompensated)
+  if r.hasAtmpCompensated: result["atmp_compensated"] = jsonNum(r.atmpCompensated)
   else: result["atmp_compensated"] = newJNull()
 
-  if r.hasRhum: result["rhum"] = newJFloat(r.rhum)
+  if r.hasRhum: result["rhum"] = jsonNum(r.rhum)
   else: result["rhum"] = newJNull()
 
-  if r.hasRhumCompensated: result["rhum_compensated"] = newJFloat(r.rhumCompensated)
+  if r.hasRhumCompensated: result["rhum_compensated"] = jsonNum(r.rhumCompensated)
   else: result["rhum_compensated"] = newJNull()
 
-  if r.hasTvocIndex: result["tvoc_index"] = newJFloat(r.tvocIndex)
+  if r.hasTvocIndex: result["tvoc_index"] = jsonNum(r.tvocIndex)
   else: result["tvoc_index"] = newJNull()
 
-  if r.hasNoxIndex: result["nox_index"] = newJFloat(r.noxIndex)
+  if r.hasNoxIndex: result["nox_index"] = jsonNum(r.noxIndex)
   else: result["nox_index"] = newJNull()
 
   if r.hasWifi: result["wifi"] = newJInt(r.wifi)

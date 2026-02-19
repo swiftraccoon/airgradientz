@@ -43,16 +43,6 @@ const queries = parseQueriesSql(fs.readFileSync(queriesPath, 'utf8'));
 // Column list from shared queries.sql (multiline -> single line)
 const QUERY_COLS = queries.get('reading_columns').replace(/\n/g, ' ').replace(/\s+/g, ' ').trim();
 
-const DOWNSAMPLE_MAP = Object.freeze({
-  '5m':  300_000,
-  '10m': 600_000,
-  '15m': 900_000,
-  '30m': 1_800_000,
-  '1h':  3_600_000,
-  '1d':  86_400_000,
-  '1w':  604_800_000,
-});
-
 const insertStmt = db.prepare(queries.get('insert_reading').replace(/:([a-z_]+)/g, '@$1'));
 
 // Pre-prepared statements for all query variants (avoids per-request prepare leak)
@@ -109,12 +99,12 @@ function queryReadings({ device, from, to, limit, downsampleMs } = {}) {
 
   const limitN = limit !== undefined && limit !== null ? Math.floor(Number(limit)) : 0;
 
-  // Downsampled query: bucket_ms is a trusted integer from DOWNSAMPLE_MAP, interpolated directly
+  // Downsampled query: bucket_ms is a trusted integer from config.downsampleBuckets, interpolated directly
   if (downsampleMs) {
     const bucketMs = Number(downsampleMs);
     const deviceClause = wantDevice ? 'device_id = @device AND ' : '';
     const limitClause = limitN > 0 ? ' LIMIT @limit' : '';
-    if (limitN > 0) params.limit = limitN;
+    if (limitN > 0) { params.limit = limitN; }
 
     const sql = `SELECT (timestamp / ${bucketMs}) * ${bucketMs} AS timestamp,`
       + ' device_id, device_type, device_ip,'
@@ -186,4 +176,4 @@ function close() {
   db.close();
 }
 
-module.exports = { DOWNSAMPLE_MAP, insertReading, queryReadings, getDevices, getLatestReadings, getReadingsCount, getFilteredCount, checkpoint, close };
+module.exports = { insertReading, queryReadings, getDevices, getLatestReadings, getReadingsCount, getFilteredCount, checkpoint, close };

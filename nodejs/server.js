@@ -3,6 +3,7 @@
 const express = require('express');
 const path = require('node:path');
 const config = require('./config');
+const { timestamp } = require('./src/log');
 const apiRouter = require('./src/api');
 const { startPoller, stopPoller } = require('./src/poller');
 const { close: closeDb } = require('./src/db');
@@ -43,7 +44,7 @@ app.use(express.static(path.join(__dirname, 'public'), {
 
 // --- Start ---
 const server = app.listen(config.port, () => {
-  console.log(`[server] Listening on http://localhost:${config.port} (Node ${process.version})`);
+  console.log(`${timestamp()} [server] Listening on http://localhost:${config.port} (Node ${process.version})`);
   startPoller();
 });
 
@@ -64,15 +65,15 @@ function shutdown(signal) {
     return;
   }
   shuttingDown = true;
-  console.log(`[server] ${signal} received, shutting down`);
+  console.log(`${timestamp()} [server] ${signal} received, shutting down`);
   stopPoller();
   server.close(() => {
     closeDb();
-    console.log('[server] Shutdown complete');
+    console.log(`${timestamp()} [server] Shutdown complete`);
     process.exit(0);
   });
   setTimeout(() => {
-    console.error('[server] Forced exit after timeout');
+    console.error(`${timestamp()} [server] Forced exit after timeout`);
     process.exit(1);
   }, config.shutdownTimeoutMs);
 }
@@ -82,11 +83,11 @@ process.on('SIGINT', () => shutdown('SIGINT'));
 
 // --- Process hardening ---
 process.on('uncaughtException', (err) => {
-  console.error('[server] Uncaught exception:', err);
+  console.error(`${timestamp()} [server] Uncaught exception:`, err);
   shutdown('uncaughtException');
 });
 
 process.on('unhandledRejection', (reason) => {
-  console.error('[server] Unhandled rejection:', reason);
+  console.error(`${timestamp()} [server] Unhandled rejection:`, reason);
   shutdown('unhandledRejection');
 });

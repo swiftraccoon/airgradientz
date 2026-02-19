@@ -231,7 +231,7 @@ jq -n \
         pollIntervalMs: 10000,
         fetchTimeoutMs: 5000,
         maxApiRows: 10000,
-        downsampleThreshold: 10000,
+        downsampleBuckets: {"5m": 300000, "10m": 600000, "15m": 900000, "30m": 1800000, "1h": 3600000, "1d": 86400000, "1w": 604800000},
         ports: $ports,
         devices: [
             { ip: $mock_ip, label: "indoor" }

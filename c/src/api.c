@@ -98,7 +98,7 @@ JsonValue *api_handle_readings(struct AppState *state, const HttpReq *req, int *
     char *ds = query_param(req->query, "downsample");
     if (ds) {
         if (ds[0] != '\0') {
-            downsample_ms = downsample_lookup(ds);
+            downsample_ms = downsample_lookup(&state->config, ds);
             if (downsample_ms == 0) {
                 free(ds);
                 free(device);
@@ -233,9 +233,15 @@ JsonValue *api_handle_config(const struct AppState *state, int *status)
         json_array_push(devices, d);
     }
 
+    JsonValue *buckets = json_object_new();
+    for (size_t i = 0; i < state->config.downsample_bucket_count; i++) {
+        json_object_set(buckets, state->config.downsample_buckets[i].key,
+                        json_from_i64(state->config.downsample_buckets[i].ms));
+    }
+
     JsonValue *cfg = json_object_new();
     json_object_set(cfg, "pollIntervalMs", json_number((double)state->config.poll_interval_ms));
-    json_object_set(cfg, "downsampleThreshold", json_number((double)state->config.downsample_threshold));
+    json_object_set(cfg, "downsampleBuckets", buckets);
     json_object_set(cfg, "devices", devices);
 
     *status = 200;

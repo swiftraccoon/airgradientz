@@ -28,13 +28,13 @@ private void loadQueries() {
     queriesLoaded = true;
 
     import std.file : readText;
-    import std.stdio : stderr;
+    import log : logf;
 
     string content;
     try {
         content = readText("../queries.sql");
     } catch (Exception e) {
-        stderr.writefln("[db] queries.sql not found (%s), using defaults", e.msg);
+        logf("[db] queries.sql not found (%s), using defaults", e.msg);
         setDefaultQueries();
         return;
     }
@@ -66,7 +66,7 @@ private void loadQueries() {
     else
         loadedCountSQL = DEFAULT_COUNT_SQL;
 
-    stderr.writefln("[db] loaded %d queries from queries.sql", queries.length);
+    logf("[db] loaded %d queries from queries.sql", queries.length);
 }
 
 private void setDefaultQueries() {
@@ -160,10 +160,10 @@ package string convertPlaceholders(string sql) {
 }
 
 Database initDb(string path) {
-    import std.stdio : stderr;
     import std.file : readText;
+    import log : logf;
 
-    stderr.writefln("[db] Opening database at %s", path);
+    logf("[db] Opening database at %s", path);
 
     loadQueries();
 
@@ -176,7 +176,7 @@ Database initDb(string path) {
     try {
         schema = readText("../schema.sql");
     } catch (Exception e) {
-        stderr.writefln("[db] Failed to read ../schema.sql: %s, using fallback", e.msg);
+        logf("[db] Failed to read ../schema.sql: %s, using fallback", e.msg);
         schema = "CREATE TABLE IF NOT EXISTS readings (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             timestamp INTEGER NOT NULL,
@@ -332,30 +332,6 @@ private JSONValue nullableDoubleJson(Nullable!double v) {
 
 private JSONValue nullableLongJson(Nullable!long v) {
     return v.isNull ? JSONValue(null) : JSONValue(v.get);
-}
-
-private immutable long[string] downsampleMap;
-
-shared static this() {
-    downsampleMap = [
-        "5m":  300_000L,
-        "10m": 600_000L,
-        "15m": 900_000L,
-        "30m": 1_800_000L,
-        "1h":  3_600_000L,
-        "1d":  86_400_000L,
-        "1w":  604_800_000L,
-    ];
-}
-
-bool isValidDownsample(string key) {
-    return key !is null && key.length > 0 && (key in downsampleMap) !is null;
-}
-
-long getDownsampleBucketMs(string key) {
-    if (auto p = key in downsampleMap)
-        return *p;
-    return 0;
 }
 
 private string queryCols() {
@@ -650,5 +626,40 @@ unittest {
         assert(("last_seen" in j.object) !is null, "devices should have last_seen");
         assert(("reading_count" in j.object) !is null, "devices should have reading_count");
         stderr.writeln("  pass: devices no first_seen");
+    }
+
+    // Test: insertReading with full indoor data
+    {
+        auto testDb = openTestDb();
+        auto indoorJson = parseJSON(`{"wifi":-47,"serialno":"84fce602549c","model":"I-9PSL","pm01":5,"pm02":41.67,"pm10":44.83,"pm003Count":1638,"pm005Count":516.67,"pm01Count":79.83,"pm02Count":16.67,"rco2":489,"atmp":20.78,"atmpCompensated":20.78,"rhum":44.32,"rhumCompensated":44.32,"tvocIndex":100,"tvocRaw":26108,"noxIndex":1,"noxRaw":16370,"boot":1577,"bootCount":1577,"firmware":"3.6.2","pm02Compensated":41.67}`);
+        insertReading(testDb, "10.0.0.1", indoorJson);
+
+        auto now = nowMillis();
+        auto readings = queryReadings(testDb, "all", 0, now + 1000, 100);
+        assert(readings.length == 1, "expected 1 reading after insertReading");
+        assert(readings[0].deviceId == "84fce602549c", "device_id should be serialno");
+        assert(readings[0].deviceType == "indoor", "model I-* should be indoor");
+        assert(!readings[0].pm02.isNull, "pm02 should not be null");
+        assert(readings[0].pm02.get == 41.67, "pm02 should be 41.67");
+        assert(!readings[0].rco2.isNull, "rco2 should not be null");
+        assert(readings[0].rco2.get == 489, "rco2 should be 489");
+        stderr.writeln("  pass: insertReading with full data");
+    }
+
+    // Test: insertReading with null fields
+    {
+        auto testDb = openTestDb();
+        auto nullJson = parseJSON(`{"wifi":-59,"serialno":"84fce602549c","model":"I-9PSL","firmware":"3.6.2","boot":0,"bootCount":0}`);
+        insertReading(testDb, "10.0.0.2", nullJson);
+
+        auto now = nowMillis();
+        auto readings = queryReadings(testDb, "all", 0, now + 1000, 100);
+        assert(readings.length == 1, "expected 1 reading after insertReading with nulls");
+        assert(readings[0].pm01.isNull, "pm01 should be null");
+        assert(readings[0].pm02.isNull, "pm02 should be null");
+        assert(readings[0].rco2.isNull, "rco2 should be null");
+        assert(!readings[0].wifi.isNull, "wifi should not be null");
+        assert(readings[0].wifi.get == -59, "wifi should be -59");
+        stderr.writeln("  pass: insertReading with null fields");
     }
 }

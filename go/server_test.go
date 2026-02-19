@@ -18,7 +18,7 @@ func newTestHandler(t *testing.T) *handler {
 		PollIntervalMs:      15000,
 		FetchTimeoutMs:      5000,
 		MaxAPIRows:          10000,
-		DownsampleThreshold: 10000,
+		DownsampleBuckets:   map[string]int64{"5m": 300000, "10m": 600000, "15m": 900000, "30m": 1800000, "1h": 3600000, "1d": 86400000, "1w": 604800000},
 	}
 
 	poller := NewPoller(db, cfg)
@@ -491,7 +491,7 @@ func TestReadingsInvalidDownsample(t *testing.T) {
 	}
 }
 
-func TestConfigIncludesDownsampleThreshold(t *testing.T) {
+func TestConfigIncludesDownsampleBuckets(t *testing.T) {
 	h := newTestHandler(t)
 
 	rr := doGet(h, "/api/config")
@@ -500,11 +500,22 @@ func TestConfigIncludesDownsampleThreshold(t *testing.T) {
 	}
 
 	result := parseJSON(t, rr).(map[string]any)
-	threshold, ok := result["downsampleThreshold"]
+	buckets, ok := result["downsampleBuckets"]
 	if !ok {
-		t.Fatal("missing downsampleThreshold in config response")
+		t.Fatal("missing downsampleBuckets in config response")
 	}
-	if threshold != float64(10000) {
-		t.Errorf("downsampleThreshold = %v, want 10000", threshold)
+	bucketsMap, ok := buckets.(map[string]any)
+	if !ok {
+		t.Fatal("downsampleBuckets is not an object")
+	}
+	if len(bucketsMap) == 0 {
+		t.Error("downsampleBuckets is empty")
+	}
+	if v, ok := bucketsMap["1h"]; ok {
+		if v != float64(3600000) {
+			t.Errorf("downsampleBuckets[1h] = %v, want 3600000", v)
+		}
+	} else {
+		t.Error("downsampleBuckets missing '1h' key")
 	}
 }

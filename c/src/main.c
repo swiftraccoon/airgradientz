@@ -1,6 +1,7 @@
 #include "app.h"
 #include "db.h"
 #include "http_server.h"
+#include "log.h"
 
 #include <signal.h>
 #include <stdio.h>
@@ -21,6 +22,7 @@ int main(void)
     atomic_store(&g_state.shutdown, false);
     g_state.started_at = db_now_millis();
 
+    log_timestamp();
     fprintf(stderr, "[server] Opening database at %s\n", g_state.config.db_path);
 
     int rc = sqlite3_open(g_state.config.db_path, &g_state.db);
@@ -66,6 +68,7 @@ int main(void)
     pthread_rwlock_destroy(&g_state.health_lock);
     sqlite3_close(g_state.db);
 
+    log_timestamp();
     fprintf(stderr, "[server] Shut down cleanly\n");
     return 0;
 }

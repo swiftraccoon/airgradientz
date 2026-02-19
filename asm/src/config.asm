@@ -1,17 +1,17 @@
 ; config.asm — Config file loading and env var overrides
-; Priority: env vars > airgradientz.json > hardcoded defaults
+; Priority: env vars > airgradientz.json (mandatory)
 default rel
 
-extern getenv, fopen, fread, fclose, strstr, sscanf, atoi, strlen
+extern getenv, fopen, fread, fclose, strstr, sscanf, atoi, atoll, strlen
 extern malloc, free, strdup, snprintf, fprintf, memset, strchr
-extern stderr
+extern stderr, exit
 
 extern str_port_env, str_db_path_env, str_config_path_env
 extern str_default_db, str_config_local, str_config_parent
 extern str_key_poll_interval, str_key_fetch_timeout, str_key_max_api_rows
-extern str_key_downsample_threshold
+extern str_key_downsample_buckets
 extern str_key_devices, str_key_ip, str_key_label, str_key_ports, str_key_asm
-extern log_config_loaded
+extern log_config_loaded, log_ts
 extern MAX_DEVICES, MAX_CONFIG_SIZE
 
 ; ── Exported globals ─────────────────────────────────────────────────────────
@@ -30,8 +30,14 @@ g_fetch_timeout_ms: resd 1
 global g_max_api_rows
 g_max_api_rows: resd 1
 
-global g_downsample_threshold
-g_downsample_threshold: resd 1
+global g_ds_bucket_count
+g_ds_bucket_count: resd 1
+
+global g_ds_bucket_keys
+g_ds_bucket_keys: resq 16     ; up to 16 string pointers
+
+global g_ds_bucket_values
+g_ds_bucket_values: resq 16   ; up to 16 i64 values
 
 global g_db_path
 g_db_path: resq 1
@@ -42,6 +48,35 @@ g_device_count: resd 1
 ; Device array: ip_ptr (8) + label_ptr (8) = 16 bytes each
 global g_devices
 g_devices: resb 16 * 8    ; MAX_DEVICES=8
+
+section .rodata
+
+fatal_no_config:
+    db `fatal: config file not found`, 10, 0
+
+fatal_missing_keys:
+    db `fatal: missing required config keys:`, 0
+
+fatal_key_port:
+    db ` port`, 0
+
+fatal_key_poll_interval:
+    db ` pollIntervalMs`, 0
+
+fatal_key_fetch_timeout:
+    db ` fetchTimeoutMs`, 0
+
+fatal_key_max_api_rows:
+    db ` maxApiRows`, 0
+
+fatal_key_downsample_buckets:
+    db ` downsampleBuckets`, 0
+
+fatal_key_devices:
+    db ` devices`, 0
+
+fatal_newline:
+    db 10, 0
 
 section .data
 
@@ -270,12 +305,12 @@ load_config:
     push r15
     sub rsp, 8200           ; config file buffer + scratch
 
-    ; Set defaults
-    mov dword [g_port], 3018
-    mov dword [g_poll_interval_ms], 15000
-    mov dword [g_fetch_timeout_ms], 5000
-    mov dword [g_max_api_rows], 10000
-    mov dword [g_downsample_threshold], 10000
+    ; Zero all config values (no hardcoded defaults — config file is mandatory)
+    mov dword [g_port], 0
+    mov dword [g_poll_interval_ms], 0
+    mov dword [g_fetch_timeout_ms], 0
+    mov dword [g_max_api_rows], 0
+    mov dword [g_ds_bucket_count], 0
     mov dword [g_device_count], 0
 
     ; Default DB path
@@ -345,13 +380,143 @@ load_config:
     mov [g_max_api_rows], eax
 .skip_max_rows:
 
+    ; Parse downsampleBuckets: {"5m": 300000, "10m": 600000, ...}
     lea rdi, [rsp]
-    lea rsi, [str_key_downsample_threshold]
-    call extract_int
-    cmp eax, -1
-    je .skip_ds_threshold
-    mov [g_downsample_threshold], eax
-.skip_ds_threshold:
+    lea rsi, [str_key_downsample_buckets]
+    call strstr wrt ..plt
+    test rax, rax
+    jz .skip_ds_buckets
+
+    ; Find the opening '{' after "downsampleBuckets"
+    mov rdi, rax
+    mov sil, '{'
+    call strchr wrt ..plt
+    test rax, rax
+    jz .skip_ds_buckets
+
+    mov r12, rax                ; r12 = cursor inside the buckets object
+    xor r14d, r14d              ; r14d = bucket count
+
+.dsb_loop:
+    cmp r14d, 16
+    jge .dsb_done
+
+    ; Find next '"' (start of key)
+    mov rdi, r12
+    mov sil, '"'
+    call strchr wrt ..plt
+    test rax, rax
+    jz .dsb_done
+
+    ; Check if we've gone past the closing '}'
+    ; First find '}' from current position
+    push rax                    ; save key quote ptr
+    mov rdi, r12
+    mov sil, '}'
+    call strchr wrt ..plt
+    mov rbx, rax                ; rbx = closing brace ptr (or NULL)
+    pop rax                     ; restore key quote ptr
+    test rbx, rbx
+    jz .dsb_done
+    cmp rax, rbx                ; if quote is past closing brace, we're done
+    jge .dsb_done
+
+    ; rax points to opening quote of key — skip it
+    inc rax
+    mov r12, rax                ; cursor = start of key text
+
+    ; Find closing quote for key
+    mov rdi, r12
+    mov sil, '"'
+    call strchr wrt ..plt
+    test rax, rax
+    jz .dsb_done
+
+    ; Null-terminate the key temporarily for strdup
+    mov byte [rax], 0
+    mov rbx, rax                ; save position of closing quote
+
+    ; strdup the key
+    mov rdi, r12
+    call strdup wrt ..plt
+    test rax, rax
+    jz .dsb_next_restore
+
+    ; Store key pointer
+    mov ecx, r14d
+    mov [g_ds_bucket_keys + rcx*8], rax
+
+    ; Restore the quote character
+    mov byte [rbx], '"'
+
+    ; Move cursor past the closing quote
+    lea r12, [rbx + 1]
+
+    ; Find ':' after the key
+    mov rdi, r12
+    mov sil, ':'
+    call strchr wrt ..plt
+    test rax, rax
+    jz .dsb_done
+
+    ; Skip ':' and any whitespace to find the number
+    inc rax
+.dsb_skip_ws:
+    cmp byte [rax], ' '
+    je .dsb_ws_next
+    cmp byte [rax], 9           ; tab
+    je .dsb_ws_next
+    cmp byte [rax], 10          ; newline
+    je .dsb_ws_next
+    cmp byte [rax], 13          ; carriage return
+    je .dsb_ws_next
+    jmp .dsb_parse_val
+.dsb_ws_next:
+    inc rax
+    jmp .dsb_skip_ws
+
+.dsb_parse_val:
+    mov r12, rax                ; cursor at start of number
+    ; Use atoll to parse the integer value
+    mov rdi, rax
+    call atoll wrt ..plt
+
+    ; Store value
+    mov ecx, r14d
+    mov [g_ds_bucket_values + rcx*8], rax
+
+    ; Advance cursor past the number (find next ',' or '}')
+    mov rdi, r12
+    mov sil, ','
+    call strchr wrt ..plt
+    test rax, rax
+    jz .dsb_try_close
+    lea r12, [rax + 1]          ; move past ','
+    inc r14d
+    jmp .dsb_loop
+
+.dsb_try_close:
+    ; No more commas — find closing '}'
+    mov rdi, r12
+    mov sil, '}'
+    call strchr wrt ..plt
+    test rax, rax
+    jz .dsb_done_inc
+    lea r12, [rax + 1]
+.dsb_done_inc:
+    inc r14d
+    jmp .dsb_done
+
+.dsb_next_restore:
+    ; strdup failed — restore quote and skip this entry
+    mov byte [rbx], '"'
+    lea r12, [rbx + 1]
+    jmp .dsb_loop
+
+.dsb_done:
+    mov [g_ds_bucket_count], r14d
+
+.skip_ds_buckets:
 
     ; Parse port from ports.asm key
     lea rdi, [rsp]
@@ -378,7 +543,20 @@ load_config:
     lea rdi, [rsp]
     call parse_devices
 
+    jmp .config_parsed
+
 .no_config_file:
+    ; Config file is mandatory — fatal error if not found
+    call log_ts
+    mov rdi, [rel stderr wrt ..got]
+    mov rdi, [rdi]
+    lea rsi, [fatal_no_config]
+    xor eax, eax
+    call fprintf wrt ..plt
+    mov edi, 1
+    call exit wrt ..plt
+
+.config_parsed:
     ; ── Env var overrides ────────────────────────────────────────────────────
 
     ; PORT
@@ -408,18 +586,127 @@ load_config:
     mov [g_db_path], rax
 .no_db_env:
 
-    ; Log config
-    lea rdi, [log_config_loaded]
-    mov esi, [g_device_count]
-    mov edx, [g_poll_interval_ms]
-    mov ecx, [g_fetch_timeout_ms]
-    mov r8d, [g_max_api_rows]
+    ; ── Validate required config values ───────────────────────────────────────
+    ; Use r14 as a flag: 0 = all ok, 1 = at least one missing
+    xor r14d, r14d
+
+    ; Get stderr once for all validation prints
+    mov r15, [rel stderr wrt ..got]
+    mov r15, [r15]
+
+    cmp dword [g_port], 0
+    jg .valid_port
+    ; First missing key — print the header
+    test r14d, r14d
+    jnz .skip_hdr_port
+    mov rdi, r15
+    lea rsi, [fatal_missing_keys]
     xor eax, eax
-    mov r9, [rel stderr wrt ..got]
-    mov r9, [r9]
-    push r9
-    push r8
-    mov rdi, r9
+    call fprintf wrt ..plt
+.skip_hdr_port:
+    mov r14d, 1
+    mov rdi, r15
+    lea rsi, [fatal_key_port]
+    xor eax, eax
+    call fprintf wrt ..plt
+.valid_port:
+
+    cmp dword [g_poll_interval_ms], 0
+    jg .valid_poll
+    test r14d, r14d
+    jnz .skip_hdr_poll
+    mov rdi, r15
+    lea rsi, [fatal_missing_keys]
+    xor eax, eax
+    call fprintf wrt ..plt
+.skip_hdr_poll:
+    mov r14d, 1
+    mov rdi, r15
+    lea rsi, [fatal_key_poll_interval]
+    xor eax, eax
+    call fprintf wrt ..plt
+.valid_poll:
+
+    cmp dword [g_fetch_timeout_ms], 0
+    jg .valid_timeout
+    test r14d, r14d
+    jnz .skip_hdr_timeout
+    mov rdi, r15
+    lea rsi, [fatal_missing_keys]
+    xor eax, eax
+    call fprintf wrt ..plt
+.skip_hdr_timeout:
+    mov r14d, 1
+    mov rdi, r15
+    lea rsi, [fatal_key_fetch_timeout]
+    xor eax, eax
+    call fprintf wrt ..plt
+.valid_timeout:
+
+    cmp dword [g_max_api_rows], 0
+    jg .valid_max_rows
+    test r14d, r14d
+    jnz .skip_hdr_max_rows
+    mov rdi, r15
+    lea rsi, [fatal_missing_keys]
+    xor eax, eax
+    call fprintf wrt ..plt
+.skip_hdr_max_rows:
+    mov r14d, 1
+    mov rdi, r15
+    lea rsi, [fatal_key_max_api_rows]
+    xor eax, eax
+    call fprintf wrt ..plt
+.valid_max_rows:
+
+    cmp dword [g_ds_bucket_count], 0
+    jg .valid_ds_buckets
+    test r14d, r14d
+    jnz .skip_hdr_ds
+    mov rdi, r15
+    lea rsi, [fatal_missing_keys]
+    xor eax, eax
+    call fprintf wrt ..plt
+.skip_hdr_ds:
+    mov r14d, 1
+    mov rdi, r15
+    lea rsi, [fatal_key_downsample_buckets]
+    xor eax, eax
+    call fprintf wrt ..plt
+.valid_ds_buckets:
+
+    cmp dword [g_device_count], 0
+    jg .valid_devices
+    test r14d, r14d
+    jnz .skip_hdr_dev
+    mov rdi, r15
+    lea rsi, [fatal_missing_keys]
+    xor eax, eax
+    call fprintf wrt ..plt
+.skip_hdr_dev:
+    mov r14d, 1
+    mov rdi, r15
+    lea rsi, [fatal_key_devices]
+    xor eax, eax
+    call fprintf wrt ..plt
+.valid_devices:
+
+    ; If any validation failed, print newline and exit
+    test r14d, r14d
+    jz .validation_ok
+    mov rdi, r15
+    lea rsi, [fatal_newline]
+    xor eax, eax
+    call fprintf wrt ..plt
+    mov edi, 1
+    call exit wrt ..plt
+
+.validation_ok:
+
+    ; Log config
+    call log_ts
+    mov rdi, [rel stderr wrt ..got]
+    mov rdi, [rdi]
     lea rsi, [log_config_loaded]
     mov edx, [g_device_count]
     mov ecx, [g_poll_interval_ms]
@@ -427,7 +714,6 @@ load_config:
     mov r9d, [g_max_api_rows]
     xor eax, eax
     call fprintf wrt ..plt
-    add rsp, 16
 
     add rsp, 8200
     pop r15

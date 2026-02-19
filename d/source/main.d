@@ -1,6 +1,5 @@
 module main;
 
-import std.stdio : stderr;
 import core.stdc.signal;
 import core.atomic : atomicStore;
 
@@ -8,6 +7,7 @@ import config : Config;
 import state : AppState;
 import poller : startPoller;
 import http.server : runServer;
+import log : logf;
 
 private shared bool g_shutdown = false;
 private __gshared AppState g_state;
@@ -22,8 +22,8 @@ void main() {
 
     auto cfg = Config.fromEnv();
 
-    stderr.writefln("[main] AirGradient Dashboard (D)");
-    stderr.writefln("[main] Port: %d, DB: %s, Devices: %d",
+    logf("[main] AirGradient Dashboard (D)");
+    logf("[main] Port: %d, DB: %s, Devices: %d",
         cfg.port, cfg.dbPath, cfg.devices.length);
 
     auto appState = new AppState(cfg, &g_shutdown);

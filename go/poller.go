@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"log"
 	"net/http"
 	"sync"
 	"sync/atomic"
@@ -51,7 +50,7 @@ func NewPoller(db *sql.DB, cfg *Config) *Poller {
 }
 
 func (p *Poller) Run(ctx context.Context) {
-	log.Printf("[poller] Starting — polling %d devices every %.1fs",
+	logf("[poller] Starting — polling %d devices every %.1fs",
 		len(p.cfg.Devices), float64(p.cfg.PollIntervalMs)/pollerMsPerSecond)
 
 	p.pollAll()
@@ -63,14 +62,14 @@ func (p *Poller) Run(ctx context.Context) {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Print("[poller] Stopped")
+			logf("[poller] Stopped")
 			return
 		case <-ticker.C:
 			p.pollAll()
 			pollCount++
 			if pollCount%checkpointIntervalPolls == 0 {
 				if err := Checkpoint(p.db); err != nil {
-					log.Printf("[poller] checkpoint error: %v", err)
+					logf("[poller] checkpoint error: %v", err)
 				}
 			}
 		}
@@ -142,7 +141,7 @@ func (p *Poller) fetchDevice(idx int) {
 
 func (p *Poller) setError(idx int, msg string) {
 	d := p.cfg.Devices[idx]
-	log.Printf("[poller] %s (%s): %s", d.Label, d.IP, msg)
+	logf("[poller] %s (%s): %s", d.Label, d.IP, msg)
 
 	atomic.AddInt64(&p.failures, 1)
 	p.mu.Lock()

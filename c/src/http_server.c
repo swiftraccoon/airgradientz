@@ -2,6 +2,7 @@
 #include "app.h"
 #include "api.h"
 #include "json.h"
+#include "log.h"
 #include "strbuf.h"
 
 #include <errno.h>
@@ -388,6 +389,7 @@ int http_server_run(struct AppState *state)
 
     int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
     if (listen_fd < 0) {
+        log_timestamp();
         fprintf(stderr, "[server] socket: %s\n", strerror(errno));
         return -1;
     }
@@ -402,18 +404,21 @@ int http_server_run(struct AppState *state)
     addr.sin_port = htons(state->config.port);
 
     if (bind(listen_fd, (struct sockaddr *)&addr, sizeof(addr)) < 0) {
+        log_timestamp();
         fprintf(stderr, "[server] bind: %s\n", strerror(errno));
         close(listen_fd);
         return -1;
     }
 
     if (listen(listen_fd, 128) < 0) {
+        log_timestamp();
         fprintf(stderr, "[server] listen: %s\n", strerror(errno));
         close(listen_fd);
         return -1;
     }
 
     if (set_nonblocking(listen_fd) < 0) {
+        log_timestamp();
         fprintf(stderr, "[server] set_nonblocking(listen_fd): %s\n", strerror(errno));
         close(listen_fd);
         return -1;
@@ -421,6 +426,7 @@ int http_server_run(struct AppState *state)
 
     int epoll_fd = epoll_create1(EPOLL_CLOEXEC);
     if (epoll_fd < 0) {
+        log_timestamp();
         fprintf(stderr, "[server] epoll_create1: %s\n", strerror(errno));
         close(listen_fd);
         return -1;
@@ -430,12 +436,14 @@ int http_server_run(struct AppState *state)
     ev.events = EPOLLIN | EPOLLET;
     ev.data.fd = listen_fd;
     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, listen_fd, &ev) < 0) {
+        log_timestamp();
         fprintf(stderr, "[server] epoll_ctl(listen): %s\n", strerror(errno));
         close(epoll_fd);
         close(listen_fd);
         return -1;
     }
 
+    log_timestamp();
     fprintf(stderr, "[server] Listening on http://localhost:%u\n", state->config.port);
 
     struct epoll_event events[MAX_EVENTS];
@@ -446,6 +454,7 @@ int http_server_run(struct AppState *state)
         int nfds = epoll_wait(epoll_fd, events, MAX_EVENTS, 1000);
         if (nfds < 0) {
             if (errno == EINTR) continue;
+            log_timestamp();
             fprintf(stderr, "[server] epoll_wait: %s\n", strerror(errno));
             break;
         }
@@ -457,6 +466,7 @@ int http_server_run(struct AppState *state)
             /* ---- listen socket: accept loop ---- */
             if (fd == listen_fd) {
                 if (ev_flags & (EPOLLERR | EPOLLHUP)) {
+                    log_timestamp();
                     fprintf(stderr, "[server] listen socket error, exiting\n");
                     goto shutdown;
                 }
@@ -464,11 +474,13 @@ int http_server_run(struct AppState *state)
                     int client_fd = accept(listen_fd, NULL, NULL);
                     if (client_fd < 0) {
                         if (errno == EAGAIN || errno == EWOULDBLOCK) break;
+                        log_timestamp();
                         fprintf(stderr, "[server] accept: %s\n", strerror(errno));
                         break;
                     }
 
                     if (client_fd >= MAX_CONNS) {
+                        log_timestamp();
                         fprintf(stderr, "[server] fd %d >= MAX_CONNS, rejecting\n",
                                 client_fd);
                         close(client_fd);
@@ -476,6 +488,7 @@ int http_server_run(struct AppState *state)
                     }
 
                     if (set_nonblocking(client_fd) < 0) {
+                        log_timestamp();
                         fprintf(stderr, "[server] set_nonblocking(client): %s\n",
                                 strerror(errno));
                         close(client_fd);
@@ -490,6 +503,7 @@ int http_server_run(struct AppState *state)
                     cev.events = EPOLLIN | EPOLLET;
                     cev.data.fd = client_fd;
                     if (epoll_ctl(epoll_fd, EPOLL_CTL_ADD, client_fd, &cev) < 0) {
+                        log_timestamp();
                         fprintf(stderr, "[server] epoll_ctl(add client): %s\n",
                                 strerror(errno));
                         conn_reset(client_fd);

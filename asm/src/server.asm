@@ -8,6 +8,7 @@ extern __errno_location
 extern stderr
 
 extern route_request
+extern log_ts
 
 extern g_port, g_shutdown, g_requests_served, g_active_conns
 extern log_server_start
@@ -379,6 +380,7 @@ server_run:
     add rsp, 16
 
     ; Log listening
+    call log_ts
     mov rdi, [rel stderr wrt ..got]
     mov rdi, [rdi]
     lea rsi, [log_server_start]
@@ -560,6 +562,7 @@ server_run:
     ret
 
 .sr_fail:
+    call log_ts
     mov rdi, [rel stderr wrt ..got]
     mov rdi, [rdi]
     lea rsi, [sr_err_fmt]

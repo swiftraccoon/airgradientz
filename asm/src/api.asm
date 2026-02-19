@@ -12,7 +12,8 @@ extern stderr
 
 extern pthread_rwlock_rdlock, pthread_rwlock_unlock
 
-extern g_port, g_poll_interval_ms, g_fetch_timeout_ms, g_max_api_rows, g_downsample_threshold
+extern g_port, g_poll_interval_ms, g_fetch_timeout_ms, g_max_api_rows
+extern g_ds_bucket_count, g_ds_bucket_keys, g_ds_bucket_values
 extern g_devices, g_device_count
 extern g_requests_served, g_active_conns, g_poll_successes, g_poll_failures
 extern g_started_at, g_health, g_health_lock
@@ -23,7 +24,8 @@ extern fmt_stats_json, fmt_config_json, fmt_config_device
 extern fmt_health_entry
 extern str_null_json, str_param_from, str_param_to, str_param_device, str_param_limit
 extern str_param_downsample
-extern str_ds_5m, str_ds_10m, str_ds_15m, str_ds_30m, str_ds_1h, str_ds_1d, str_ds_1w
+extern fmt_ds_bucket_first, fmt_ds_bucket_rest
+extern fmt_config_devices_hdr
 extern str_proc_statm
 
 section .rodata
@@ -214,72 +216,26 @@ handle_readings:
     test eax, eax
     jnz .hr_query           ; no downsample param — proceed normally
 
-    ; Validate downsample value — check against known strings
-    lea rdi, [rsp + 256]
-    lea rsi, [str_ds_5m]
+    ; Validate downsample value — loop over config bucket keys
+    xor ecx, ecx              ; i = 0
+.ds_loop:
+    cmp ecx, [g_ds_bucket_count]
+    jge .hr_bad_request        ; not found — invalid
+
+    push rcx
+    lea rdi, [rsp + 256 + 8]  ; downsample buffer (adjust for pushed rcx)
+    mov rsi, [g_ds_bucket_keys + rcx*8]
     call strcmp wrt ..plt
+    pop rcx
     test eax, eax
-    jz .hr_ds_5m
+    jz .ds_found
 
-    lea rdi, [rsp + 256]
-    lea rsi, [str_ds_10m]
-    call strcmp wrt ..plt
-    test eax, eax
-    jz .hr_ds_10m
+    inc ecx
+    jmp .ds_loop
 
-    lea rdi, [rsp + 256]
-    lea rsi, [str_ds_15m]
-    call strcmp wrt ..plt
-    test eax, eax
-    jz .hr_ds_15m
-
-    lea rdi, [rsp + 256]
-    lea rsi, [str_ds_30m]
-    call strcmp wrt ..plt
-    test eax, eax
-    jz .hr_ds_30m
-
-    lea rdi, [rsp + 256]
-    lea rsi, [str_ds_1h]
-    call strcmp wrt ..plt
-    test eax, eax
-    jz .hr_ds_1h
-
-    lea rdi, [rsp + 256]
-    lea rsi, [str_ds_1d]
-    call strcmp wrt ..plt
-    test eax, eax
-    jz .hr_ds_1d
-
-    lea rdi, [rsp + 256]
-    lea rsi, [str_ds_1w]
-    call strcmp wrt ..plt
-    test eax, eax
-    jz .hr_ds_1w
-
-    ; Invalid downsample value — return 400
-    jmp .hr_bad_request
-
-.hr_ds_5m:
-    mov qword [rsp + 328], 300000
-    jmp .hr_query
-.hr_ds_10m:
-    mov qword [rsp + 328], 600000
-    jmp .hr_query
-.hr_ds_15m:
-    mov qword [rsp + 328], 900000
-    jmp .hr_query
-.hr_ds_30m:
-    mov qword [rsp + 328], 1800000
-    jmp .hr_query
-.hr_ds_1h:
-    mov qword [rsp + 328], 3600000
-    jmp .hr_query
-.hr_ds_1d:
-    mov qword [rsp + 328], 86400000
-    jmp .hr_query
-.hr_ds_1w:
-    mov qword [rsp + 328], 604800000
+.ds_found:
+    mov rax, [g_ds_bucket_values + rcx*8]
+    mov [rsp + 328], rax       ; bucket_ms
     jmp .hr_query
 
 .hr_query:
@@ -730,22 +686,65 @@ handle_config:
     mov r13, rsi
     mov r14, rdx
 
-    ; Build config JSON header
-    ; fmt_config_json has 4 %d: pollIntervalMs, fetchTimeoutMs, maxApiRows, downsampleThreshold
-    ; 7th snprintf arg goes on stack; sub 16 for alignment (need rsp 0 mod 16 before call)
-    sub rsp, 16
-    mov eax, [g_downsample_threshold]
-    mov [rsp], rax              ; 7th arg (stack) = downsampleThreshold
-    lea rdi, [rsp + 16]        ; buffer (starts after our 16-byte stack arg area)
+    ; Build config JSON: {"pollIntervalMs":%d,"downsampleBuckets":{
+    lea rdi, [rsp]
     mov esi, 4096
     lea rdx, [fmt_config_json]
     mov ecx, [g_poll_interval_ms]
-    mov r8d, [g_fetch_timeout_ms]
-    mov r9d, [g_max_api_rows]
     xor eax, eax
     xor ebx, ebx
     call snprintf wrt ..plt
-    add rsp, 16
+    CLAMP_ADV 4096
+
+    ; Add downsampleBuckets entries: "key":value, ...
+    mov r12d, [g_ds_bucket_count]
+    xor r15d, r15d
+
+.hc_bucket_loop:
+    cmp r15d, r12d
+    jge .hc_bucket_done
+    cmp ebx, 3600
+    jge .hc_bucket_done
+
+    ; Use fmt_ds_bucket_first for first entry, fmt_ds_bucket_rest for rest
+    cmp r15d, 0
+    jne .hc_bucket_rest
+    lea rdx, [fmt_ds_bucket_first]
+    jmp .hc_bucket_fmt
+.hc_bucket_rest:
+    lea rdx, [fmt_ds_bucket_rest]
+.hc_bucket_fmt:
+    ; snprintf(buf+pos, remaining, fmt, key_str, value_i64)
+    mov eax, r15d
+    mov rcx, [g_ds_bucket_keys + rax*8]    ; key string
+    mov r8, [g_ds_bucket_values + rax*8]   ; value i64
+    lea rdi, [rsp + rbx]
+    mov esi, 4096
+    sub esi, ebx
+    xor eax, eax
+    call snprintf wrt ..plt
+    ; Clamp advance
+    mov ecx, 4090
+    sub ecx, ebx
+    test ecx, ecx
+    jle .hc_bucket_done
+    cmp eax, ecx
+    cmovg eax, ecx
+    test eax, eax
+    jle .hc_bucket_no_adv
+    add ebx, eax
+.hc_bucket_no_adv:
+    inc r15d
+    jmp .hc_bucket_loop
+
+.hc_bucket_done:
+    ; Close buckets object and start devices: },"devices":[
+    lea rdi, [rsp + rbx]
+    mov esi, 4096
+    sub esi, ebx
+    lea rdx, [fmt_config_devices_hdr]
+    xor eax, eax
+    call snprintf wrt ..plt
     CLAMP_ADV 4096
 
     ; Add devices
@@ -755,7 +754,6 @@ handle_config:
 .hc_dev_loop:
     cmp r15d, r12d
     jge .hc_dev_done
-    ; Safety: stop if buffer nearly full
     cmp ebx, 3800
     jge .hc_dev_done
 

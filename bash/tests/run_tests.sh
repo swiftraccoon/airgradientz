@@ -91,7 +91,7 @@ setup_test_env() {
     export AGTZ_POLL_INTERVAL_MS=15000
     export AGTZ_FETCH_TIMEOUT_MS=5000
     export AGTZ_MAX_API_ROWS=10000
-    export AGTZ_DOWNSAMPLE_THRESHOLD=10000
+    export AGTZ_DOWNSAMPLE_BUCKETS='{"5m":300000,"10m":600000,"15m":900000,"30m":1800000,"1h":3600000,"1d":86400000,"1w":604800000}'
     export AGTZ_DEVICES_JSON='[{"ip":"192.168.1.1","label":"test-indoor"}]'
 
     # Create run directory
@@ -143,7 +143,7 @@ do_request() {
           AGTZ_POLL_INTERVAL_MS="${AGTZ_POLL_INTERVAL_MS}" \
           AGTZ_FETCH_TIMEOUT_MS="${AGTZ_FETCH_TIMEOUT_MS}" \
           AGTZ_MAX_API_ROWS="${AGTZ_MAX_API_ROWS}" \
-          AGTZ_DOWNSAMPLE_THRESHOLD="${AGTZ_DOWNSAMPLE_THRESHOLD}" \
+          AGTZ_DOWNSAMPLE_BUCKETS="${AGTZ_DOWNSAMPLE_BUCKETS}" \
           AGTZ_DEVICES_JSON="${AGTZ_DEVICES_JSON}" \
           bash "${SCRIPT_DIR}/handler.sh" 2>/dev/null
 }
@@ -392,7 +392,7 @@ do_handler_request() {
           AGTZ_POLL_INTERVAL_MS="${AGTZ_POLL_INTERVAL_MS}" \
           AGTZ_FETCH_TIMEOUT_MS="${AGTZ_FETCH_TIMEOUT_MS}" \
           AGTZ_MAX_API_ROWS="${AGTZ_MAX_API_ROWS}" \
-          AGTZ_DOWNSAMPLE_THRESHOLD="${AGTZ_DOWNSAMPLE_THRESHOLD}" \
+          AGTZ_DOWNSAMPLE_BUCKETS="${AGTZ_DOWNSAMPLE_BUCKETS}" \
           AGTZ_DEVICES_JSON="${AGTZ_DEVICES_JSON}" \
           bash "${HANDLER_TEST_DIR}/handler.sh" 2>/dev/null || true
 }
@@ -583,10 +583,12 @@ assert_eq "readings/count?device status 200" "200" "${status}"
 device_count=$(jq '.count' <<< "${body}")
 assert_eq "readings/count for indoor device is 1" "1" "${device_count}"
 
-# TestConfigHasDownsampleThreshold
+# TestConfigHasDownsampleBuckets
 response=$(do_handler_request GET "/api/config")
 body=$(get_body "${response}")
-assert_json_field "config has downsampleThreshold" "${body}" '.downsampleThreshold' "10000"
+bucket_count=$(jq '.downsampleBuckets | length' <<< "${body}")
+assert_eq "config has downsampleBuckets" "7" "${bucket_count}"
+assert_json_field "config downsampleBuckets.1h" "${body}" '.downsampleBuckets["1h"]' "3600000"
 
 echo ""
 

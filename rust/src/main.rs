@@ -21,6 +21,7 @@ mod db;
 mod error;
 mod http;
 mod json;
+mod log;
 mod poller;
 
 use std::collections::HashMap;
@@ -29,6 +30,7 @@ use std::sync::{Arc, Mutex, RwLock};
 use std::thread;
 
 use config::Config;
+use log::log;
 use poller::DeviceHealth;
 
 #[derive(Debug)]
@@ -45,7 +47,7 @@ pub(crate) struct AppState {
 fn main() {
     let config = Config::from_env();
 
-    eprintln!("[server] Opening database at {}", config.db_path);
+    log!("[server] Opening database at {}", config.db_path);
 
     let conn = rusqlite::Connection::open(&config.db_path).unwrap_or_else(|e| {
         eprintln!("[server] Failed to open database: {e}");

@@ -8,6 +8,7 @@ extern sqlite3_bind_text, sqlite3_bind_int64, sqlite3_bind_null
 extern pthread_mutex_lock, pthread_mutex_unlock
 extern snprintf, fprintf, strdup, strlen, free, malloc, memcpy, strcmp
 extern stderr
+extern log_ts
 
 extern g_db, g_db_mutex
 extern sql_schema, sql_pragma, sql_insert_reading
@@ -40,6 +41,7 @@ db_init:
     jnz .di_fail
 
     ; Log
+    call log_ts
     mov rdi, [rel stderr wrt ..got]
     mov rdi, [rdi]
     lea rsi, [log_db_opened]
@@ -72,10 +74,12 @@ db_init:
     ; Log error
     mov rdi, [g_db]
     call sqlite3_errmsg wrt ..plt
-    mov rdx, rax
+    mov r12, rax             ; save errmsg (r12 is callee-saved)
+    call log_ts
     mov rdi, [rel stderr wrt ..got]
     mov rdi, [rdi]
     lea rsi, [.di_err_fmt]
+    mov rdx, r12
     xor eax, eax
     call fprintf wrt ..plt
     mov eax, -1
@@ -789,10 +793,12 @@ db_insert_reading:
     mov r15d, eax
     mov rdi, [g_db]
     call sqlite3_errmsg wrt ..plt
-    mov rdx, rax
+    mov r14, rax             ; save errmsg
+    call log_ts
     mov rdi, [rel stderr wrt ..got]
     mov rdi, [rdi]
     lea rsi, [.dir_err_fmt]
+    mov rdx, r14
     xor eax, eax
     call fprintf wrt ..plt
     jmp .dir_finalize
@@ -801,10 +807,12 @@ db_insert_reading:
     mov r15d, eax
     mov rdi, [g_db]
     call sqlite3_errmsg wrt ..plt
-    mov rdx, rax
+    mov r14, rax             ; save errmsg
+    call log_ts
     mov rdi, [rel stderr wrt ..got]
     mov rdi, [rdi]
     lea rsi, [.dir_prep_err_fmt]
+    mov rdx, r14
     xor eax, eax
     call fprintf wrt ..plt
 

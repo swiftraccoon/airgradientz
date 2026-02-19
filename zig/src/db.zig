@@ -39,24 +39,6 @@ pub const ReadingQuery = struct {
     downsample_ms: i64 = 0,
 };
 
-const BucketEntry = struct { key: []const u8, ms: i64 };
-pub const downsample_map = [_]BucketEntry{
-    .{ .key = "5m", .ms = 300_000 },
-    .{ .key = "10m", .ms = 600_000 },
-    .{ .key = "15m", .ms = 900_000 },
-    .{ .key = "30m", .ms = 1_800_000 },
-    .{ .key = "1h", .ms = 3_600_000 },
-    .{ .key = "1d", .ms = 86_400_000 },
-    .{ .key = "1w", .ms = 604_800_000 },
-};
-
-pub fn downsampleLookup(s: []const u8) ?i64 {
-    for (downsample_map) |entry| {
-        if (std.mem.eql(u8, s, entry.key)) return entry.ms;
-    }
-    return null;
-}
-
 // ---- loaded queries from queries.sql ----
 
 var loaded_query_cols: ?[]const u8 = null;
@@ -1138,19 +1120,6 @@ test "checkpoint does not error" {
     defer closeDb(db);
 
     try checkpoint(db);
-}
-
-test "downsampleLookup valid keys" {
-    try testing.expectEqual(@as(?i64, 300_000), downsampleLookup("5m"));
-    try testing.expectEqual(@as(?i64, 3_600_000), downsampleLookup("1h"));
-    try testing.expectEqual(@as(?i64, 86_400_000), downsampleLookup("1d"));
-    try testing.expectEqual(@as(?i64, 604_800_000), downsampleLookup("1w"));
-}
-
-test "downsampleLookup invalid keys" {
-    try testing.expectEqual(@as(?i64, null), downsampleLookup("2h"));
-    try testing.expectEqual(@as(?i64, null), downsampleLookup(""));
-    try testing.expectEqual(@as(?i64, null), downsampleLookup("abc"));
 }
 
 fn testInsertRaw(db: SqliteDb, ts: i64, device_id: []const u8, pm02: f64, rco2: i64) !void {

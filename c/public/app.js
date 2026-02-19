@@ -52,7 +52,6 @@
   var charts = {};
   var devices = [];            // discovered devices from /api/devices
   var hiddenDevices = {};      // device_id -> true if hidden
-  var cachedConfig = null;     // cached /api/config response
 
   // Compensated-first field resolution: use compensated value when available,
   // fall back to raw (mirrors python-airgradient's __post_deserialize__ logic).
@@ -157,145 +156,13 @@
     return res.json();
   }
 
-  async function fetchReadingCount() {
-    var range = fetchTimeRange();
-    var url = '/api/readings/count?from=' + range.from + '&to=' + range.to;
-    var res = await fetch(url);
-    if (!res.ok) return 0;
-    var data = await res.json();
-    return data.count || 0;
-  }
+  // --- Downsample dropdown ---
 
-  // --- Smart loading (Task 20) ---
+  var LARGE_RANGE_MS = 2592000000; // 30d — warn when loading raw data beyond this
+  var previousDownsample = '';     // tracks last confirmed value for revert on cancel
 
-  function rangeBucket(rangeMs) {
-    if (rangeMs === 0) return 'all';
-    if (rangeMs <= 604800000) return '1h-7d';       // up to 7d
-    if (rangeMs <= 2592000000) return '7d-30d';      // up to 30d
-    if (rangeMs <= 31536000000) return '30d-1y';     // up to 1y
-    return '1y+';
-  }
-
-  function downsampleSuggestions(bucket) {
-    switch (bucket) {
-      case '1h-7d':  return [{ value: '15m', label: '15 minutes' }, { value: '5m', label: '5 minutes' }];
-      case '7d-30d': return [{ value: '1h', label: '1 hour' }, { value: '15m', label: '15 minutes' }];
-      case '30d-1y': return [{ value: '1d', label: '1 day' }, { value: '1h', label: '1 hour' }];
-      case '1y+':
-      case 'all':    return [{ value: '1w', label: '1 week' }, { value: '1d', label: '1 day' }];
-      default:       return [{ value: '1h', label: '1 hour' }];
-    }
-  }
-
-  function sessionKey(rangeMs) {
-    return 'downsample_choice_' + rangeMs;
-  }
-
-  function showDownsampleDialog(count, bucket) {
-    return new Promise(function (resolve) {
-      var dialog = document.getElementById('downsample-dialog');
-      var heading = document.getElementById('downsample-heading');
-      var description = document.getElementById('downsample-description');
-      var optionsDiv = document.getElementById('downsample-options');
-      var cancelBtn = document.getElementById('downsample-cancel');
-      var loadBtn = document.getElementById('downsample-load');
-
-      heading.textContent = 'Large dataset detected';
-      description.textContent = 'This time range contains ' + count.toLocaleString() + ' readings. Downsampling improves performance by averaging readings into time buckets.';
-
-      // Clear old options
-      while (optionsDiv.firstChild) {
-        optionsDiv.removeChild(optionsDiv.firstChild);
-      }
-
-      var suggestions = downsampleSuggestions(bucket);
-
-      // Build radio options
-      for (var i = 0; i < suggestions.length; i++) {
-        var s = suggestions[i];
-        var labelEl = document.createElement('label');
-        labelEl.className = 'radio-option';
-
-        var radio = document.createElement('input');
-        radio.type = 'radio';
-        radio.name = 'downsample';
-        radio.value = s.value;
-        if (i === 0) radio.checked = true;
-
-        var text = document.createTextNode('Average per ' + s.label);
-        labelEl.appendChild(radio);
-        labelEl.appendChild(text);
-        optionsDiv.appendChild(labelEl);
-      }
-
-      // Raw option
-      var rawLabel = document.createElement('label');
-      rawLabel.className = 'radio-option';
-      var rawRadio = document.createElement('input');
-      rawRadio.type = 'radio';
-      rawRadio.name = 'downsample';
-      rawRadio.value = 'raw';
-      var rawText = document.createTextNode('Raw data (all ' + count.toLocaleString() + ' readings)');
-      rawLabel.appendChild(rawRadio);
-      rawLabel.appendChild(rawText);
-      optionsDiv.appendChild(rawLabel);
-
-      function cleanup() {
-        cancelBtn.removeEventListener('click', onCancel);
-        loadBtn.removeEventListener('click', onLoad);
-        dialog.close();
-      }
-
-      function onCancel() {
-        cleanup();
-        resolve(null);
-      }
-
-      function onLoad() {
-        var selected = dialog.querySelector('input[name="downsample"]:checked');
-        var value = selected ? selected.value : null;
-        cleanup();
-        resolve(value === 'raw' ? '' : value);
-      }
-
-      cancelBtn.addEventListener('click', onCancel);
-      loadBtn.addEventListener('click', onLoad);
-
-      dialog.showModal();
-    });
-  }
-
-  async function smartFetch() {
-    var threshold = (cachedConfig && cachedConfig.downsampleThreshold) ? cachedConfig.downsampleThreshold : 10000;
-
-    // Check sessionStorage for cached choice
-    var key = sessionKey(currentRange);
-    var cached = sessionStorage.getItem(key);
-    if (cached !== null) {
-      // '' means raw, anything else is the downsample value
-      return fetchReadings(cached || undefined);
-    }
-
-    // Get count first
-    var count = await fetchReadingCount();
-
-    if (count <= threshold) {
-      return fetchReadings();
-    }
-
-    // Show dialog
-    var bucket = rangeBucket(currentRange);
-    var choice = await showDownsampleDialog(count, bucket);
-
-    if (choice === null) {
-      // User cancelled - return empty (don't change charts)
-      return null;
-    }
-
-    // Store choice in sessionStorage
-    sessionStorage.setItem(key, choice);
-
-    return fetchReadings(choice || undefined);
+  function getSelectedDownsample() {
+    return document.getElementById('downsample-select').value;
   }
 
   // --- Chart update (N-device) ---
@@ -534,7 +401,12 @@
 
   async function refresh() {
     try {
-      var results = await Promise.all([smartFetch(), updateDeviceStatus(), updateCurrentValues()]);
+      var downsample = getSelectedDownsample();
+      var results = await Promise.all([
+        fetchReadings(downsample || undefined),
+        updateDeviceStatus(),
+        updateCurrentValues(),
+      ]);
       var readings = results[0];
       if (readings !== null) {
         updateCharts(readings);
@@ -549,16 +421,41 @@
     refreshTimer = setInterval(refresh, refreshMs);
   }
 
+  // Human-friendly labels for downsample bucket keys
+  var BUCKET_LABELS = {
+    '5m': '5 min', '10m': '10 min', '15m': '15 min', '30m': '30 min',
+    '1h': '1 hour', '1d': '1 day', '1w': '1 week'
+  };
+
+  function populateDownsampleDropdown(buckets) {
+    var select = document.getElementById('downsample-select');
+    // Remove all options except the first "Raw" option
+    while (select.options.length > 1) {
+      select.remove(1);
+    }
+    // Sort by ms value ascending
+    var entries = Object.keys(buckets).map(function (k) { return { key: k, ms: buckets[k] }; });
+    entries.sort(function (a, b) { return a.ms - b.ms; });
+    for (var i = 0; i < entries.length; i++) {
+      var opt = document.createElement('option');
+      opt.value = entries[i].key;
+      opt.textContent = BUCKET_LABELS[entries[i].key] || entries[i].key;
+      select.appendChild(opt);
+    }
+  }
+
   // Fetch server config to sync refresh interval with poll interval
   async function loadConfig() {
     try {
       var res = await fetch('/api/config');
       if (!res.ok) return;
       var cfg = await res.json();
-      cachedConfig = cfg;
       if (cfg.pollIntervalMs && Number.isFinite(cfg.pollIntervalMs)) {
         pollIntervalMs = cfg.pollIntervalMs;
         refreshMs = cfg.pollIntervalMs;
+      }
+      if (cfg.downsampleBuckets && typeof cfg.downsampleBuckets === 'object') {
+        populateDownsampleDropdown(cfg.downsampleBuckets);
       }
     } catch (_) {
       // use defaults
@@ -568,10 +465,43 @@
   // Time range buttons
   document.getElementById('time-range').addEventListener('click', function (e) {
     if (e.target.tagName !== 'BUTTON') return;
+    var newRange = Number(e.target.dataset.range);
+    var isRaw = getSelectedDownsample() === '';
+    var isLargeRange = newRange === 0 || newRange >= LARGE_RANGE_MS;
+
+    if (isRaw && isLargeRange) {
+      var ok = confirm(
+        'Loading raw 15-second data for this time range may return hundreds of ' +
+        'thousands of readings and could slow down or crash your browser. Continue?'
+      );
+      if (!ok) return;
+    }
+
     var active = document.querySelector('#time-range .active');
     if (active) active.classList.remove('active');
     e.target.classList.add('active');
-    currentRange = Number(e.target.dataset.range);
+    currentRange = newRange;
+    refresh();
+  });
+
+  // Downsample dropdown
+  document.getElementById('downsample-select').addEventListener('change', function () {
+    var select = this;
+    var isRaw = select.value === '';
+    var isLargeRange = currentRange === 0 || currentRange >= LARGE_RANGE_MS;
+
+    if (isRaw && isLargeRange) {
+      var ok = confirm(
+        'Loading raw 15-second data for this time range may return hundreds of ' +
+        'thousands of readings and could slow down or crash your browser. Continue?'
+      );
+      if (!ok) {
+        select.value = previousDownsample;
+        return;
+      }
+    }
+
+    previousDownsample = select.value;
     refresh();
   });
 

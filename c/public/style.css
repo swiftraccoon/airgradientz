@@ -159,6 +159,22 @@ header h1 { font-size: 1.4rem; }
   border-color: var(--accent);
 }
 
+#downsample-select {
+  padding: 0.4rem 0.6rem;
+  border: 1px solid var(--border);
+  background: var(--card);
+  color: var(--text-dim);
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 0.85rem;
+  font-family: inherit;
+  margin-left: 0.4rem;
+  transition: all 0.15s;
+}
+
+#downsample-select:hover { border-color: var(--accent); color: var(--text); }
+#downsample-select:focus { border-color: var(--accent); outline: none; }
+
 /* Charts */
 
 #charts {
@@ -187,94 +203,3 @@ header h1 { font-size: 1.4rem; }
 
 canvas { width: 100% !important; }
 
-/* Downsample dialog (Task 20) */
-
-#downsample-dialog {
-  background: var(--card);
-  color: var(--text);
-  border: 1px solid var(--border);
-  border-radius: 10px;
-  padding: 1.5rem;
-  max-width: 400px;
-  width: 90vw;
-}
-
-#downsample-dialog::backdrop {
-  background: rgba(0, 0, 0, 0.6);
-}
-
-#downsample-dialog h3 {
-  font-size: 1.1rem;
-  font-weight: 600;
-  margin-bottom: 0.5rem;
-}
-
-#downsample-dialog p {
-  font-size: 0.85rem;
-  color: var(--text-dim);
-  line-height: 1.4;
-  margin-bottom: 1rem;
-}
-
-#downsample-options {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
-  margin-bottom: 1.25rem;
-}
-
-.radio-option {
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
-  background: var(--bg);
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 0.85rem;
-  transition: border-color 0.15s;
-}
-
-.radio-option:hover {
-  border-color: var(--accent);
-}
-
-.radio-option input[type="radio"] {
-  accent-color: var(--accent);
-}
-
-.dialog-actions {
-  display: flex;
-  justify-content: flex-end;
-  gap: 0.5rem;
-}
-
-.dialog-actions button {
-  padding: 0.4rem 1rem;
-  border: 1px solid var(--border);
-  border-radius: 6px;
-  cursor: pointer;
-  font-size: 0.85rem;
-  transition: all 0.15s;
-}
-
-#downsample-cancel {
-  background: var(--bg);
-  color: var(--text-dim);
-}
-
-#downsample-cancel:hover {
-  border-color: var(--accent);
-  color: var(--text);
-}
-
-#downsample-load {
-  background: var(--accent);
-  color: #fff;
-  border-color: var(--accent);
-}
-
-#downsample-load:hover {
-  opacity: 0.9;
-}

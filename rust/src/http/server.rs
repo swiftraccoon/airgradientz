@@ -12,6 +12,7 @@ use crate::api;
 use crate::error::AppError;
 use crate::http::request::{HttpRequest, Method};
 use crate::http::response::HttpResponse;
+use crate::log::log;
 use crate::AppState;
 
 const SERVER: Token = Token(0);
@@ -172,7 +173,7 @@ fn handle_read(
         .registry()
         .reregister(&mut conn.stream, token, Interest::WRITABLE)
     {
-        eprintln!("[server] Failed to reregister for writing: {e}");
+        log!("[server] Failed to reregister for writing: {e}");
         return true;
     }
 
@@ -235,7 +236,7 @@ pub(crate) fn run(state: &Arc<AppState>) -> Result<(), AppError> {
     poll.registry()
         .register(&mut listener, SERVER, Interest::READABLE)?;
 
-    eprintln!(
+    log!(
         "[server] Listening on http://localhost:{}",
         state.config.port
     );
@@ -245,7 +246,7 @@ pub(crate) fn run(state: &Arc<AppState>) -> Result<(), AppError> {
 
     loop {
         if state.shutdown.load(Ordering::Relaxed) {
-            eprintln!("[server] Shutdown requested");
+            log!("[server] Shutdown requested");
             break;
         }
 
@@ -274,7 +275,7 @@ pub(crate) fn run(state: &Arc<AppState>) -> Result<(), AppError> {
                                     token,
                                     Interest::READABLE,
                                 ) {
-                                    eprintln!("[server] Failed to register connection: {e}");
+                                    log!("[server] Failed to register connection: {e}");
                                     continue;
                                 }
 
@@ -296,7 +297,7 @@ pub(crate) fn run(state: &Arc<AppState>) -> Result<(), AppError> {
                                 break;
                             }
                             Err(e) => {
-                                eprintln!("[server] Accept error: {e}");
+                                log!("[server] Accept error: {e}");
                                 break;
                             }
                         }

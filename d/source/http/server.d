@@ -1,7 +1,6 @@
 module http.server;
 
 import std.socket;
-import std.stdio : stderr;
 import std.string : startsWith, indexOf;
 import std.file : read, exists, isFile, getSize;
 import std.path : extension, buildPath;
@@ -19,6 +18,7 @@ import http.request : HttpRequest, Method, urlDecode;
 import http.response : HttpResponse;
 import api;
 import state : AppState;
+import log : logf, logln;
 
 private string contentTypeFor(string path) {
     switch (path.extension) {
@@ -116,11 +116,11 @@ private struct ConnData {
 private void setNonblocking(int fd) {
     int flags = fcntl(fd, F_GETFL, 0);
     if (flags == -1) {
-        stderr.writefln("[server] fcntl F_GETFL failed: errno=%d", errno);
+        logf("[server] fcntl F_GETFL failed: errno=%d", errno);
         return;
     }
     if (fcntl(fd, F_SETFL, flags | O_NONBLOCK) == -1) {
-        stderr.writefln("[server] fcntl F_SETFL failed: errno=%d", errno);
+        logf("[server] fcntl F_SETFL failed: errno=%d", errno);
     }
 }
 
@@ -163,12 +163,12 @@ void runServer(AppState appState) {
     int listenFd = listener.handle;
     setNonblocking(listenFd);
 
-    stderr.writefln("[server] Listening on http://localhost:%d", appState.config.port);
+    logf("[server] Listening on http://localhost:%d", appState.config.port);
 
     // Create epoll instance
     int epfd = epoll_create1(EPOLL_CLOEXEC);
     if (epfd < 0) {
-        stderr.writefln("[server] epoll_create1 failed: errno=%d", errno);
+        logf("[server] epoll_create1 failed: errno=%d", errno);
         return;
     }
     scope(exit) close(epfd);
@@ -178,7 +178,7 @@ void runServer(AppState appState) {
     listenEv.events = EPOLLIN | EPOLLET;
     listenEv.data.fd = listenFd;
     if (epoll_ctl(epfd, EPOLL_CTL_ADD, listenFd, &listenEv) != 0) {
-        stderr.writefln("[server] epoll_ctl ADD listen failed: errno=%d", errno);
+        logf("[server] epoll_ctl ADD listen failed: errno=%d", errno);
         return;
     }
 
@@ -193,7 +193,7 @@ void runServer(AppState appState) {
         if (nfds < 0) {
             if (errno == EINTR)
                 continue;
-            stderr.writefln("[server] epoll_wait error: errno=%d", errno);
+            logf("[server] epoll_wait error: errno=%d", errno);
             break;
         }
 
@@ -209,7 +209,7 @@ void runServer(AppState appState) {
                         auto err = errno;
                         if (err == EAGAIN || err == EWOULDBLOCK)
                             break;
-                        stderr.writefln("[server] accept error: errno=%d", err);
+                        logf("[server] accept error: errno=%d", err);
                         break;
                     }
 
@@ -226,7 +226,7 @@ void runServer(AppState appState) {
                     clientEv.events = EPOLLIN | EPOLLET;
                     clientEv.data.fd = clientFd;
                     if (epoll_ctl(epfd, EPOLL_CTL_ADD, clientFd, &clientEv) != 0) {
-                        stderr.writefln("[server] epoll_ctl ADD client failed: errno=%d", errno);
+                        logf("[server] epoll_ctl ADD client failed: errno=%d", errno);
                         close(clientFd);
                         appState.decrementConnections();
                         continue;
@@ -285,7 +285,7 @@ void runServer(AppState appState) {
     }
     conns.clear();
     listener.close();
-    stderr.writefln("[server] Shutdown complete");
+    logln("[server] Shutdown complete");
 }
 
 private void handleRead(int fd, ConnData* conn, ref ConnData[int] conns, int epfd, AppState appState) {
@@ -321,7 +321,7 @@ private void handleRead(int fd, ConnData* conn, ref ConnData[int] conns, int epf
             try {
                 req = HttpRequest.parseFromBuf(data);
             } catch (Exception e) {
-                stderr.writefln("[server] parse error: %s", e.msg);
+                logf("[server] parse error: %s", e.msg);
                 closeAndCleanup(fd, conns, epfd, appState);
                 return;
             }
@@ -332,7 +332,7 @@ private void handleRead(int fd, ConnData* conn, ref ConnData[int] conns, int epf
             try {
                 response = routeRequest(req, appState);
             } catch (Exception e) {
-                stderr.writefln("[server] route error: %s", e.msg);
+                logf("[server] route error: %s", e.msg);
                 response = HttpResponse.internalError("Internal server error");
             }
 
@@ -345,7 +345,7 @@ private void handleRead(int fd, ConnData* conn, ref ConnData[int] conns, int epf
             modEv.events = EPOLLOUT | EPOLLET;
             modEv.data.fd = fd;
             if (epoll_ctl(epfd, EPOLL_CTL_MOD, fd, &modEv) != 0) {
-                stderr.writefln("[server] epoll_ctl MOD to EPOLLOUT failed: errno=%d", errno);
+                logf("[server] epoll_ctl MOD to EPOLLOUT failed: errno=%d", errno);
                 closeAndCleanup(fd, conns, epfd, appState);
                 return;
             }

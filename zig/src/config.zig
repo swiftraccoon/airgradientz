@@ -1,6 +1,7 @@
 const std = @import("std");
 
 pub const max_devices = 8;
+pub const max_downsample_buckets = 16;
 
 pub const DeviceConfig = struct {
     ip: []const u8,
@@ -15,81 +16,48 @@ pub const Config = struct {
     poll_interval_ms: u32,
     fetch_timeout_ms: u32,
     max_api_rows: u32,
-    downsample_threshold: u32,
+    downsample_bucket_count: usize,
+    downsample_keys: [max_downsample_buckets][]const u8,
+    downsample_values: [max_downsample_buckets]i64,
 };
 
 const empty_device = DeviceConfig{ .ip = "", .label = "" };
 
 pub fn fromEnv() Config {
-    var config = Config{
-        .port = 3012,
-        .db_path = "./airgradientz.db",
-        .devices = [_]DeviceConfig{empty_device} ** max_devices,
-        .device_count = 2,
-        .poll_interval_ms = 15000,
-        .fetch_timeout_ms = 5000,
-        .max_api_rows = 10000,
-        .downsample_threshold = 10000,
-    };
-
-    config.devices[0] = .{ .ip = "192.168.88.6", .label = "outdoor" };
-    config.devices[1] = .{ .ip = "192.168.88.159", .label = "indoor" };
-
-    // 2. Config file overrides
-    loadConfigFile(&config);
-
-    // 3. Env var overrides (highest priority)
-    if (std.posix.getenv("PORT")) |port_str| {
-        config.port = std.fmt.parseInt(u16, port_str, 10) catch {
-            std.log.warn("[config] invalid PORT value '{s}', using default 3012", .{port_str});
-            return config;
-        };
-    }
-
-    if (std.posix.getenv("DB_PATH")) |db_path| {
-        config.db_path = db_path;
-    }
-
-    return config;
-}
-
-fn loadConfigFile(config: *Config) void {
     const allocator = std.heap.page_allocator;
 
-    const content = findAndReadConfigFile(allocator) orelse return;
+    // Config file is mandatory
+    const content = findAndReadConfigFile(allocator) orelse {
+        std.log.err("[config] FATAL: no config file found (searched CONFIG_PATH, ./airgradientz.json, ../airgradientz.json)", .{});
+        std.process.exit(1);
+    };
 
     const parsed = std.json.parseFromSlice(std.json.Value, allocator, content, .{}) catch |e| {
-        std.log.warn("[config] JSON parse error: {}", .{e});
-        return;
+        std.log.err("[config] FATAL: JSON parse error: {}", .{e});
+        std.process.exit(1);
     };
 
     const root = parsed.value;
-    if (root != .object) return;
-
-    // Apply defaults first (lower priority)
-    if (root.object.get("defaults")) |defaults_val| {
-        if (defaults_val == .object) {
-            applyConfigValues(config, defaults_val.object);
-        }
+    if (root != .object) {
+        std.log.err("[config] FATAL: config file root is not a JSON object", .{});
+        std.process.exit(1);
     }
 
-    // Apply top-level overrides (higher priority)
-    applyConfigValues(config, root.object);
+    var config = Config{
+        .port = 0,
+        .db_path = "./airgradientz.db",
+        .devices = [_]DeviceConfig{empty_device} ** max_devices,
+        .device_count = 0,
+        .poll_interval_ms = 0,
+        .fetch_timeout_ms = 0,
+        .max_api_rows = 0,
+        .downsample_bucket_count = 0,
+        .downsample_keys = [_][]const u8{""} ** max_downsample_buckets,
+        .downsample_values = [_]i64{0} ** max_downsample_buckets,
+    };
 
-    // Port from ports.zig
-    if (root.object.get("ports")) |ports_val| {
-        if (ports_val == .object) {
-            if (ports_val.object.get("zig")) |v| {
-                if (v == .integer and v.integer > 0) {
-                    config.port = std.math.cast(u16, v.integer) orelse config.port;
-                }
-            }
-        }
-    }
-}
-
-fn applyConfigValues(config: *Config, obj: std.json.ObjectMap) void {
-    if (obj.get("devices")) |devices_val| {
+    // Read devices
+    if (root.object.get("devices")) |devices_val| {
         if (devices_val == .array) {
             var count: usize = 0;
             for (devices_val.array.items) |dev| {
@@ -101,36 +69,108 @@ fn applyConfigValues(config: *Config, obj: std.json.ObjectMap) void {
                 config.devices[count] = .{ .ip = ip_val.string, .label = label_val.string };
                 count += 1;
             }
-            if (count > 0) {
-                config.device_count = count;
-                var i = count;
-                while (i < max_devices) : (i += 1) {
-                    config.devices[i] = empty_device;
+            config.device_count = count;
+        }
+    }
+
+    // Read scalar config values
+    if (root.object.get("pollIntervalMs")) |v| {
+        if (v == .integer and v.integer > 0) {
+            config.poll_interval_ms = std.math.cast(u32, v.integer) orelse 0;
+        }
+    }
+    if (root.object.get("fetchTimeoutMs")) |v| {
+        if (v == .integer and v.integer > 0) {
+            config.fetch_timeout_ms = std.math.cast(u32, v.integer) orelse 0;
+        }
+    }
+    if (root.object.get("maxApiRows")) |v| {
+        if (v == .integer and v.integer > 0) {
+            config.max_api_rows = std.math.cast(u32, v.integer) orelse 0;
+        }
+    }
+    if (root.object.get("downsampleBuckets")) |buckets_val| {
+        if (buckets_val == .object) {
+            var count: usize = 0;
+            var it = buckets_val.object.iterator();
+            while (it.next()) |entry| {
+                if (count >= max_downsample_buckets) break;
+                if (entry.value_ptr.* == .integer and entry.value_ptr.integer > 0) {
+                    config.downsample_keys[count] = entry.key_ptr.*;
+                    config.downsample_values[count] = entry.value_ptr.integer;
+                    count += 1;
+                }
+            }
+            config.downsample_bucket_count = count;
+        }
+    }
+
+    // Read port from ports.zig
+    if (root.object.get("ports")) |ports_val| {
+        if (ports_val == .object) {
+            if (ports_val.object.get("zig")) |v| {
+                if (v == .integer and v.integer > 0) {
+                    config.port = std.math.cast(u16, v.integer) orelse 0;
                 }
             }
         }
     }
 
-    if (obj.get("pollIntervalMs")) |v| {
-        if (v == .integer and v.integer > 0) {
-            config.poll_interval_ms = std.math.cast(u32, v.integer) orelse config.poll_interval_ms;
-        }
+    // Validate required fields — collect ALL missing/invalid keys
+    var missing_buf: [512]u8 = [_]u8{0} ** 512;
+    var missing_stream = std.io.fixedBufferStream(&missing_buf);
+    const missing_writer = missing_stream.writer();
+    var missing_count: usize = 0;
+
+    if (config.device_count == 0) {
+        missing_writer.writeAll("devices") catch {};
+        missing_count += 1;
     }
-    if (obj.get("fetchTimeoutMs")) |v| {
-        if (v == .integer and v.integer > 0) {
-            config.fetch_timeout_ms = std.math.cast(u32, v.integer) orelse config.fetch_timeout_ms;
-        }
+    if (config.poll_interval_ms == 0) {
+        if (missing_count > 0) missing_writer.writeAll(", ") catch {};
+        missing_writer.writeAll("pollIntervalMs") catch {};
+        missing_count += 1;
     }
-    if (obj.get("maxApiRows")) |v| {
-        if (v == .integer and v.integer > 0) {
-            config.max_api_rows = std.math.cast(u32, v.integer) orelse config.max_api_rows;
-        }
+    if (config.fetch_timeout_ms == 0) {
+        if (missing_count > 0) missing_writer.writeAll(", ") catch {};
+        missing_writer.writeAll("fetchTimeoutMs") catch {};
+        missing_count += 1;
     }
-    if (obj.get("downsampleThreshold")) |v| {
-        if (v == .integer and v.integer > 0) {
-            config.downsample_threshold = std.math.cast(u32, v.integer) orelse config.downsample_threshold;
-        }
+    if (config.max_api_rows == 0) {
+        if (missing_count > 0) missing_writer.writeAll(", ") catch {};
+        missing_writer.writeAll("maxApiRows") catch {};
+        missing_count += 1;
     }
+    if (config.downsample_bucket_count == 0) {
+        if (missing_count > 0) missing_writer.writeAll(", ") catch {};
+        missing_writer.writeAll("downsampleBuckets") catch {};
+        missing_count += 1;
+    }
+    if (config.port == 0) {
+        if (missing_count > 0) missing_writer.writeAll(", ") catch {};
+        missing_writer.writeAll("ports.zig") catch {};
+        missing_count += 1;
+    }
+
+    if (missing_count > 0) {
+        const missing_str = missing_buf[0..missing_stream.pos];
+        std.log.err("[config] FATAL: missing or invalid config keys: {s}", .{missing_str});
+        std.process.exit(1);
+    }
+
+    // Env var overrides (highest priority)
+    if (std.posix.getenv("PORT")) |port_str| {
+        config.port = std.fmt.parseInt(u16, port_str, 10) catch {
+            std.log.err("[config] FATAL: invalid PORT env var value '{s}'", .{port_str});
+            std.process.exit(1);
+        };
+    }
+
+    if (std.posix.getenv("DB_PATH")) |db_path| {
+        config.db_path = db_path;
+    }
+
+    return config;
 }
 
 fn findAndReadConfigFile(allocator: std.mem.Allocator) ?[]const u8 {

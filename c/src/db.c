@@ -7,6 +7,7 @@
 #include <time.h>
 
 #include "config.h"
+#include "log.h"
 #include "strbuf.h"
 
 /* ---- loaded queries from queries.sql ---- */
@@ -144,32 +145,24 @@ static void load_queries(void)
 {
     char *content = config_read_file("../queries.sql");
     if (!content) {
+        log_timestamp();
         fprintf(stderr, "[db] queries.sql not found, using defaults\n");
         return;
     }
     int n = parse_queries_sql(content);
     free(content);
+    log_timestamp();
     fprintf(stderr, "[db] loaded %d queries from queries.sql\n", n);
 }
 
-/* ---- downsample map ---- */
+/* ---- downsample lookup ---- */
 
-static const struct { const char *key; int64_t ms; } downsample_map[] = {
-    {"5m",  300000},
-    {"10m", 600000},
-    {"15m", 900000},
-    {"30m", 1800000},
-    {"1h",  3600000},
-    {"1d",  86400000},
-    {"1w",  604800000},
-};
-
-int64_t downsample_lookup(const char *key)
+int64_t downsample_lookup(const Config *cfg, const char *key)
 {
     if (!key) return 0;
-    for (size_t i = 0; i < sizeof(downsample_map) / sizeof(downsample_map[0]); i++) {
-        if (strcmp(key, downsample_map[i].key) == 0)
-            return downsample_map[i].ms;
+    for (size_t i = 0; i < cfg->downsample_bucket_count; i++) {
+        if (strcmp(key, cfg->downsample_buckets[i].key) == 0)
+            return cfg->downsample_buckets[i].ms;
     }
     return 0;
 }
@@ -317,6 +310,7 @@ int db_initialize(sqlite3 *db)
     char *errmsg = NULL;
     int rc = sqlite3_exec(db, pragmas, NULL, NULL, &errmsg);
     if (rc != SQLITE_OK) {
+        log_timestamp();
         fprintf(stderr, "[db] pragma error: %s\n", errmsg ? errmsg : "unknown");
         sqlite3_free(errmsg);
         return -1;
@@ -324,6 +318,7 @@ int db_initialize(sqlite3 *db)
 
     char *schema = config_read_file("../schema.sql");
     if (!schema) {
+        log_timestamp();
         fprintf(stderr, "[db] failed to read ../schema.sql\n");
         return -1;
     }
@@ -331,6 +326,7 @@ int db_initialize(sqlite3 *db)
     rc = sqlite3_exec(db, schema, NULL, NULL, &errmsg);
     free(schema);
     if (rc != SQLITE_OK) {
+        log_timestamp();
         fprintf(stderr, "[db] schema error: %s\n", errmsg ? errmsg : "unknown");
         sqlite3_free(errmsg);
         return -1;
@@ -390,6 +386,7 @@ int db_insert_reading(sqlite3 *db, const char *ip, const JsonValue *data)
     sqlite3_stmt *stmt;
     int rc = sqlite3_prepare_v2(db, sql, -1, &stmt, NULL);
     if (rc != SQLITE_OK) {
+        log_timestamp();
         fprintf(stderr, "[db] prepare insert error: %s\n", sqlite3_errmsg(db));
         strbuf_free(&raw);
         return -1;
@@ -420,6 +417,7 @@ int db_insert_reading(sqlite3 *db, const char *ip, const JsonValue *data)
     strbuf_free(&raw);
 
     if (rc != SQLITE_DONE) {
+        log_timestamp();
         fprintf(stderr, "[db] insert step error: %s\n", sqlite3_errmsg(db));
         return -1;
     }
@@ -559,7 +557,7 @@ static int db_query_downsampled(sqlite3 *db, const ReadingQuery *q, ReadingList 
     bool want_device = q->device && strcmp(q->device, "all") != 0;
     int64_t bucket_ms = q->downsample_ms;
 
-    /* bucket_ms is a trusted constant from downsample_map, safe to interpolate via %lld */
+    /* bucket_ms is a trusted constant from downsample_buckets, safe to interpolate via %lld */
     StrBuf sql = strbuf_new();
     strbuf_appendf(&sql,
         "SELECT (timestamp / %lld) * %lld AS timestamp, "
@@ -595,6 +593,7 @@ static int db_query_downsampled(sqlite3 *db, const ReadingQuery *q, ReadingList 
     strbuf_free(&sql);
 
     if (rc != SQLITE_OK) {
+        log_timestamp();
         fprintf(stderr, "[db] prepare downsampled query error: %s\n", sqlite3_errmsg(db));
         return -1;
     }
@@ -656,6 +655,7 @@ int db_query_readings(sqlite3 *db, const ReadingQuery *q, ReadingList *out)
     strbuf_free(&sql);
 
     if (rc != SQLITE_OK) {
+        log_timestamp();
         fprintf(stderr, "[db] prepare query error: %s\n", sqlite3_errmsg(db));
         return -1;
     }
@@ -803,6 +803,7 @@ int64_t db_get_filtered_count(sqlite3 *db, int64_t from, int64_t to, const char 
     strbuf_free(&sql);
 
     if (rc != SQLITE_OK) {
+        log_timestamp();
         fprintf(stderr, "[db] prepare filtered count error: %s\n", sqlite3_errmsg(db));
         return -1;
     }
@@ -828,6 +829,7 @@ int db_checkpoint(sqlite3 *db)
     char *errmsg = NULL;
     int rc = sqlite3_exec(db, "PRAGMA wal_checkpoint(TRUNCATE);", NULL, NULL, &errmsg);
     if (rc != SQLITE_OK) {
+        log_timestamp();
         fprintf(stderr, "[db] checkpoint error: %s\n", errmsg ? errmsg : "unknown");
         sqlite3_free(errmsg);
         return -1;
