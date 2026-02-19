@@ -662,4 +662,244 @@ unittest {
         assert(readings[0].wifi.get == -59, "wifi should be -59");
         stderr.writeln("  pass: insertReading with null fields");
     }
+
+    // ---- test-spec.json aligned: query edge cases ----
+
+    // Test: from > to returns empty results
+    {
+        auto testDb = openTestDb();
+        auto now = nowMillis();
+        insertRaw(testDb, now, "dev1", "indoor", "1.1.1.1", 10.0, 400);
+        insertRaw(testDb, now, "dev1", "indoor", "1.1.1.1", 20.0, 500);
+
+        auto readings = queryReadings(testDb, "all", 9_999_999_999_999, 1, 100);
+        assert(readings.length == 0, "from > to should return empty");
+        stderr.writeln("  pass: from > to returns empty");
+    }
+
+    // Test: nonexistent device returns empty results
+    {
+        auto testDb = openTestDb();
+        auto now = nowMillis();
+        insertRaw(testDb, now, "dev1", "indoor", "1.1.1.1", 10.0, 400);
+
+        auto readings = queryReadings(testDb, "nonexistent-serial-xyz", 0, now + 1000, 100);
+        assert(readings.length == 0, "nonexistent device should return empty");
+        stderr.writeln("  pass: nonexistent device returns empty");
+    }
+
+    // Test: limit=1 returns exactly 1 result
+    {
+        auto testDb = openTestDb();
+        auto now = nowMillis();
+        insertRaw(testDb, now - 2000, "dev1", "indoor", "1.1.1.1", 10.0, 400);
+        insertRaw(testDb, now - 1000, "dev1", "indoor", "1.1.1.1", 20.0, 500);
+        insertRaw(testDb, now,        "dev1", "indoor", "1.1.1.1", 30.0, 600);
+
+        auto readings = queryReadings(testDb, "all", 0, now + 1000, 1);
+        assert(readings.length == 1, "limit=1 should return exactly 1 result");
+        stderr.writeln("  pass: limit=1 returns exactly 1");
+    }
+
+    // Test: count with from > to returns zero
+    {
+        auto testDb = openTestDb();
+        auto now = nowMillis();
+        insertRaw(testDb, now, "dev1", "indoor", "1.1.1.1", 10.0, 400);
+
+        auto count = getFilteredReadingsCount(testDb, "all", 9_999_999_999_999, 1);
+        assert(count == 0, "count with from > to should be 0");
+        stderr.writeln("  pass: count from > to returns zero");
+    }
+
+    // Test: count with nonexistent device returns zero
+    {
+        auto testDb = openTestDb();
+        auto now = nowMillis();
+        insertRaw(testDb, now, "dev1", "indoor", "1.1.1.1", 10.0, 400);
+
+        auto count = getFilteredReadingsCount(testDb, "nonexistent-serial-xyz", 0, now + 1000);
+        assert(count == 0, "count with nonexistent device should be 0");
+        stderr.writeln("  pass: count nonexistent device returns zero");
+    }
+
+    // Test: device=all returns all readings (not filtered)
+    {
+        auto testDb = openTestDb();
+        auto now = nowMillis();
+        insertRaw(testDb, now - 1000, "dev1", "indoor", "1.1.1.1", 10.0, 400);
+        insertRaw(testDb, now,        "dev2", "outdoor", "2.2.2.2", 20.0, 500);
+
+        auto readings = queryReadings(testDb, "all", 0, now + 1000, 100);
+        assert(readings.length == 2, "device=all should return all readings");
+        stderr.writeln("  pass: device=all returns all");
+    }
+
+    // Test: empty device (null) returns all readings
+    {
+        auto testDb = openTestDb();
+        auto now = nowMillis();
+        insertRaw(testDb, now - 1000, "dev1", "indoor", "1.1.1.1", 10.0, 400);
+        insertRaw(testDb, now,        "dev2", "outdoor", "2.2.2.2", 20.0, 500);
+
+        auto readings = queryReadings(testDb, null, 0, now + 1000, 100);
+        assert(readings.length == 2, "null device should return all readings");
+        stderr.writeln("  pass: null device returns all");
+    }
+
+    // ---- test-spec.json aligned: response shape tests ----
+
+    // Test: reading JSON has all required fields, no raw_json
+    {
+        auto testDb = openTestDb();
+        auto now = nowMillis();
+        insertRaw(testDb, now, "dev1", "indoor", "1.1.1.1", 10.0, 400);
+
+        auto readings = queryReadings(testDb, "all", 0, now + 1000, 100);
+        assert(readings.length == 1);
+        auto j = readings[0].toJson();
+
+        // Required fields from test-spec.json: reading shape
+        string[] requiredFields = [
+            "id", "timestamp", "device_id", "device_type", "device_ip",
+            "pm01", "pm02", "pm10", "pm02_compensated",
+            "rco2", "atmp", "atmp_compensated", "rhum", "rhum_compensated",
+            "tvoc_index", "nox_index", "wifi"
+        ];
+        foreach (field; requiredFields) {
+            assert((field in j.object) !is null,
+                "reading JSON missing required field: " ~ field);
+        }
+
+        // Forbidden fields: raw_json must NOT be present
+        assert(("raw_json" in j.object) is null,
+            "reading JSON must NOT contain raw_json");
+
+        stderr.writeln("  pass: reading response shape matches spec");
+    }
+
+    // Test: downsampled reading JSON has required fields, no id, no raw_json
+    {
+        auto testDb = openTestDb();
+        auto now = nowMillis();
+        // Insert enough data for downsampling
+        insertRaw(testDb, now - 60000, "dev1", "indoor", "1.1.1.1", 10.0, 400);
+        insertRaw(testDb, now - 30000, "dev1", "indoor", "1.1.1.1", 20.0, 500);
+        insertRaw(testDb, now,         "dev1", "indoor", "1.1.1.1", 30.0, 600);
+
+        auto readings = queryReadingsDownsampled(testDb, "all", 0, now + 1000, 100, 300_000);
+        assert(readings.length > 0, "downsampled query should return results");
+
+        auto j = readings[0].toJson();
+
+        // Required fields from test-spec.json: readingDownsampled shape
+        string[] requiredFields = [
+            "timestamp", "device_id", "device_type", "device_ip",
+            "pm01", "pm02", "pm10", "pm02_compensated",
+            "rco2", "atmp", "atmp_compensated", "rhum", "rhum_compensated",
+            "tvoc_index", "nox_index", "wifi"
+        ];
+        foreach (field; requiredFields) {
+            assert((field in j.object) !is null,
+                "downsampled reading JSON missing required field: " ~ field);
+        }
+
+        // Forbidden fields: id and raw_json must NOT be present
+        assert(("id" in j.object) is null,
+            "downsampled reading JSON must NOT contain id");
+        assert(("raw_json" in j.object) is null,
+            "downsampled reading JSON must NOT contain raw_json");
+
+        stderr.writeln("  pass: downsampled reading response shape matches spec");
+    }
+
+    // Test: device JSON has required fields, no first_seen
+    {
+        auto testDb = openTestDb();
+        auto now = nowMillis();
+        insertRaw(testDb, now, "dev1", "indoor", "1.1.1.1", 10.0, 400);
+        insertRaw(testDb, now, "dev2", "outdoor", "2.2.2.2", 20.0, 500);
+
+        auto devices = getDevices(testDb);
+        assert(devices.length == 2, "expected 2 devices");
+
+        foreach (d; devices) {
+            auto j = d.toJson();
+
+            // Required fields from test-spec.json: device shape
+            string[] requiredFields = [
+                "device_id", "device_type", "device_ip", "last_seen", "reading_count"
+            ];
+            foreach (field; requiredFields) {
+                assert((field in j.object) !is null,
+                    "device JSON missing required field: " ~ field);
+            }
+
+            // Forbidden: first_seen
+            assert(("first_seen" in j.object) is null,
+                "device JSON must NOT contain first_seen");
+        }
+        stderr.writeln("  pass: device response shape matches spec");
+    }
+
+    // Test: reading JSON field types are correct
+    {
+        auto testDb = openTestDb();
+        auto now = nowMillis();
+        auto indoorJson = parseJSON(`{"wifi":-51,"serialno":"84fce602549c","rco2":489,"pm01":23.83,"pm02":41.67,"pm10":54.5,"pm02Compensated":31.18,"atmp":20.78,"atmpCompensated":20.78,"rhum":32.19,"rhumCompensated":32.19,"tvocIndex":423,"noxIndex":1,"model":"I-9PSL"}`);
+        insertReading(testDb, "10.0.0.1", indoorJson);
+
+        auto readings = queryReadings(testDb, "all", 0, now + 1000, 100);
+        assert(readings.length == 1);
+        auto j = readings[0].toJson();
+
+        import std.json : JSONType;
+        // id, timestamp must be integer types
+        assert(j["id"].type == JSONType.integer || j["id"].type == JSONType.uinteger,
+            "id should be integer");
+        assert(j["timestamp"].type == JSONType.integer || j["timestamp"].type == JSONType.uinteger,
+            "timestamp should be integer");
+        // device_id, device_type, device_ip must be strings
+        assert(j["device_id"].type == JSONType.string, "device_id should be string");
+        assert(j["device_type"].type == JSONType.string, "device_type should be string");
+        assert(j["device_ip"].type == JSONType.string, "device_ip should be string");
+        stderr.writeln("  pass: reading field types correct");
+    }
+
+    // Test: downsampled from > to returns empty
+    {
+        auto testDb = openTestDb();
+        auto now = nowMillis();
+        insertRaw(testDb, now, "dev1", "indoor", "1.1.1.1", 10.0, 400);
+
+        auto readings = queryReadingsDownsampled(testDb, "all", 9_999_999_999_999, 1, 100, 300_000);
+        assert(readings.length == 0, "downsampled from > to should return empty");
+        stderr.writeln("  pass: downsampled from > to returns empty");
+    }
+
+    // Test: downsampled nonexistent device returns empty
+    {
+        auto testDb = openTestDb();
+        auto now = nowMillis();
+        insertRaw(testDb, now, "dev1", "indoor", "1.1.1.1", 10.0, 400);
+
+        auto readings = queryReadingsDownsampled(testDb, "nonexistent-serial-xyz", 0, now + 1000, 100, 300_000);
+        assert(readings.length == 0, "downsampled nonexistent device should return empty");
+        stderr.writeln("  pass: downsampled nonexistent device returns empty");
+    }
+
+    // Test: device reading_count is accurate
+    {
+        auto testDb = openTestDb();
+        auto now = nowMillis();
+        insertRaw(testDb, now - 2000, "dev1", "indoor", "1.1.1.1", 10.0, 400);
+        insertRaw(testDb, now - 1000, "dev1", "indoor", "1.1.1.1", 20.0, 500);
+        insertRaw(testDb, now,        "dev1", "indoor", "1.1.1.1", 30.0, 600);
+
+        auto devices = getDevices(testDb);
+        assert(devices.length == 1);
+        assert(devices[0].readingCount == 3, "reading_count should be 3");
+        assert(devices[0].deviceId == "dev1", "device_id should match");
+        stderr.writeln("  pass: device reading_count accurate");
+    }
 }

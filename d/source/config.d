@@ -173,6 +173,97 @@ private void applyConfigValues(ref Config c, ref const JSONValue obj) {
     }
 }
 
+// ---- unit tests (test-spec.json aligned) ----
+unittest {
+    import std.stdio : stderr;
+    import std.json : parseJSON, JSONType;
+
+    // Helper: create a config from parsed JSON (no file I/O)
+    Config parseTestConfig(string json) {
+        Config c;
+        auto root = parseJSON(json);
+        applyConfigValues(c, root);
+        return c;
+    }
+
+    // Test: all 7 downsample buckets map to correct millisecond values
+    {
+        auto c = parseTestConfig(`{
+            "downsampleBuckets": {
+                "5m": 300000,
+                "10m": 600000,
+                "15m": 900000,
+                "30m": 1800000,
+                "1h": 3600000,
+                "1d": 86400000,
+                "1w": 604800000
+            }
+        }`);
+
+        assert(c.downsampleBuckets.length == 7, "expected 7 downsample buckets");
+        assert(c.downsampleBuckets["5m"]  == 300_000,     "5m should be 300000ms");
+        assert(c.downsampleBuckets["10m"] == 600_000,     "10m should be 600000ms");
+        assert(c.downsampleBuckets["15m"] == 900_000,     "15m should be 900000ms");
+        assert(c.downsampleBuckets["30m"] == 1_800_000,   "30m should be 1800000ms");
+        assert(c.downsampleBuckets["1h"]  == 3_600_000,   "1h should be 3600000ms");
+        assert(c.downsampleBuckets["1d"]  == 86_400_000,  "1d should be 86400000ms");
+        assert(c.downsampleBuckets["1w"]  == 604_800_000, "1w should be 604800000ms");
+        stderr.writeln("  pass: all 7 downsample buckets have correct ms values");
+    }
+
+    // Test: invalid downsample key not present
+    {
+        auto c = parseTestConfig(`{
+            "downsampleBuckets": {
+                "5m": 300000,
+                "10m": 600000,
+                "15m": 900000,
+                "30m": 1800000,
+                "1h": 3600000,
+                "1d": 86400000,
+                "1w": 604800000
+            }
+        }`);
+        assert(("2h" in c.downsampleBuckets) is null, "2h should not be a valid bucket");
+        assert(("3d" in c.downsampleBuckets) is null, "3d should not be a valid bucket");
+        stderr.writeln("  pass: invalid downsample keys absent");
+    }
+
+    // Test: config parses devices, pollIntervalMs, fetchTimeoutMs, maxApiRows
+    {
+        auto c = parseTestConfig(`{
+            "devices": [
+                {"ip": "192.168.1.1", "label": "outdoor"},
+                {"ip": "192.168.1.2", "label": "indoor"}
+            ],
+            "pollIntervalMs": 15000,
+            "fetchTimeoutMs": 5000,
+            "maxApiRows": 10000
+        }`);
+        assert(c.devices.length == 2, "expected 2 devices");
+        assert(c.devices[0].ip == "192.168.1.1", "first device ip");
+        assert(c.devices[0].label == "outdoor", "first device label");
+        assert(c.pollIntervalMs == 15000, "pollIntervalMs");
+        assert(c.fetchTimeoutMs == 5000, "fetchTimeoutMs");
+        assert(c.maxApiRows == 10000, "maxApiRows");
+        stderr.writeln("  pass: config parses all required fields");
+    }
+
+    // Test: downsampleBuckets with wrong type values are skipped
+    {
+        auto c = parseTestConfig(`{
+            "downsampleBuckets": {
+                "5m": "not_a_number",
+                "10m": 600000
+            }
+        }`);
+        assert(c.downsampleBuckets.length == 1, "only valid numeric entries kept");
+        assert(("5m" in c.downsampleBuckets) is null, "string value should be skipped");
+        assert(c.downsampleBuckets["10m"] == 600_000, "valid entry preserved");
+        stderr.writeln("  pass: non-numeric bucket values skipped");
+    }
+}
+
 private string findConfigPath() {
     import std.file : exists;
     import std.process : environment;
