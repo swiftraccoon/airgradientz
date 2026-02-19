@@ -1,5 +1,5 @@
 import unittest
-import std/[json, algorithm, os, strutils]
+import std/[json, algorithm, os, strutils, tables]
 import sqlite3_wrapper
 import db
 
@@ -510,3 +510,256 @@ suite "JSON number formatting":
     check "\"pm02\":12.0" notin s
     check "\"atmp\":22," in s or "\"atmp\":22}" in s
     check "\"atmp\":22.0" notin s
+
+
+# --- test-spec.json-aligned tests ---
+
+let testSpecPath = parentDir(currentSourcePath()) / ".." / ".." / "test-spec.json"
+let testSpec = parseJson(readFile(testSpecPath))
+let configPath = parentDir(currentSourcePath()) / ".." / ".." / "airgradientz.json"
+let configJson = parseJson(readFile(configPath))
+
+
+suite "test-spec: downsample bucket verification":
+  test "all 7 downsample buckets from test-spec match config":
+    let specBuckets = testSpec["downsampleBuckets"]
+    let cfgBuckets = configJson["downsampleBuckets"]
+
+    check specBuckets.len == 7
+    check cfgBuckets.kind == JObject
+
+    for bucket in specBuckets:
+      let param = bucket["param"].getStr()
+      let expectMs = bucket["expectMs"].getInt()
+      check cfgBuckets.hasKey(param)
+      check cfgBuckets[param].getInt() == expectMs
+
+  test "config downsampleBuckets has exactly 7 entries":
+    let cfgBuckets = configJson["downsampleBuckets"]
+    var count = 0
+    for key, val in cfgBuckets.pairs:
+      inc count
+    check count == 7
+
+  test "each bucket param and ms value matches individually":
+    let expected = {
+      "5m": 300000'i64,
+      "10m": 600000'i64,
+      "15m": 900000'i64,
+      "30m": 1800000'i64,
+      "1h": 3600000'i64,
+      "1d": 86400000'i64,
+      "1w": 604800000'i64
+    }.toTable()
+    let cfgBuckets = configJson["downsampleBuckets"]
+
+    for param, ms in expected.pairs:
+      check cfgBuckets.hasKey(param)
+      check cfgBuckets[param].getInt() == ms
+
+
+suite "test-spec: query edge cases":
+  test "from > to returns empty results":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    check insertReading(testDb, "10.0.0.1", indoorData)
+
+    let readings = queryReadings(testDb, ReadingQuery(
+      device: "all", fromTs: 9999999999999'i64, toTs: 1'i64, limit: 100
+    ))
+    check readings.len == 0
+
+  test "nonexistent device returns empty":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    check insertReading(testDb, "10.0.0.1", indoorData)
+
+    let now = nowMillis()
+    let readings = queryReadings(testDb, ReadingQuery(
+      device: "nonexistent-serial-xyz", fromTs: 0, toTs: now + 1000, limit: 100
+    ))
+    check readings.len == 0
+
+  test "limit=1 returns exactly 1":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    check insertReading(testDb, "10.0.0.1", indoorData)
+    check insertReading(testDb, "10.0.0.2", outdoorData)
+
+    let now = nowMillis()
+    let readings = queryReadings(testDb, ReadingQuery(
+      device: "all", fromTs: 0, toTs: now + 1000, limit: 1
+    ))
+    check readings.len == 1
+
+  test "count with from > to returns zero":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    check insertReading(testDb, "10.0.0.1", indoorData)
+
+    let count = countReadingsFiltered(testDb, 9999999999999'i64, 1'i64, "all")
+    check count == 0
+
+  test "count with nonexistent device returns zero":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    check insertReading(testDb, "10.0.0.1", indoorData)
+
+    let now = nowMillis()
+    let count = countReadingsFiltered(testDb, 0, now + 1000, "nonexistent-serial-xyz")
+    check count == 0
+
+  test "empty device param (all) returns all readings":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    check insertReading(testDb, "10.0.0.1", indoorData)
+    check insertReading(testDb, "10.0.0.2", outdoorData)
+
+    let now = nowMillis()
+    let readings = queryReadings(testDb, ReadingQuery(
+      device: "all", fromTs: 0, toTs: now + 1000, limit: 100
+    ))
+    check readings.len == 2
+
+  test "device=all returns same as empty device filter":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    check insertReading(testDb, "10.0.0.1", indoorData)
+    check insertReading(testDb, "10.0.0.2", outdoorData)
+
+    let now = nowMillis()
+    let readingsAll = queryReadings(testDb, ReadingQuery(
+      device: "all", fromTs: 0, toTs: now + 1000, limit: 100
+    ))
+    let readingsEmpty = queryReadings(testDb, ReadingQuery(
+      device: "", fromTs: 0, toTs: now + 1000, limit: 100
+    ))
+    check readingsAll.len == readingsEmpty.len
+
+
+suite "test-spec: response shape - reading":
+  let requiredFields = testSpec["responseShapes"]["reading"]["requiredFields"]
+  let forbiddenFields = testSpec["responseShapes"]["reading"]["forbiddenFields"]
+
+  test "readingToJson contains all required fields":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    check insertReading(testDb, "10.0.0.1", indoorData)
+
+    let now = nowMillis()
+    let readings = queryReadings(testDb, ReadingQuery(
+      device: "all", fromTs: 0, toTs: now + 1000, limit: 100
+    ))
+    check readings.len == 1
+    let j = readingToJson(readings[0])
+
+    for field in requiredFields:
+      check j.hasKey(field.getStr())
+
+  test "readingToJson excludes forbidden fields":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    check insertReading(testDb, "10.0.0.1", indoorData)
+
+    let now = nowMillis()
+    let readings = queryReadings(testDb, ReadingQuery(
+      device: "all", fromTs: 0, toTs: now + 1000, limit: 100
+    ))
+    check readings.len == 1
+    let j = readingToJson(readings[0])
+
+    for field in forbiddenFields:
+      check not j.hasKey(field.getStr())
+
+
+suite "test-spec: response shape - readingDownsampled":
+  let requiredFields = testSpec["responseShapes"]["readingDownsampled"]["requiredFields"]
+  let forbiddenFields = testSpec["responseShapes"]["readingDownsampled"]["forbiddenFields"]
+
+  test "readingToJsonDownsampled contains all required fields":
+    var r: Reading
+    r.timestamp = 1700000000000'i64
+    r.deviceId = "dev1"
+    r.deviceType = "indoor"
+    r.deviceIp = "1.1.1.1"
+    r.hasPm01 = true
+    r.pm01 = 5.0
+    r.hasPm02 = true
+    r.pm02 = 10.0
+    r.hasPm10 = true
+    r.pm10 = 15.0
+    r.hasPm02Compensated = true
+    r.pm02Compensated = 8.0
+    r.hasRco2 = true
+    r.rco2 = 400
+    r.hasAtmp = true
+    r.atmp = 21.0
+    r.hasAtmpCompensated = true
+    r.atmpCompensated = 20.5
+    r.hasRhum = true
+    r.rhum = 45.0
+    r.hasRhumCompensated = true
+    r.rhumCompensated = 44.0
+    r.hasTvocIndex = true
+    r.tvocIndex = 100.0
+    r.hasNoxIndex = true
+    r.noxIndex = 50.0
+    r.hasWifi = true
+    r.wifi = -50
+
+    let j = readingToJsonDownsampled(r)
+
+    for field in requiredFields:
+      check j.hasKey(field.getStr())
+
+  test "readingToJsonDownsampled excludes forbidden fields":
+    var r: Reading
+    r.timestamp = 1700000000000'i64
+    r.deviceId = "dev1"
+    r.deviceType = "indoor"
+    r.deviceIp = "1.1.1.1"
+
+    let j = readingToJsonDownsampled(r)
+
+    for field in forbiddenFields:
+      check not j.hasKey(field.getStr())
+
+
+suite "test-spec: response shape - device":
+  let requiredFields = testSpec["responseShapes"]["device"]["requiredFields"]
+  let forbiddenFields = testSpec["responseShapes"]["device"]["forbiddenFields"]
+
+  test "deviceSummaryToJson contains all required fields":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    check insertReading(testDb, "10.0.0.1", indoorData)
+
+    let devices = getDevices(testDb)
+    check devices.len == 1
+    let j = deviceSummaryToJson(devices[0])
+
+    for field in requiredFields:
+      check j.hasKey(field.getStr())
+
+  test "deviceSummaryToJson excludes forbidden fields":
+    let testDb = openTestDb()
+    defer: discard sqlite3_close(testDb)
+
+    check insertReading(testDb, "10.0.0.1", indoorData)
+
+    let devices = getDevices(testDb)
+    check devices.len == 1
+    let j = deviceSummaryToJson(devices[0])
+
+    for field in forbiddenFields:
+      check not j.hasKey(field.getStr())
