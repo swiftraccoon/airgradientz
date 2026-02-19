@@ -364,6 +364,350 @@ run_test \
     "normalize_identity" \
     "status_only"
 
+# ── Downsample coverage ──────────────────────────────────────────────────────
+
+# All remaining downsample buckets return 200
+for bucket in 5m 10m 15m 30m 1d 1w; do
+    run_test \
+        "GET /api/readings?downsample=${bucket}" \
+        "/api/readings?from=0&to=9999999999999&downsample=${bucket}" \
+        "200" \
+        "normalize_readings" \
+        "full"
+done
+
+# Downsample with device filter
+run_test \
+    "GET /api/readings?downsample=1h&device=indoor" \
+    "/api/readings?from=0&to=9999999999999&downsample=1h&device=indoor" \
+    "200" \
+    "normalize_readings" \
+    "full"
+
+# Downsample on empty time range
+run_test \
+    "GET /api/readings?downsample=1h (empty range)" \
+    "/api/readings?from=9999999999999&to=9999999999999&downsample=1h" \
+    "200" \
+    "normalize_identity" \
+    "full"
+
+# ── Query parameter edge cases ──────────────────────────────────────────────
+
+# limit=1 returns exactly 1 result
+run_test \
+    "GET /api/readings?limit=1 (exactly 1)" \
+    "/api/readings?from=0&to=9999999999999&limit=1" \
+    "200" \
+    "normalize_readings" \
+    "full"
+
+# limit=0 returns results (not empty)
+run_limit_zero_test() {
+    local test_name="GET /api/readings?limit=0 (returns data)"
+    declare -a statuses=()
+    declare -a lengths=()
+    local idx
+
+    for (( idx=0; idx<IMPL_COUNT; idx++ )); do
+        local result
+        result="$(fetch "${IMPL_PORTS[${idx}]}" "/api/readings?from=0&to=9999999999999&limit=0")"
+        statuses+=("${result%%$'\t'*}")
+        local body="${result#*$'\t'}"
+        lengths+=("$(echo "${body}" | jq 'length' 2>/dev/null || echo "0")")
+    done
+
+    local all_ok=true
+    declare -a details=()
+    for (( idx=0; idx<IMPL_COUNT; idx++ )); do
+        if [[ "${statuses[${idx}]}" != "200" ]]; then
+            all_ok=false
+            details+=("${IMPL_NAMES[${idx}]}: HTTP ${statuses[${idx}]}")
+        elif [[ "${lengths[${idx}]}" == "0" ]]; then
+            all_ok=false
+            details+=("${IMPL_NAMES[${idx}]}: returned 0 results (limit=0 should not mean empty)")
+        fi
+    done
+
+    if [[ "${all_ok}" == "true" ]]; then
+        report_pass "${test_name}"
+    else
+        report_fail "${test_name}" "${details[@]}"
+    fi
+}
+run_limit_zero_test
+
+# from > to returns empty
+run_test \
+    "GET /api/readings?from>to (empty)" \
+    "/api/readings?from=9999999999999&to=1" \
+    "200" \
+    "normalize_identity" \
+    "full"
+
+# device=all returns same as no device param
+run_test \
+    "GET /api/readings?device=all" \
+    "/api/readings?from=0&to=9999999999999&device=all" \
+    "200" \
+    "normalize_readings" \
+    "full"
+
+# nonexistent device returns empty
+run_test \
+    "GET /api/readings?device=nonexistent" \
+    "/api/readings?from=0&to=9999999999999&device=nonexistent-xyz" \
+    "200" \
+    "normalize_identity" \
+    "full"
+
+# count with nonexistent device returns 0
+run_test \
+    "GET /api/readings/count?device=nonexistent" \
+    "/api/readings/count?from=0&to=9999999999999&device=nonexistent-xyz" \
+    "200" \
+    "normalize_identity" \
+    "full"
+
+# count with from > to returns 0
+run_test \
+    "GET /api/readings/count?from>to" \
+    "/api/readings/count?from=9999999999999&to=1" \
+    "200" \
+    "normalize_identity" \
+    "full"
+
+# ── Response shape validation ───────────────────────────────────────────────
+
+# readings have no raw_json field
+run_field_absence_test() {
+    local test_name="$1" endpoint="$2" forbidden_field="$3"
+    local idx
+
+    for (( idx=0; idx<IMPL_COUNT; idx++ )); do
+        local result
+        result="$(fetch "${IMPL_PORTS[${idx}]}" "${endpoint}")"
+        local body="${result#*$'\t'}"
+        local has_field
+        has_field="$(echo "${body}" | jq --arg f "${forbidden_field}" '[.[] | has($f)] | any' 2>/dev/null || echo "true")"
+        if [[ "${has_field}" == "true" ]]; then
+            report_fail "${test_name}" "${IMPL_NAMES[${idx}]}: response contains forbidden field '${forbidden_field}'"
+            return
+        fi
+    done
+    report_pass "${test_name}"
+}
+
+run_field_absence_test \
+    "readings have no raw_json" \
+    "/api/readings?from=0&to=9999999999999" \
+    "raw_json"
+
+run_field_absence_test \
+    "devices have no first_seen" \
+    "/api/devices" \
+    "first_seen"
+
+# /api/config has downsampleBuckets key (no deprecated downsampleThreshold)
+run_config_shape_test() {
+    local test_name="config has downsampleBuckets"
+    local idx
+
+    for (( idx=0; idx<IMPL_COUNT; idx++ )); do
+        local result
+        result="$(fetch "${IMPL_PORTS[${idx}]}" "/api/config")"
+        local body="${result#*$'\t'}"
+        local has_key
+        has_key="$(echo "${body}" | jq 'has("downsampleBuckets")' 2>/dev/null || echo "false")"
+        if [[ "${has_key}" != "true" ]]; then
+            report_fail "${test_name}" "${IMPL_NAMES[${idx}]}: missing downsampleBuckets"
+            return
+        fi
+        local has_old
+        has_old="$(echo "${body}" | jq 'has("downsampleThreshold")' 2>/dev/null || echo "false")"
+        if [[ "${has_old}" == "true" ]]; then
+            report_fail "${test_name}" "${IMPL_NAMES[${idx}]}: still has deprecated downsampleThreshold"
+            return
+        fi
+    done
+    report_pass "${test_name}"
+}
+run_config_shape_test
+
+# Error responses are {"error": "..."} format
+run_error_shape_test() {
+    local test_name="$1" endpoint="$2" expected_status="$3"
+    local idx
+
+    for (( idx=0; idx<IMPL_COUNT; idx++ )); do
+        local result
+        result="$(fetch "${IMPL_PORTS[${idx}]}" "${endpoint}")"
+        local status="${result%%$'\t'*}"
+        local body="${result#*$'\t'}"
+
+        if [[ "${status}" != "${expected_status}" ]]; then
+            report_fail "${test_name}" "${IMPL_NAMES[${idx}]}: HTTP ${status}, expected ${expected_status}"
+            return
+        fi
+
+        local has_error_key
+        has_error_key="$(echo "${body}" | jq 'has("error")' 2>/dev/null || echo "false")"
+        if [[ "${has_error_key}" != "true" ]]; then
+            report_fail "${test_name}" "${IMPL_NAMES[${idx}]}: response missing 'error' key"
+            return
+        fi
+
+        local key_count
+        key_count="$(echo "${body}" | jq 'keys | length' 2>/dev/null || echo "0")"
+        if [[ "${key_count}" != "1" ]]; then
+            report_fail "${test_name}" "${IMPL_NAMES[${idx}]}: error response has ${key_count} keys, expected 1"
+            return
+        fi
+    done
+    report_pass "${test_name}"
+}
+
+run_error_shape_test "400 error shape" "/api/readings?downsample=bogus" "400"
+run_error_shape_test "404 error shape" "/api/nonexistent" "404"
+
+# JSON responses have Content-Type: application/json
+run_content_type_test() {
+    local test_name="Content-Type: application/json"
+    local idx
+
+    for (( idx=0; idx<IMPL_COUNT; idx++ )); do
+        local ct
+        ct="$(curl -s -o /dev/null -w '%{content_type}' --max-time "${CURL_TIMEOUT}" \
+            "http://localhost:${IMPL_PORTS[${idx}]}/api/config" 2>/dev/null)" || ct=""
+        if [[ "${ct}" != *"application/json"* ]]; then
+            report_fail "${test_name}" "${IMPL_NAMES[${idx}]}: Content-Type='${ct}'"
+            return
+        fi
+    done
+    report_pass "${test_name}"
+}
+run_content_type_test
+
+# ── Security tests ──────────────────────────────────────────────────────────
+
+# Path traversal returns 403
+run_security_status_test() {
+    local test_name="$1" method="$2" path="$3" expected_status="$4"
+    local idx
+
+    for (( idx=0; idx<IMPL_COUNT; idx++ )); do
+        local code
+        code="$(curl -s -o /dev/null -w '%{http_code}' --max-time "${CURL_TIMEOUT}" \
+            -X "${method}" "http://localhost:${IMPL_PORTS[${idx}]}${path}" 2>/dev/null)" || code="000"
+
+        if [[ "${code}" != "${expected_status}" ]]; then
+            report_fail "${test_name}" "${IMPL_NAMES[${idx}]}: HTTP ${code}, expected ${expected_status}"
+            return
+        fi
+    done
+    report_pass "${test_name}"
+}
+
+run_security_status_test "path traversal blocked (403)" "GET" "/../../../etc/passwd" "403"
+run_security_status_test "encoded traversal blocked (403)" "GET" "/%2e%2e/%2e%2e/etc/passwd" "403"
+
+# No X-Powered-By header
+run_no_powered_by_test() {
+    local test_name="no X-Powered-By header"
+    local idx
+
+    for (( idx=0; idx<IMPL_COUNT; idx++ )); do
+        local headers
+        headers="$(curl -sI --max-time "${CURL_TIMEOUT}" \
+            "http://localhost:${IMPL_PORTS[${idx}]}/api/config" 2>/dev/null)" || headers=""
+        if echo "${headers}" | grep -qi "x-powered-by"; then
+            report_fail "${test_name}" "${IMPL_NAMES[${idx}]}: sends X-Powered-By header"
+            return
+        fi
+    done
+    report_pass "${test_name}"
+}
+run_no_powered_by_test
+
+# ── Ordering and selection tests ────────────────────────────────────────────
+
+# Readings sorted ASC (first timestamp <= last timestamp)
+run_sort_order_test() {
+    local test_name="readings sorted ASC"
+    local idx
+
+    for (( idx=0; idx<IMPL_COUNT; idx++ )); do
+        local result
+        result="$(fetch "${IMPL_PORTS[${idx}]}" "/api/readings?from=0&to=9999999999999")"
+        local body="${result#*$'\t'}"
+        local count
+        count="$(echo "${body}" | jq 'length' 2>/dev/null || echo "0")"
+        if [[ "${count}" -lt 2 ]]; then
+            continue
+        fi
+        local first_ts last_ts
+        first_ts="$(echo "${body}" | jq '.[0].timestamp' 2>/dev/null || echo "0")"
+        last_ts="$(echo "${body}" | jq '.[-1].timestamp' 2>/dev/null || echo "0")"
+        if [[ "${first_ts}" -gt "${last_ts}" ]]; then
+            report_fail "${test_name}" "${IMPL_NAMES[${idx}]}: first=${first_ts} > last=${last_ts}"
+            return
+        fi
+    done
+    report_pass "${test_name}"
+}
+run_sort_order_test
+
+# Downsampled readings omit id field
+run_downsample_no_id_test() {
+    local test_name="downsampled readings omit id"
+    local idx
+
+    for (( idx=0; idx<IMPL_COUNT; idx++ )); do
+        local result
+        result="$(fetch "${IMPL_PORTS[${idx}]}" "/api/readings?from=0&to=9999999999999&downsample=1h")"
+        local body="${result#*$'\t'}"
+        local arr_len
+        arr_len="$(echo "${body}" | jq 'length' 2>/dev/null || echo "0")"
+        if [[ "${arr_len}" == "0" ]]; then
+            continue
+        fi
+        local has_id
+        has_id="$(echo "${body}" | jq '[.[] | has("id")] | any' 2>/dev/null || echo "true")"
+        if [[ "${has_id}" == "true" ]]; then
+            report_fail "${test_name}" "${IMPL_NAMES[${idx}]}: downsampled response contains 'id' field"
+            return
+        fi
+    done
+    report_pass "${test_name}"
+}
+run_downsample_no_id_test
+
+# count response is exactly {"count": N}
+run_count_shape_test() {
+    local test_name="count response exact shape"
+    local idx
+
+    for (( idx=0; idx<IMPL_COUNT; idx++ )); do
+        local result
+        result="$(fetch "${IMPL_PORTS[${idx}]}" "/api/readings/count?from=0&to=9999999999999")"
+        local body="${result#*$'\t'}"
+        local key_count
+        key_count="$(echo "${body}" | jq 'keys | length' 2>/dev/null || echo "0")"
+        if [[ "${key_count}" != "1" ]]; then
+            report_fail "${test_name}" "${IMPL_NAMES[${idx}]}: count response has ${key_count} keys, expected 1"
+            return
+        fi
+        local has_count
+        has_count="$(echo "${body}" | jq 'has("count")' 2>/dev/null || echo "false")"
+        if [[ "${has_count}" != "true" ]]; then
+            report_fail "${test_name}" "${IMPL_NAMES[${idx}]}: count response missing 'count' key"
+            return
+        fi
+    done
+    report_pass "${test_name}"
+}
+run_count_shape_test
+
 # ── Web page smoke tests ─────────────────────────────────────────────────────
 # Verify that static files are served correctly and contain expected structure
 
