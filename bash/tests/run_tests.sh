@@ -762,6 +762,77 @@ assert_contains "count query uses SELECT COUNT(*) FROM readings" "${DB_SH_CONTEN
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════
+# TEST-SPEC.JSON INTEGRATION TESTS
+# ═══════════════════════════════════════════════════════════════════
+
+echo "--- test-spec.json integration tests ---"
+
+SPEC_FILE="${SCRIPT_DIR}/../test-spec.json"
+if [[ ! -f "${SPEC_FILE}" ]]; then
+    SPEC_FILE="${SCRIPT_DIR}/../../test-spec.json"
+fi
+
+# --- Response shape: reading required fields ---
+response=$(do_handler_request GET "/api/readings?limit=1")
+body=$(get_body "${response}")
+reading_count=$(jq 'length' <<< "${body}")
+if (( reading_count > 0 )); then
+    first_reading=$(jq '.[0]' <<< "${body}")
+    # Check requiredFields are present
+    while IFS= read -r field; do
+        has_field=$(jq --arg f "${field}" 'has($f)' <<< "${first_reading}")
+        assert_eq "reading has required field '${field}'" "true" "${has_field}"
+    done < <(jq -r '.responseShapes.reading.requiredFields[]' "${SPEC_FILE}")
+    # Check forbiddenFields are absent
+    while IFS= read -r field; do
+        has_field=$(jq --arg f "${field}" 'has($f)' <<< "${first_reading}")
+        assert_eq "reading lacks forbidden field '${field}'" "false" "${has_field}"
+    done < <(jq -r '.responseShapes.reading.forbiddenFields[]' "${SPEC_FILE}")
+fi
+
+# --- Response shape: device fields ---
+response=$(do_handler_request GET "/api/devices")
+body=$(get_body "${response}")
+device_count=$(jq 'length' <<< "${body}")
+if (( device_count > 0 )); then
+    first_device=$(jq '.[0]' <<< "${body}")
+    # Check requiredFields are present
+    while IFS= read -r field; do
+        has_field=$(jq --arg f "${field}" 'has($f)' <<< "${first_device}")
+        assert_eq "device has required field '${field}'" "true" "${has_field}"
+    done < <(jq -r '.responseShapes.device.requiredFields[]' "${SPEC_FILE}")
+    # Check forbiddenFields are absent
+    while IFS= read -r field; do
+        has_field=$(jq --arg f "${field}" 'has($f)' <<< "${first_device}")
+        assert_eq "device lacks forbidden field '${field}'" "false" "${has_field}"
+    done < <(jq -r '.responseShapes.device.forbiddenFields[]' "${SPEC_FILE}")
+fi
+
+# --- Downsample bucket verification ---
+while IFS= read -r bucket_json; do
+    param=$(jq -r '.param' <<< "${bucket_json}")
+    expected_ms=$(jq -r '.expectMs' <<< "${bucket_json}")
+    actual_ms=$(jq -r --arg key "${param}" '.[$key] // empty' <<< "${AGTZ_DOWNSAMPLE_BUCKETS}")
+    assert_eq "downsample bucket '${param}' resolves to ${expected_ms}ms" "${expected_ms}" "${actual_ms}"
+done < <(jq -c '.downsampleBuckets[]' "${SPEC_FILE}")
+
+# --- Query edge cases: from>to returns empty ---
+response=$(do_handler_request GET "/api/readings?from=9999999999999&to=1")
+status=$(get_status_code "${response}")
+body=$(get_body "${response}")
+assert_eq "from>to status 200" "200" "${status}"
+assert_json_length "from>to returns empty array" "${body}" "0"
+
+# --- Query edge cases: nonexistent device returns empty ---
+response=$(do_handler_request GET "/api/readings?device=nonexistent-serial-xyz")
+status=$(get_status_code "${response}")
+body=$(get_body "${response}")
+assert_eq "nonexistent device status 200" "200" "${status}"
+assert_json_length "nonexistent device returns empty array" "${body}" "0"
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════
 # SUMMARY
 # ═══════════════════════════════════════════════════════════════════
 
