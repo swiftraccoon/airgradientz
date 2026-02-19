@@ -7,6 +7,8 @@ set -euo pipefail
 # Requires at least 2 implementations to compare.
 
 CURL_TIMEOUT=10
+RETRY_COUNT=3
+RETRY_DELAY=1
 PASS_COUNT=0
 FAIL_COUNT=0
 WARN_COUNT=0
@@ -42,21 +44,62 @@ log "Comparing ${IMPL_COUNT} implementations (reference: ${REF_NAME})"
 # ── Helper functions ─────────────────────────────────────────────────────────
 
 # Fetch an endpoint, return "status_code<TAB>body"
+# Retries RETRY_COUNT times on curl failure, logging stderr each time.
 fetch() {
     local port="$1" path="$2"
     local url="http://localhost:${port}${path}"
-    local tmpfile
+    local tmpfile http_code="" attempt curl_exit
     tmpfile="$(mktemp)"
-    local http_code
-    http_code="$(curl -s -o "${tmpfile}" -w '%{http_code}' --max-time "${CURL_TIMEOUT}" "${url}" 2>/dev/null)" || {
+
+    for (( attempt=1; attempt<=RETRY_COUNT; attempt++ )); do
+        http_code="$(curl -s -o "${tmpfile}" -w '%{http_code}' \
+            --max-time "${CURL_TIMEOUT}" "${url}" 2>"${tmpfile}.err")" && break
+        curl_exit=$?
+        if [[ ${attempt} -lt ${RETRY_COUNT} ]]; then
+            log "WARN: fetch ${url} attempt ${attempt}/${RETRY_COUNT} failed (curl exit ${curl_exit}): $(cat "${tmpfile}.err" 2>/dev/null)"
+            sleep "${RETRY_DELAY}"
+        else
+            log "ERROR: fetch ${url} failed after ${RETRY_COUNT} attempts (curl exit ${curl_exit}): $(cat "${tmpfile}.err" 2>/dev/null)"
+        fi
+        http_code=""
+    done
+
+    rm -f "${tmpfile}.err"
+
+    if [[ -z "${http_code}" || "${http_code}" == "000" ]]; then
         rm -f "${tmpfile}"
         printf '000\t'
         return
-    }
+    fi
+
     local body
     body="$(cat "${tmpfile}")"
     rm -f "${tmpfile}"
     printf '%s\t%s' "${http_code}" "${body}"
+}
+
+# Get HTTP status code with retry. Extra curl args passed through.
+# Usage: curl_status_with_retry PORT PATH [extra_curl_args...]
+curl_status_with_retry() {
+    local port="$1" path="$2"
+    shift 2
+    local url="http://localhost:${port}${path}"
+    local code="" attempt curl_exit
+
+    for (( attempt=1; attempt<=RETRY_COUNT; attempt++ )); do
+        code="$(curl -s -o /dev/null -w '%{http_code}' --max-time "${CURL_TIMEOUT}" \
+            "$@" "${url}" 2>/dev/null)" && break
+        curl_exit=$?
+        if [[ ${attempt} -lt ${RETRY_COUNT} ]]; then
+            log "WARN: curl ${url} attempt ${attempt}/${RETRY_COUNT} failed (exit ${curl_exit})"
+            sleep "${RETRY_DELAY}"
+        else
+            log "ERROR: curl ${url} failed after ${RETRY_COUNT} attempts (exit ${curl_exit})"
+        fi
+        code=""
+    done
+
+    printf '%s' "${code:-000}"
 }
 
 # Compare status codes across all implementations
@@ -321,8 +364,7 @@ run_post_test() {
 
     for (( idx=0; idx<IMPL_COUNT; idx++ )); do
         local code
-        code="$(curl -s -o /dev/null -w '%{http_code}' --max-time "${CURL_TIMEOUT}" \
-            -X POST "http://localhost:${IMPL_PORTS[${idx}]}/api/readings" 2>/dev/null)" || code="000"
+        code="$(curl_status_with_retry "${IMPL_PORTS[${idx}]}" "/api/readings" -X POST)"
         statuses+=("${code}")
     done
 
@@ -577,8 +619,13 @@ run_content_type_test() {
 
     for (( idx=0; idx<IMPL_COUNT; idx++ )); do
         local ct
-        ct="$(curl -s -o /dev/null -w '%{content_type}' --max-time "${CURL_TIMEOUT}" \
-            "http://localhost:${IMPL_PORTS[${idx}]}/api/config" 2>/dev/null)" || ct=""
+        ct=""
+        for (( _attempt=1; _attempt<=RETRY_COUNT; _attempt++ )); do
+            ct="$(curl -s -o /dev/null -w '%{content_type}' --max-time "${CURL_TIMEOUT}" \
+                "http://localhost:${IMPL_PORTS[${idx}]}/api/config" 2>/dev/null)" && break
+            [[ ${_attempt} -lt ${RETRY_COUNT} ]] && sleep "${RETRY_DELAY}"
+            ct=""
+        done
         if [[ "${ct}" != *"application/json"* ]]; then
             report_fail "${test_name}" "${IMPL_NAMES[${idx}]}: Content-Type='${ct}'"
             return
@@ -597,8 +644,7 @@ run_security_status_test() {
 
     for (( idx=0; idx<IMPL_COUNT; idx++ )); do
         local code
-        code="$(curl -s -o /dev/null -w '%{http_code}' --max-time "${CURL_TIMEOUT}" \
-            --path-as-is -X "${method}" "http://localhost:${IMPL_PORTS[${idx}]}${path}" 2>/dev/null)" || code="000"
+        code="$(curl_status_with_retry "${IMPL_PORTS[${idx}]}" "${path}" --path-as-is -X "${method}")"
 
         if [[ "${code}" != "${expected_status}" ]]; then
             report_fail "${test_name}" "${IMPL_NAMES[${idx}]}: HTTP ${code}, expected ${expected_status}"
@@ -618,8 +664,13 @@ run_no_powered_by_test() {
 
     for (( idx=0; idx<IMPL_COUNT; idx++ )); do
         local headers
-        headers="$(curl -sI --max-time "${CURL_TIMEOUT}" \
-            "http://localhost:${IMPL_PORTS[${idx}]}/api/config" 2>/dev/null)" || headers=""
+        headers=""
+        for (( _attempt=1; _attempt<=RETRY_COUNT; _attempt++ )); do
+            headers="$(curl -sI --max-time "${CURL_TIMEOUT}" \
+                "http://localhost:${IMPL_PORTS[${idx}]}/api/config" 2>/dev/null)" && break
+            [[ ${_attempt} -lt ${RETRY_COUNT} ]] && sleep "${RETRY_DELAY}"
+            headers=""
+        done
         if echo "${headers}" | grep -qi "x-powered-by"; then
             report_fail "${test_name}" "${IMPL_NAMES[${idx}]}: sends X-Powered-By header"
             return

@@ -5,17 +5,19 @@ set -euo pipefail
 # Starts a mock device, builds & launches implementations, waits for them to
 # poll, then runs compare.sh to verify all produce identical API responses.
 #
-# Usage: ./conformance/run.sh [impl...]
+# Usage: ./conformance/run.sh [--batch-size N] [--ref IMPL] [impl...]
 #        e.g. ./conformance/run.sh c nodejs go
-#        ./conformance/run.sh          # all implementations
+#        ./conformance/run.sh --batch-size 3 --ref c
+#        ./conformance/run.sh          # all implementations, batch size 5
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
 HEALTH_TIMEOUT=60   # seconds to wait for impl to become ready
-HEALTH_INTERVAL=0.5 # seconds between health checks
 POLL_WAIT=20        # seconds to wait for at least one poll cycle
 BASE_PORT=19000     # starting port for impl allocation
+BATCH_SIZE=5        # max impls per batch (0 = all at once)
+REF_IMPL="c"        # reference implementation name
 
 log() { echo "[conformance] $*" >&2; }
 
@@ -23,7 +25,7 @@ log() { echo "[conformance] $*" >&2; }
 
 check_deps() {
     local missing=()
-    for cmd in bash curl jq ncat bc; do
+    for cmd in bash curl jq ncat; do
         if ! command -v "${cmd}" &>/dev/null; then
             missing+=("${cmd}")
         fi
@@ -36,7 +38,6 @@ check_deps() {
 
 # ── Implementation registry ─────────────────────────────────────────────────
 # Format: name|directory|build_cmd|start_cmd
-# Ports are assigned dynamically from BASE_PORT.
 
 IMPL_REGISTRY=(
     "c|c|cd c && make clean && make|cd c && ./airgradientz"
@@ -59,7 +60,6 @@ get_field() {
     echo "${entry}" | cut -d'|' -f"${field}"
 }
 
-# Find a free port by binding to port 0
 find_free_port() {
     python3 -c 'import socket; s=socket.socket(); s.bind(("",0)); print(s.getsockname()[1]); s.close()' 2>/dev/null \
         || echo "$((BASE_PORT + RANDOM % 1000))"
@@ -78,7 +78,6 @@ cleanup() {
             kill "${pid}" 2>/dev/null || true
         fi
     done
-    # Wait briefly for graceful shutdown, then force
     sleep 1
     for pid in "${CHILD_PIDS[@]}"; do
         if kill -0 "${pid}" 2>/dev/null; then
@@ -124,50 +123,149 @@ resolve_impls() {
     printf '%s\n' "${resolved[@]}"
 }
 
+# Wait for a server to respond to health checks.
+# Uses integer loop with 0.5s sleep — no bc dependency.
+# Prints diagnostic curl output on failure.
 wait_ready() {
     local name="$1" port="$2"
     local url="http://localhost:${port}/api/health"
-    local elapsed=0
+    local max_attempts=$(( HEALTH_TIMEOUT * 2 ))  # 0.5s per attempt
+    local attempt
 
-    # shellcheck disable=SC2312
-    while (( $(echo "${elapsed} < ${HEALTH_TIMEOUT}" | bc -l) )); do
+    for (( attempt=1; attempt<=max_attempts; attempt++ )); do
         if curl -sf "${url}" -o /dev/null 2>/dev/null; then
-            log "${name} is ready (${elapsed}s)"
+            log "${name} ready (${attempt} attempts, ~$(( attempt / 2 ))s)"
             return 0
         fi
-        sleep "${HEALTH_INTERVAL}"
-        elapsed="$(echo "${elapsed} + ${HEALTH_INTERVAL}" | bc -l)"
+        sleep 0.5
     done
 
-    log "WARNING: ${name} did not become ready within ${HEALTH_TIMEOUT}s"
+    # Diagnostic on failure — show what curl actually sees
+    log "ERROR: ${name} not ready after ${HEALTH_TIMEOUT}s on port ${port}"
+    log "  Diagnostic curl -v output:"
+    curl -v "http://localhost:${port}/api/health" 2>&1 | head -15 | while IFS= read -r line; do
+        log "    ${line}"
+    done
     return 1
+}
+
+# Stop specific PIDs. Used to stop batch servers between batches.
+stop_pids() {
+    local -a pids_to_stop=("$@")
+    for pid in "${pids_to_stop[@]}"; do
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill "${pid}" 2>/dev/null || true
+        fi
+    done
+    sleep 1
+    for pid in "${pids_to_stop[@]}"; do
+        if kill -0 "${pid}" 2>/dev/null; then
+            kill -9 "${pid}" 2>/dev/null || true
+        fi
+        wait "${pid}" 2>/dev/null || true
+    done
+}
+
+# Start an implementation server. Prints its PID.
+start_impl() {
+    local entry="$1"
+    local name start_cmd port db_path
+    name="$(get_field "${entry}" 1)"
+    start_cmd="$(get_field "${entry}" 4)"
+    port="${IMPL_PORT_MAP[${name}]}"
+    db_path="${IMPL_DB_MAP[${name}]}"
+
+    log "  Starting ${name} on port ${port}..."
+    (
+        cd "${REPO_ROOT}"
+        export PORT="${port}"
+        export DB_PATH="${db_path}"
+        export CONFIG_PATH="${CONFIG_PATH}"
+        eval "${start_cmd}"
+    ) >/dev/null 2>&1 &
+    local pid=$!
+    CHILD_PIDS+=("${pid}")
+    echo "${pid}"
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 check_deps
 
-# Parse arguments
+# Parse --flags before positional args
+POSITIONAL_ARGS=()
+while [[ $# -gt 0 ]]; do
+    case "$1" in
+        --batch-size)
+            BATCH_SIZE="$2"
+            shift 2
+            ;;
+        --batch-size=*)
+            BATCH_SIZE="${1#*=}"
+            shift
+            ;;
+        --ref)
+            REF_IMPL="$2"
+            shift 2
+            ;;
+        --ref=*)
+            REF_IMPL="${1#*=}"
+            shift
+            ;;
+        -*)
+            log "ERROR: Unknown option: $1"
+            log "Usage: $0 [--batch-size N] [--ref IMPL] [impl...]"
+            exit 1
+            ;;
+        *)
+            POSITIONAL_ARGS+=("$1")
+            shift
+            ;;
+    esac
+done
+
+# Resolve implementations
 IMPLS=()
 # shellcheck disable=SC2312
 while IFS= read -r line; do
     [[ -n "${line}" ]] && IMPLS+=("${line}")
-done < <(resolve_impls "$@")
+done < <(resolve_impls "${POSITIONAL_ARGS[@]}")
 
 if [[ ${#IMPLS[@]} -lt 2 ]]; then
     log "ERROR: Need at least 2 implementations to compare."
-    log "Usage: $0 [impl1 impl2 ...]"
+    log "Usage: $0 [--batch-size N] [--ref IMPL] [impl1 impl2 ...]"
     exit 1
 fi
 
-log "Testing ${#IMPLS[@]} implementation(s)..."
+# Separate reference impl from the rest
+REF_ENTRY=""
+NON_REF_IMPLS=()
+for entry in "${IMPLS[@]}"; do
+    name="$(get_field "${entry}" 1)"
+    if [[ "${name}" == "${REF_IMPL}" ]]; then
+        REF_ENTRY="${entry}"
+    else
+        NON_REF_IMPLS+=("${entry}")
+    fi
+done
 
-# ── Step 1: Create temp directory and config ─────────────────────────────────
+if [[ -z "${REF_ENTRY}" ]]; then
+    log "ERROR: Reference implementation '${REF_IMPL}' not found in requested implementations."
+    exit 1
+fi
+
+# Effective batch size: 0 means all at once
+if [[ "${BATCH_SIZE}" -eq 0 ]]; then
+    BATCH_SIZE=${#NON_REF_IMPLS[@]}
+fi
+
+log "Testing ${#IMPLS[@]} implementations (ref: ${REF_IMPL}, batch size: ${BATCH_SIZE})"
+
+# ── Step 1: Create temp directory ─────────────────────────────────────────────
 
 TMPDIR_PATH="$(mktemp -d)"
 log "Temp directory: ${TMPDIR_PATH}"
 
-# Find a free port for mock device
 MOCK_PORT="$(find_free_port)"
 log "Mock device port: ${MOCK_PORT}"
 
@@ -178,21 +276,14 @@ bash "${SCRIPT_DIR}/mock-device.sh" "${MOCK_PORT}" &
 MOCK_PID=$!
 CHILD_PIDS+=("${MOCK_PID}")
 
-# Wait for mock device to be ready
-sleep 1
-if ! kill -0 "${MOCK_PID}" 2>/dev/null; then
-    log "ERROR: Mock device failed to start"
-    exit 1
-fi
-
-# Verify mock device responds
+# Wait for mock device using /health endpoint
 mock_ready=false
-for _ in 1 2 3; do
-    if curl -sf "http://localhost:${MOCK_PORT}/measures/current" -o /dev/null 2>/dev/null; then
+for _ in $(seq 1 10); do
+    if curl -sf "http://localhost:${MOCK_PORT}/health" -o /dev/null 2>/dev/null; then
         mock_ready=true
         break
     fi
-    sleep 1
+    sleep 0.5
 done
 if [[ "${mock_ready}" == "false" ]]; then
     log "ERROR: Mock device not responding on port ${MOCK_PORT}"
@@ -200,19 +291,20 @@ if [[ "${mock_ready}" == "false" ]]; then
 fi
 log "Mock device is ready"
 
-# ── Step 3: Write temp config ────────────────────────────────────────────────
+# ── Step 3: Assign ports for all implementations ─────────────────────────────
 
-CONFIG_PATH="${TMPDIR_PATH}/airgradientz.json"
-
-# Build ports object dynamically
 port_offset=0
 declare -A IMPL_PORT_MAP=()
+declare -A IMPL_DB_MAP=()
 PORTS_JSON="{"
 first=true
-for entry in "${IMPLS[@]}"; do
+
+ALL_IMPLS=("${REF_ENTRY}" "${NON_REF_IMPLS[@]}")
+for entry in "${ALL_IMPLS[@]}"; do
     name="$(get_field "${entry}" 1)"
     assigned_port=$((BASE_PORT + port_offset))
     IMPL_PORT_MAP[${name}]=${assigned_port}
+    IMPL_DB_MAP[${name}]="${TMPDIR_PATH}/${name}.db"
     if [[ "${first}" == "true" ]]; then
         first=false
     else
@@ -223,7 +315,7 @@ for entry in "${IMPLS[@]}"; do
 done
 PORTS_JSON+="}"
 
-# Write config with device pointing to mock server
+CONFIG_PATH="${TMPDIR_PATH}/airgradientz.json"
 jq -n \
     --argjson ports "${PORTS_JSON}" \
     --arg mock_ip "127.0.0.1:${MOCK_PORT}" \
@@ -237,113 +329,162 @@ jq -n \
             { ip: $mock_ip, label: "indoor" }
         ]
     }' > "${CONFIG_PATH}"
-
 log "Config written to ${CONFIG_PATH}"
 
-# ── Step 4: Build and start implementations ──────────────────────────────────
+# ── Step 4: Build all implementations upfront ─────────────────────────────────
 
-declare -a COMPARE_ARGS=()
-declare -a STARTED_IMPLS=()
-
-for entry in "${IMPLS[@]}"; do
+log "Building all implementations..."
+declare -A IMPL_BUILT=()
+for entry in "${ALL_IMPLS[@]}"; do
     name="$(get_field "${entry}" 1)"
     dir="$(get_field "${entry}" 2)"
     build_cmd="$(get_field "${entry}" 3)"
-    start_cmd="$(get_field "${entry}" 4)"
-    port="${IMPL_PORT_MAP[${name}]}"
-    db_path="${TMPDIR_PATH}/${name}.db"
 
-    # Check directory exists
     if [[ ! -d "${REPO_ROOT}/${dir}" ]]; then
         log "WARNING: Directory ${dir} does not exist, skipping ${name}"
         continue
     fi
 
-    # Build
-    log "Building ${name}..."
+    log "  Building ${name}..."
     if ! (cd "${REPO_ROOT}" && eval "${build_cmd}") >/dev/null 2>&1; then
-        log "WARNING: Build failed for ${name}, skipping"
+        log "  WARNING: Build failed for ${name}, skipping"
         continue
     fi
-    log "Build succeeded for ${name}"
-
-    # Start with env vars
-    log "Starting ${name} on port ${port}..."
-    (
-        cd "${REPO_ROOT}"
-        export PORT="${port}"
-        export DB_PATH="${db_path}"
-        export CONFIG_PATH="${CONFIG_PATH}"
-        eval "${start_cmd}"
-    ) >/dev/null 2>&1 &
-    impl_pid=$!
-    CHILD_PIDS+=("${impl_pid}")
-
-    STARTED_IMPLS+=("${name}|${port}|${impl_pid}")
+    IMPL_BUILT[${name}]=1
+    log "  Build succeeded: ${name}"
 done
 
-if [[ ${#STARTED_IMPLS[@]} -lt 2 ]]; then
-    log "ERROR: Fewer than 2 implementations started successfully."
+if [[ -z "${IMPL_BUILT[${REF_IMPL}]+x}" ]]; then
+    log "ERROR: Reference implementation '${REF_IMPL}' failed to build."
     exit 1
 fi
 
-# ── Step 5: Wait for all implementations to be ready ─────────────────────────
+# ── Step 5: Start reference implementation ────────────────────────────────────
 
-for impl_info in "${STARTED_IMPLS[@]}"; do
-    name="$(echo "${impl_info}" | cut -d'|' -f1)"
-    port="$(echo "${impl_info}" | cut -d'|' -f2)"
+log "Starting reference implementation: ${REF_IMPL}"
+ref_pid="$(start_impl "${REF_ENTRY}")"
 
-    ready=false
-    # shellcheck disable=SC2310
-    wait_ready "${name}" "${port}" && ready=true
-    if [[ "${ready}" == "false" ]]; then
-        log "WARNING: ${name} failed health check, excluding from comparison"
-        continue
-    fi
-    COMPARE_ARGS+=("${name}:${port}")
-done
-
-if [[ ${#COMPARE_ARGS[@]} -lt 2 ]]; then
-    log "ERROR: Fewer than 2 implementations passed health check."
+# shellcheck disable=SC2310
+if ! wait_ready "${REF_IMPL}" "${IMPL_PORT_MAP[${REF_IMPL}]}"; then
+    log "ERROR: Reference implementation failed health check."
     exit 1
 fi
 
-# ── Step 6: Wait for poll cycle ──────────────────────────────────────────────
-
-log "Waiting ${POLL_WAIT}s for implementations to poll mock device..."
+log "Waiting ${POLL_WAIT}s for ${REF_IMPL} to poll mock device..."
 sleep "${POLL_WAIT}"
 
-# Verify at least the reference impl has data
-ref_port="${COMPARE_ARGS[0]##*:}"
+ref_port="${IMPL_PORT_MAP[${REF_IMPL}]}"
 reading_count="$(curl -sf "http://localhost:${ref_port}/api/readings/count?from=0&to=9999999999999" 2>/dev/null | jq -r '.count // 0')" || reading_count=0
 if [[ "${reading_count}" -eq 0 ]]; then
-    log "WARNING: Reference implementation has 0 readings after poll wait."
-    log "Extending wait by 15 seconds..."
+    log "WARNING: Reference has 0 readings, extending wait by 15s..."
     sleep 15
     reading_count="$(curl -sf "http://localhost:${ref_port}/api/readings/count?from=0&to=9999999999999" 2>/dev/null | jq -r '.count // 0')" || reading_count=0
     if [[ "${reading_count}" -eq 0 ]]; then
-        log "ERROR: Reference implementation still has 0 readings. Aborting."
+        log "ERROR: Reference still has 0 readings. Aborting."
         exit 1
     fi
 fi
-log "Reference implementation has ${reading_count} reading(s)"
+log "Reference has ${reading_count} reading(s)"
 
-# ── Step 7: Run comparator ───────────────────────────────────────────────────
+# ── Step 6: Test non-ref implementations in batches ──────────────────────────
 
-log "Running conformance comparator..."
-log "Implementations: ${COMPARE_ARGS[*]}"
-echo ""
+total_exit_code=0
+batch_num=0
+tested_count=0
 
-# Run compare.sh and capture exit code
-exit_code=0
-bash "${SCRIPT_DIR}/compare.sh" "${COMPARE_ARGS[@]}" || exit_code=$?
+TESTABLE_IMPLS=()
+for entry in "${NON_REF_IMPLS[@]}"; do
+    name="$(get_field "${entry}" 1)"
+    if [[ -n "${IMPL_BUILT[${name}]+x}" ]]; then
+        TESTABLE_IMPLS+=("${entry}")
+    fi
+done
+
+if [[ ${#TESTABLE_IMPLS[@]} -eq 0 ]]; then
+    log "ERROR: No non-reference implementations built successfully."
+    exit 1
+fi
+
+total_batches=$(( (${#TESTABLE_IMPLS[@]} + BATCH_SIZE - 1) / BATCH_SIZE ))
+log "Running ${#TESTABLE_IMPLS[@]} implementations in ${total_batches} batch(es)"
+
+idx=0
+while [[ ${idx} -lt ${#TESTABLE_IMPLS[@]} ]]; do
+    batch_num=$((batch_num + 1))
+
+    batch_end=$((idx + BATCH_SIZE))
+    if [[ ${batch_end} -gt ${#TESTABLE_IMPLS[@]} ]]; then
+        batch_end=${#TESTABLE_IMPLS[@]}
+    fi
+    BATCH=("${TESTABLE_IMPLS[@]:${idx}:${BATCH_SIZE}}")
+    batch_names=()
+    for entry in "${BATCH[@]}"; do
+        batch_names+=("$(get_field "${entry}" 1)")
+    done
+
+    log ""
+    log "── Batch ${batch_num}/${total_batches}: ${batch_names[*]} ──"
+
+    # Start batch servers with staggered startup
+    declare -a batch_pids=()
+    declare -a batch_compare_args=("${REF_IMPL}:${ref_port}")
+    batch_all_ready=true
+
+    for entry in "${BATCH[@]}"; do
+        name="$(get_field "${entry}" 1)"
+        port="${IMPL_PORT_MAP[${name}]}"
+
+        pid="$(start_impl "${entry}")"
+        batch_pids+=("${pid}")
+
+        # Staggered: wait for this server to be ready before starting next
+        ready=false
+        # shellcheck disable=SC2310
+        wait_ready "${name}" "${port}" && ready=true
+        if [[ "${ready}" == "false" ]]; then
+            log "WARNING: ${name} failed health check, excluding from batch"
+            batch_all_ready=false
+        else
+            batch_compare_args+=("${name}:${port}")
+            tested_count=$((tested_count + 1))
+        fi
+
+        sleep 1
+    done
+
+    # Wait for batch servers to poll
+    if [[ ${#batch_compare_args[@]} -ge 2 ]]; then
+        log "Waiting ${POLL_WAIT}s for batch to poll..."
+        sleep "${POLL_WAIT}"
+
+        log "Running comparator: ${batch_compare_args[*]}"
+        echo ""
+        batch_exit=0
+        bash "${SCRIPT_DIR}/compare.sh" "${batch_compare_args[@]}" || batch_exit=$?
+
+        if [[ ${batch_exit} -ne 0 ]]; then
+            total_exit_code=1
+        fi
+    else
+        log "WARNING: Batch ${batch_num} has fewer than 2 ready implementations, skipping."
+        total_exit_code=1
+    fi
+
+    # Stop batch servers (reference stays running)
+    log "Stopping batch ${batch_num} servers..."
+    stop_pids "${batch_pids[@]}"
+    unset batch_pids
+
+    idx=${batch_end}
+done
 
 # ── Report ───────────────────────────────────────────────────────────────────
 
-if [[ ${exit_code} -eq 0 ]]; then
-    log "All conformance tests passed!"
+echo ""
+if [[ ${total_exit_code} -eq 0 ]]; then
+    log "All conformance tests passed! (${tested_count} implementations tested against ${REF_IMPL})"
 else
-    log "Some conformance tests failed (exit code: ${exit_code})"
+    log "Some conformance tests failed (${tested_count} implementations tested against ${REF_IMPL})"
 fi
 
-exit "${exit_code}"
+exit "${total_exit_code}"

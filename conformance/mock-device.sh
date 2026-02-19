@@ -55,7 +55,9 @@ while IFS= read -r header; do
     [[ -z "${header}" ]] && break
 done
 
-if [[ "${method}" == "GET" && "${path}" == "/measures/current" ]]; then
+if [[ "${method}" == "GET" && "${path}" == "/health" ]]; then
+    printf 'HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: 2\r\nConnection: close\r\n\r\nok'
+elif [[ "${method}" == "GET" && "${path}" == "/measures/current" ]]; then
     printf 'HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %s\r\nConnection: close\r\n\r\n%s' \
         "${MOCK_CONTENT_LENGTH}" "${MOCK_PAYLOAD}"
 else
