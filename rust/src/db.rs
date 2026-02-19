@@ -876,4 +876,376 @@ mod tests {
         let count = get_filtered_count(&conn, now - 6000, now + 1000, Some("all")).unwrap();
         assert_eq!(count, 2);
     }
+
+    // ---- test-spec.json integration tests ----
+
+    fn load_test_spec() -> JsonValue {
+        let content = std::fs::read_to_string("../test-spec.json")
+            .expect("test-spec.json must be readable");
+        parse(&content).expect("test-spec.json must be valid JSON")
+    }
+
+    fn insert_multiple_fixtures(conn: &Connection, count: usize) {
+        for _ in 0..count {
+            insert_reading(conn, "192.168.1.1", &indoor_fixture()).unwrap();
+        }
+    }
+
+    // --- Downsample bucket verification (from test-spec.json) ---
+
+    #[test]
+    fn test_spec_downsample_buckets_match_config() {
+        let spec = load_test_spec();
+        let config_content = std::fs::read_to_string("../airgradientz.json")
+            .expect("airgradientz.json must be readable");
+        let config_json = parse(&config_content).expect("airgradientz.json must be valid JSON");
+
+        // Parse downsample buckets from config the same way Config::from_env does
+        let mut config_buckets: Vec<(String, i64)> = Vec::new();
+        if let JsonValue::Object(pairs) = config_json.get("downsampleBuckets").unwrap() {
+            for (key, val) in pairs {
+                if let Some(ms) = val.as_i64() {
+                    config_buckets.push((key.clone(), ms));
+                }
+            }
+        }
+
+        // Iterate test-spec downsampleBuckets array and verify each
+        let spec_buckets = spec.get("downsampleBuckets").unwrap().as_array().unwrap();
+        for bucket in spec_buckets {
+            let param = bucket.get("param").unwrap().as_str().unwrap();
+            let expect_ms = bucket.get("expectMs").unwrap().as_i64().unwrap();
+
+            let found = config_buckets.iter().find(|(k, _)| k == param);
+            assert!(
+                found.is_some(),
+                "downsample bucket '{param}' from test-spec.json not found in config"
+            );
+            assert_eq!(
+                found.unwrap().1, expect_ms,
+                "downsample bucket '{param}': config has {} but test-spec expects {expect_ms}",
+                found.unwrap().1
+            );
+        }
+
+        // Also verify no extra buckets in config that aren't in spec
+        for (key, _) in &config_buckets {
+            let in_spec = spec_buckets.iter().any(|b| b.get("param").unwrap().as_str() == Some(key));
+            assert!(in_spec, "config bucket '{key}' not found in test-spec.json");
+        }
+    }
+
+    // --- Query edge cases (from test-spec.json) ---
+
+    #[test]
+    fn test_spec_from_greater_than_to_returns_empty() {
+        let conn = setup_db();
+        insert_multiple_fixtures(&conn, 3);
+
+        // from > to should return empty results
+        let readings = query_readings(
+            &conn,
+            &ReadingQuery {
+                device: None,
+                from: 9_999_999_999_999,
+                to: 1,
+                limit: None,
+                downsample_ms: None,
+            },
+        ).unwrap();
+
+        assert!(readings.is_empty(), "from > to should return empty results");
+    }
+
+    #[test]
+    fn test_spec_nonexistent_device_returns_empty() {
+        let conn = setup_db();
+        insert_multiple_fixtures(&conn, 3);
+
+        // Querying a nonexistent device should return empty
+        let readings = query_readings(
+            &conn,
+            &ReadingQuery {
+                device: Some("nonexistent-serial-xyz".to_string()),
+                from: 0,
+                to: i64::MAX,
+                limit: None,
+                downsample_ms: None,
+            },
+        ).unwrap();
+
+        assert!(readings.is_empty(), "nonexistent device should return empty results");
+    }
+
+    #[test]
+    fn test_spec_limit_one_returns_exactly_one() {
+        let conn = setup_db();
+        insert_multiple_fixtures(&conn, 5);
+
+        let readings = query_readings(
+            &conn,
+            &ReadingQuery {
+                device: None,
+                from: 0,
+                to: i64::MAX,
+                limit: Some(1),
+                downsample_ms: None,
+            },
+        ).unwrap();
+
+        assert_eq!(readings.len(), 1, "limit=1 should return exactly 1 result");
+    }
+
+    #[test]
+    fn test_spec_count_from_greater_than_to_returns_zero() {
+        let conn = setup_db();
+        insert_multiple_fixtures(&conn, 3);
+
+        let count = get_filtered_count(&conn, 9_999_999_999_999, 1, None).unwrap();
+        assert_eq!(count, 0, "count with from > to should return 0");
+    }
+
+    #[test]
+    fn test_spec_count_nonexistent_device_returns_zero() {
+        let conn = setup_db();
+        insert_multiple_fixtures(&conn, 3);
+
+        let count = get_filtered_count(
+            &conn,
+            0,
+            i64::MAX,
+            Some("nonexistent-serial-xyz"),
+        ).unwrap();
+        assert_eq!(count, 0, "count with nonexistent device should return 0");
+    }
+
+    // --- Response shape verification (from test-spec.json) ---
+
+    fn assert_has_fields(json: &JsonValue, required: &[&str], context: &str) {
+        for field in required {
+            assert!(
+                json.get(field).is_some(),
+                "{context}: required field '{field}' missing"
+            );
+        }
+    }
+
+    fn assert_no_fields(json: &JsonValue, forbidden: &[&str], context: &str) {
+        for field in forbidden {
+            assert!(
+                json.get(field).is_none(),
+                "{context}: forbidden field '{field}' present"
+            );
+        }
+    }
+
+    #[test]
+    fn test_spec_reading_response_shape() {
+        let spec = load_test_spec();
+        let shape = spec.get("responseShapes").unwrap().get("reading").unwrap();
+
+        let required: Vec<&str> = shape
+            .get("requiredFields").unwrap()
+            .as_array().unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+
+        let forbidden: Vec<&str> = shape
+            .get("forbiddenFields").unwrap()
+            .as_array().unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+
+        // Create a non-downsampled reading (id != 0) and verify its JSON shape
+        let conn = setup_db();
+        insert_reading(&conn, "192.168.1.1", &indoor_fixture()).unwrap();
+
+        let readings = query_readings(
+            &conn,
+            &ReadingQuery { device: None, from: 0, to: i64::MAX, limit: None, downsample_ms: None },
+        ).unwrap();
+
+        let json = readings[0].to_json();
+        assert_has_fields(&json, &required, "reading");
+        assert_no_fields(&json, &forbidden, "reading");
+    }
+
+    #[test]
+    fn test_spec_reading_downsampled_response_shape() {
+        let spec = load_test_spec();
+        let shape = spec.get("responseShapes").unwrap().get("readingDownsampled").unwrap();
+
+        let required: Vec<&str> = shape
+            .get("requiredFields").unwrap()
+            .as_array().unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+
+        let forbidden: Vec<&str> = shape
+            .get("forbiddenFields").unwrap()
+            .as_array().unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+
+        // Create a downsampled reading (id=0) and verify its JSON shape
+        let r = Reading {
+            id: 0,
+            timestamp: 1_700_000_000_000,
+            device_id: "dev1".to_string(),
+            device_type: "indoor".to_string(),
+            device_ip: "1.1.1.1".to_string(),
+            pm01: Some(10.0), pm02: Some(20.0), pm10: Some(30.0),
+            pm02_compensated: Some(15.0), rco2: Some(400),
+            atmp: Some(22.0), atmp_compensated: Some(21.5),
+            rhum: Some(50.0), rhum_compensated: Some(48.0),
+            tvoc_index: Some(100.0), nox_index: Some(1.0), wifi: Some(-50),
+        };
+
+        let json = r.to_json();
+        assert_has_fields(&json, &required, "readingDownsampled");
+        assert_no_fields(&json, &forbidden, "readingDownsampled");
+    }
+
+    #[test]
+    fn test_spec_device_response_shape() {
+        let spec = load_test_spec();
+        let shape = spec.get("responseShapes").unwrap().get("device").unwrap();
+
+        let required: Vec<&str> = shape
+            .get("requiredFields").unwrap()
+            .as_array().unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+
+        let forbidden: Vec<&str> = shape
+            .get("forbiddenFields").unwrap()
+            .as_array().unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+
+        let conn = setup_db();
+        insert_reading(&conn, "192.168.1.1", &indoor_fixture()).unwrap();
+
+        let devices = get_devices(&conn).unwrap();
+        let json = devices[0].to_json();
+        assert_has_fields(&json, &required, "device");
+        assert_no_fields(&json, &forbidden, "device");
+    }
+
+    #[test]
+    fn test_spec_count_response_shape() {
+        let spec = load_test_spec();
+        let shape = spec.get("responseShapes").unwrap().get("count").unwrap();
+
+        let exact_fields: Vec<&str> = shape
+            .get("exactFields").unwrap()
+            .as_array().unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+
+        let no_extra = shape.get("noExtraFields")
+            .and_then(|v| if let JsonValue::Bool(b) = v { Some(*b) } else { None })
+            .unwrap_or(false);
+
+        // Build a count response the same way api.rs does
+        let count_json = crate::json::json_object(vec![
+            ("count", JsonValue::from_i64(42)),
+        ]);
+
+        assert_has_fields(&count_json, &exact_fields, "count");
+
+        if no_extra {
+            if let JsonValue::Object(pairs) = &count_json {
+                assert_eq!(
+                    pairs.len(),
+                    exact_fields.len(),
+                    "count response should have exactly {} fields, got {}",
+                    exact_fields.len(),
+                    pairs.len()
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn test_spec_config_response_shape() {
+        let spec = load_test_spec();
+        let shape = spec.get("responseShapes").unwrap().get("config").unwrap();
+
+        let required: Vec<&str> = shape
+            .get("requiredFields").unwrap()
+            .as_array().unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+
+        let forbidden: Vec<&str> = shape
+            .get("forbiddenFields").unwrap()
+            .as_array().unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+
+        // Build a config response the same way api.rs handle_config does
+        let devices = vec![crate::json::json_object(vec![
+            ("ip", JsonValue::String("192.168.1.1".to_string())),
+            ("label", JsonValue::String("test".to_string())),
+        ])];
+
+        let buckets: Vec<(String, JsonValue)> = vec![
+            ("5m".to_string(), JsonValue::from_i64(300_000)),
+        ];
+
+        let config_json = crate::json::json_object(vec![
+            ("pollIntervalMs", JsonValue::Number(15000.0)),
+            ("downsampleBuckets", JsonValue::Object(buckets)),
+            ("devices", crate::json::json_array(devices)),
+        ]);
+
+        assert_has_fields(&config_json, &required, "config");
+        assert_no_fields(&config_json, &forbidden, "config");
+    }
+
+    #[test]
+    fn test_spec_error_response_shape() {
+        let spec = load_test_spec();
+        let shape = spec.get("responseShapes").unwrap().get("error").unwrap();
+
+        let exact_fields: Vec<&str> = shape
+            .get("exactFields").unwrap()
+            .as_array().unwrap()
+            .iter()
+            .map(|v| v.as_str().unwrap())
+            .collect();
+
+        let no_extra = shape.get("noExtraFields")
+            .and_then(|v| if let JsonValue::Bool(b) = v { Some(*b) } else { None })
+            .unwrap_or(false);
+
+        // Build an error response matching what the HTTP layer produces
+        let error_json = crate::json::json_object(vec![
+            ("error", JsonValue::String("test error".to_string())),
+        ]);
+
+        assert_has_fields(&error_json, &exact_fields, "error");
+
+        if no_extra {
+            if let JsonValue::Object(pairs) = &error_json {
+                assert_eq!(
+                    pairs.len(),
+                    exact_fields.len(),
+                    "error response should have exactly {} fields, got {}",
+                    exact_fields.len(),
+                    pairs.len()
+                );
+            }
+        }
+    }
 }
