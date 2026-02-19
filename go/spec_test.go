@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"net/http/httptest"
 	"os"
 	"strings"
 	"testing"
@@ -29,12 +30,12 @@ type queryEdgeCase struct {
 }
 
 type edgeCaseExpect struct {
-	StatusCode  int            `json:"statusCode"`
-	ResultCount *int           `json:"resultCount"`
-	ResultCapped string        `json:"resultCapped"`
-	Body        any            `json:"body"`
-	HasResults  *bool          `json:"hasResults"`
-	BodyHasKey  string         `json:"bodyHasKey"`
+	Body         any    `json:"body"`
+	ResultCount  *int   `json:"resultCount"`
+	HasResults   *bool  `json:"hasResults"`
+	ResultCapped string `json:"resultCapped"`
+	BodyHasKey   string `json:"bodyHasKey"`
+	StatusCode   int    `json:"statusCode"`
 }
 
 type downsampleBucket struct {
@@ -140,76 +141,88 @@ func TestQueryEdgeCases(t *testing.T) {
 
 	for _, tc := range spec.QueryEdgeCases {
 		t.Run(tc.Name, func(t *testing.T) {
-			// Build URL with query params.
-			path := tc.Endpoint
-			if len(tc.Params) > 0 {
-				vals := make([]string, 0, len(tc.Params))
-				for k, v := range tc.Params {
-					vals = append(vals, k+"="+v)
-				}
-				path += "?" + strings.Join(vals, "&")
-			}
-
+			path := buildEdgeCasePath(&tc)
 			rr := doGet(h, path)
 
 			if rr.Code != tc.Expect.StatusCode {
 				t.Fatalf("status = %d, want %d (body: %s)", rr.Code, tc.Expect.StatusCode, rr.Body.String())
 			}
 
-			// Check resultCapped: result length should be <= maxApiRows.
-			if tc.Expect.ResultCapped == "maxApiRows" {
-				result := parseJSON(t, rr)
-				arr, ok := result.([]any)
-				if !ok {
-					t.Fatalf("expected JSON array, got %T", result)
-				}
-				if len(arr) > h.cfg.MaxAPIRows {
-					t.Errorf("result count %d exceeds maxApiRows %d", len(arr), h.cfg.MaxAPIRows)
-				}
-			}
-
-			// Check exact resultCount.
-			if tc.Expect.ResultCount != nil {
-				result := parseJSON(t, rr)
-				arr, ok := result.([]any)
-				if !ok {
-					t.Fatalf("expected JSON array, got %T", result)
-				}
-				if len(arr) != *tc.Expect.ResultCount {
-					t.Errorf("result count = %d, want %d", len(arr), *tc.Expect.ResultCount)
-				}
-			}
-
-			// Check hasResults: result array should be non-empty.
-			if tc.Expect.HasResults != nil && *tc.Expect.HasResults {
-				result := parseJSON(t, rr)
-				arr, ok := result.([]any)
-				if !ok {
-					t.Fatalf("expected JSON array, got %T", result)
-				}
-				if len(arr) == 0 {
-					t.Error("expected non-empty result array")
-				}
-			}
-
-			// Check body (exact match for arrays and objects).
-			if tc.Expect.Body != nil {
-				result := parseJSON(t, rr)
-				checkBodyMatch(t, tc.Expect.Body, result)
-			}
-
-			// Check bodyHasKey.
-			if tc.Expect.BodyHasKey != "" {
-				result := parseJSON(t, rr)
-				obj, ok := result.(map[string]any)
-				if !ok {
-					t.Fatalf("expected JSON object for bodyHasKey check, got %T", result)
-				}
-				if _, exists := obj[tc.Expect.BodyHasKey]; !exists {
-					t.Errorf("expected key %q in response body", tc.Expect.BodyHasKey)
-				}
-			}
+			checkResultCapped(t, tc.Expect, rr, h.cfg.MaxAPIRows)
+			checkResultCount(t, tc.Expect, rr)
+			checkHasResults(t, tc.Expect, rr)
+			checkBodyExpect(t, tc.Expect, rr)
+			checkBodyHasKey(t, tc.Expect, rr)
 		})
+	}
+}
+
+func buildEdgeCasePath(tc *queryEdgeCase) string {
+	path := tc.Endpoint
+	if len(tc.Params) > 0 {
+		vals := make([]string, 0, len(tc.Params))
+		for k, v := range tc.Params {
+			vals = append(vals, k+"="+v)
+		}
+		path += "?" + strings.Join(vals, "&")
+	}
+	return path
+}
+
+func checkResultCapped(t *testing.T, expect edgeCaseExpect, rr *httptest.ResponseRecorder, maxRows int) {
+	t.Helper()
+	if expect.ResultCapped != "maxApiRows" {
+		return
+	}
+	arr := parseJSONArray(t, rr)
+	if len(arr) > maxRows {
+		t.Errorf("result count %d exceeds maxApiRows %d", len(arr), maxRows)
+	}
+}
+
+func checkResultCount(t *testing.T, expect edgeCaseExpect, rr *httptest.ResponseRecorder) {
+	t.Helper()
+	if expect.ResultCount == nil {
+		return
+	}
+	arr := parseJSONArray(t, rr)
+	if len(arr) != *expect.ResultCount {
+		t.Errorf("result count = %d, want %d", len(arr), *expect.ResultCount)
+	}
+}
+
+func checkHasResults(t *testing.T, expect edgeCaseExpect, rr *httptest.ResponseRecorder) {
+	t.Helper()
+	if expect.HasResults == nil || !*expect.HasResults {
+		return
+	}
+	arr := parseJSONArray(t, rr)
+	if len(arr) == 0 {
+		t.Error("expected non-empty result array")
+	}
+}
+
+func checkBodyExpect(t *testing.T, expect edgeCaseExpect, rr *httptest.ResponseRecorder) {
+	t.Helper()
+	if expect.Body == nil {
+		return
+	}
+	result := parseJSON(t, rr)
+	checkBodyMatch(t, expect.Body, result)
+}
+
+func checkBodyHasKey(t *testing.T, expect edgeCaseExpect, rr *httptest.ResponseRecorder) {
+	t.Helper()
+	if expect.BodyHasKey == "" {
+		return
+	}
+	result := parseJSON(t, rr)
+	obj, ok := result.(map[string]any)
+	if !ok {
+		t.Fatalf("expected JSON object for bodyHasKey check, got %T", result)
+	}
+	if _, exists := obj[expect.BodyHasKey]; !exists {
+		t.Errorf("expected key %q in response body", expect.BodyHasKey)
 	}
 }
 
@@ -231,6 +244,16 @@ func TestAllDownsampleBuckets(t *testing.T) {
 			}
 		})
 	}
+}
+
+func parseJSONArray(t *testing.T, rr *httptest.ResponseRecorder) []any {
+	t.Helper()
+	result := parseJSON(t, rr)
+	arr, ok := result.([]any)
+	if !ok {
+		t.Fatalf("expected JSON array, got %T", result)
+	}
+	return arr
 }
 
 // checkBodyMatch compares expected body from the spec with the actual parsed JSON.

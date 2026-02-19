@@ -157,7 +157,7 @@ defmodule Airgradientz.SpecTest do
           limit: 100
         })
 
-      assert length(readings) > 0
+      assert readings != []
     end
 
     test "empty device filter returns all readings" do
@@ -173,7 +173,7 @@ defmodule Airgradientz.SpecTest do
           limit: 100
         })
 
-      assert length(readings) > 0
+      assert readings != []
     end
   end
 
