@@ -1,0 +1,161 @@
+{
+  "responseShapes": {
+    "reading": {
+      "requiredFields": [
+        "id", "timestamp", "device_id", "device_type", "device_ip",
+        "pm01", "pm02", "pm10", "pm02_compensated",
+        "rco2", "atmp", "atmp_compensated", "rhum", "rhum_compensated",
+        "tvoc_index", "nox_index", "wifi"
+      ],
+      "forbiddenFields": ["raw_json"]
+    },
+    "readingDownsampled": {
+      "requiredFields": [
+        "timestamp", "device_id", "device_type", "device_ip",
+        "pm01", "pm02", "pm10", "pm02_compensated",
+        "rco2", "atmp", "atmp_compensated", "rhum", "rhum_compensated",
+        "tvoc_index", "nox_index", "wifi"
+      ],
+      "forbiddenFields": ["raw_json", "id"]
+    },
+    "device": {
+      "requiredFields": [
+        "device_id", "device_type", "device_ip", "last_seen", "reading_count"
+      ],
+      "forbiddenFields": ["first_seen"]
+    },
+    "count": {
+      "exactFields": ["count"],
+      "noExtraFields": true
+    },
+    "config": {
+      "requiredFields": ["pollIntervalMs", "downsampleBuckets", "devices"],
+      "forbiddenFields": ["downsampleThreshold"]
+    },
+    "health": {
+      "requiredFields": [
+        "ip", "label", "status", "lastSuccess", "lastError",
+        "lastErrorMessage", "consecutiveFailures"
+      ]
+    },
+    "error": {
+      "exactFields": ["error"],
+      "noExtraFields": true
+    }
+  },
+  "queryEdgeCases": [
+    {
+      "name": "limit=0 means no explicit limit",
+      "endpoint": "/api/readings",
+      "params": {"limit": "0"},
+      "expect": {"statusCode": 200, "resultCapped": "maxApiRows"}
+    },
+    {
+      "name": "negative limit treated as no limit",
+      "endpoint": "/api/readings",
+      "params": {"limit": "-5"},
+      "expect": {"statusCode": 200, "resultCapped": "maxApiRows"}
+    },
+    {
+      "name": "limit exceeding maxApiRows is capped",
+      "endpoint": "/api/readings",
+      "params": {"limit": "999999999"},
+      "expect": {"statusCode": 200, "resultCapped": "maxApiRows"}
+    },
+    {
+      "name": "limit=1 returns exactly 1",
+      "endpoint": "/api/readings",
+      "params": {"limit": "1"},
+      "expect": {"statusCode": 200, "resultCount": 1}
+    },
+    {
+      "name": "from > to returns empty array",
+      "endpoint": "/api/readings",
+      "params": {"from": "9999999999999", "to": "1"},
+      "expect": {"statusCode": 200, "body": []}
+    },
+    {
+      "name": "missing device param returns all",
+      "endpoint": "/api/readings",
+      "params": {},
+      "expect": {"statusCode": 200, "hasResults": true}
+    },
+    {
+      "name": "device=all returns all",
+      "endpoint": "/api/readings",
+      "params": {"device": "all"},
+      "expect": {"statusCode": 200, "hasResults": true}
+    },
+    {
+      "name": "empty device param returns all",
+      "endpoint": "/api/readings",
+      "params": {"device": ""},
+      "expect": {"statusCode": 200, "hasResults": true}
+    },
+    {
+      "name": "nonexistent device returns empty",
+      "endpoint": "/api/readings",
+      "params": {"device": "nonexistent-serial-xyz"},
+      "expect": {"statusCode": 200, "body": []}
+    },
+    {
+      "name": "invalid downsample returns 400",
+      "endpoint": "/api/readings",
+      "params": {"downsample": "2h"},
+      "expect": {"statusCode": 400, "bodyHasKey": "error"}
+    },
+    {
+      "name": "count with from > to returns zero",
+      "endpoint": "/api/readings/count",
+      "params": {"from": "9999999999999", "to": "1"},
+      "expect": {"statusCode": 200, "body": {"count": 0}}
+    },
+    {
+      "name": "count with nonexistent device returns zero",
+      "endpoint": "/api/readings/count",
+      "params": {"device": "nonexistent-serial-xyz"},
+      "expect": {"statusCode": 200, "body": {"count": 0}}
+    }
+  ],
+  "downsampleBuckets": [
+    {"param": "5m",  "expectMs": 300000},
+    {"param": "10m", "expectMs": 600000},
+    {"param": "15m", "expectMs": 900000},
+    {"param": "30m", "expectMs": 1800000},
+    {"param": "1h",  "expectMs": 3600000},
+    {"param": "1d",  "expectMs": 86400000},
+    {"param": "1w",  "expectMs": 604800000}
+  ],
+  "securityCases": [
+    {
+      "name": "path traversal blocked",
+      "method": "GET",
+      "path": "/../../../etc/passwd",
+      "expect": {"statusCode": 403}
+    },
+    {
+      "name": "encoded path traversal blocked",
+      "method": "GET",
+      "path": "/%2e%2e/%2e%2e/etc/passwd",
+      "expect": {"statusCode": 403}
+    },
+    {
+      "name": "NUL byte in path blocked",
+      "method": "GET",
+      "path": "/app.js%00.html",
+      "expect": {"statusCode": 400}
+    },
+    {
+      "name": "POST on readings returns 405",
+      "method": "POST",
+      "path": "/api/readings",
+      "expect": {"statusCode": 405}
+    },
+    {
+      "name": "unknown API path returns 404",
+      "method": "GET",
+      "path": "/api/nonexistent",
+      "expect": {"statusCode": 404}
+    }
+  ]
+}
