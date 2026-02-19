@@ -13,7 +13,7 @@ Historical sensor readings.
 | `from`   | integer | 0       | Start time, epoch ms (inclusive)         |
 | `to`     | integer | now     | End time, epoch ms (inclusive)           |
 | `device` | string  | —       | Filter by device_id                      |
-| `limit`  | integer | —       | Max rows returned, capped by `maxApiRows`|
+| `limit`  | integer | —       | Max rows returned (0, negative, or missing = no explicit limit; always capped by `maxApiRows`) |
 | `downsample` | string | —   | Aggregate into time buckets: `5m`,`10m`,`15m`,`30m`,`1h`,`1d`,`1w` |
 
 Unrecognized `downsample` values return 400. When `downsample` is set, the server aggregates on the fly using `GROUP BY (timestamp / bucket_ms), device_id` with `AVG()` for sensor fields and `CAST(AVG(...) AS INTEGER)` for integer fields (rco2, wifi).
@@ -139,3 +139,23 @@ All errors return a JSON object with a single `error` field:
 | 404    | Not found (unknown endpoint or resource)   |
 | 405    | Method not allowed (non-GET request)       |
 | 500    | Internal server error (DB failure, etc.)   |
+
+## Query Parameter Defaults & Edge Cases
+
+| Param | Edge Case | Behavior |
+|-------|-----------|----------|
+| `from` | missing or empty | Defaults to `0` (all time) |
+| `to` | missing or empty | Defaults to current time |
+| `limit` | missing | No explicit limit; result capped by `maxApiRows` |
+| `limit` | `0` | Treated as no explicit limit; capped by `maxApiRows` |
+| `limit` | negative | Treated as no explicit limit; capped by `maxApiRows` |
+| `limit` | exceeds `maxApiRows` | Capped to `maxApiRows` |
+| `device` | missing or empty | No device filter (returns all devices) |
+| `device` | `"all"` | No device filter (returns all devices) |
+| `device` | nonexistent serial | Returns empty `[]` (not an error) |
+| `from` | greater than `to` | Returns empty `[]` (not an error) |
+| `downsample` | unrecognized value | Returns 400 with `{"error": "..."}` |
+
+All `/api/readings` results are ordered by `timestamp ASC`. The `/api/readings/latest` endpoint selects the reading with the highest `id` per device (not highest timestamp).
+
+When `downsample` is set, the `id` field is omitted from response objects. Error responses always have the shape `{"error": "<message>"}` with no extra fields.
