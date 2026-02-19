@@ -28,13 +28,34 @@ static void set_err(char *errbuf, size_t size, const char *fmt, ...)
 char *http_get(const char *ip, const char *path, uint32_t timeout_ms,
                char *errbuf, size_t errbuf_size)
 {
+    /* Split "host:port" or bare "host" — AirGradient devices are IPv4 only */
+    char host_buf[256];
+    const char *host;
+    const char *port;
+
+    const char *colon = strchr(ip, ':');
+    if (colon) {
+        size_t host_len = (size_t)(colon - ip);
+        if (host_len >= sizeof(host_buf)) {
+            set_err(errbuf, errbuf_size, "hostname too long");
+            return NULL;
+        }
+        memcpy(host_buf, ip, host_len);
+        host_buf[host_len] = '\0';
+        host = host_buf;
+        port = colon + 1;
+    } else {
+        host = ip;
+        port = "80";
+    }
+
     struct addrinfo hints;
     memset(&hints, 0, sizeof(hints));
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
 
     struct addrinfo *res = NULL;
-    int gai_rc = getaddrinfo(ip, "80", &hints, &res);
+    int gai_rc = getaddrinfo(host, port, &hints, &res);
     if (gai_rc != 0) {
         set_err(errbuf, errbuf_size, "resolve failed: %s", gai_strerror(gai_rc));
         return NULL;
@@ -63,7 +84,7 @@ char *http_get(const char *ip, const char *path, uint32_t timeout_ms,
 
     /* Send request */
     StrBuf req = strbuf_new();
-    strbuf_appendf(&req, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", path, ip);
+    strbuf_appendf(&req, "GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", path, host);
 
     const char *tosend = strbuf_cstr(&req);
     size_t total = req.len;

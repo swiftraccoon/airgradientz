@@ -226,7 +226,7 @@ PORTS_JSON+="}"
 # Write config with device pointing to mock server
 jq -n \
     --argjson ports "${PORTS_JSON}" \
-    --arg mock_ip "localhost:${MOCK_PORT}" \
+    --arg mock_ip "127.0.0.1:${MOCK_PORT}" \
     '{
         pollIntervalMs: 10000,
         fetchTimeoutMs: 5000,

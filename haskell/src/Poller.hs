@@ -181,10 +181,12 @@ logPoll dev _ =
 -- | Minimal HTTP client using raw sockets with timeout.
 fetchHTTP :: String -> Int -> IO BS.ByteString
 fetchHTTP ip timeoutMs = do
+  let (host, rest) = break (== ':') ip
+      port = if null rest then "80" else drop 1 rest
   let hints = NS.defaultHints { NS.addrSocketType = NS.Stream }
-  addrs <- NS.getAddrInfo (Just hints) (Just ip) (Just "80")
+  addrs <- NS.getAddrInfo (Just hints) (Just host) (Just port)
   case addrs of
-    [] -> fail $ "Cannot resolve: " ++ ip
+    [] -> fail $ "Cannot resolve: " ++ host
     (addr:_) -> do
       sock <- NS.openSocket addr
       NS.setSocketOption sock NS.NoDelay 1
@@ -194,7 +196,7 @@ fetchHTTP ip timeoutMs = do
       result <- try $ do
         NS.connect sock (NS.addrAddress addr)
         let req = BS8.pack $ "GET /measures/current HTTP/1.0\r\nHost: "
-                           ++ ip ++ "\r\nConnection: close\r\n\r\n"
+                           ++ host ++ "\r\nConnection: close\r\n\r\n"
         sendAllBS sock req
         recvAll sock 0 BS.empty
       NS.close sock

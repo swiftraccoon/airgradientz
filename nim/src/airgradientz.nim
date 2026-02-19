@@ -303,8 +303,15 @@ proc httpGet(ip: string, path: string, timeoutMs: uint32): (bool, string) =
   hints.ai_family = AF_INET
   hints.ai_socktype = SOCK_STREAM
 
+  # Split host and port from ip parameter (supports "host:port" or plain "host")
+  let colonIdx = ip.rfind(':')
+  let (hostname, portStr) = if colonIdx >= 0:
+    (ip[0 ..< colonIdx], ip[colonIdx + 1 .. ^1])
+  else:
+    (ip, "80")
+
   var res: ptr AddrInfo
-  let gaiRc = c_getaddrinfo(ip.cstring, "80".cstring, addr hints, addr res)
+  let gaiRc = c_getaddrinfo(hostname.cstring, portStr.cstring, addr hints, addr res)
   if gaiRc != 0:
     discard c_close(sock)
     return (false, "resolve failed: " & $gai_strerror(gaiRc))
@@ -317,7 +324,7 @@ proc httpGet(ip: string, path: string, timeoutMs: uint32): (bool, string) =
     return (false, "connect: " & err)
 
   # Send request
-  let reqStr = "GET " & path & " HTTP/1.1\r\nHost: " & ip & "\r\nConnection: close\r\n\r\n"
+  let reqStr = "GET " & path & " HTTP/1.1\r\nHost: " & hostname & "\r\nConnection: close\r\n\r\n"
   var sent = 0
   while sent < reqStr.len:
     let n = c_write(sock, addr reqStr[sent], csize_t(reqStr.len - sent))

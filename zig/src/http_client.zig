@@ -12,7 +12,13 @@ pub const HttpGetError = error{
 };
 
 pub fn httpGet(allocator: std.mem.Allocator, ip: []const u8, path: []const u8, timeout_ms: u32) HttpGetError![]const u8 {
-    const addr = std.net.Address.parseIp4(ip, 80) catch return error.NetworkError;
+    var hostname: []const u8 = ip;
+    var port: u16 = 80;
+    if (std.mem.indexOfScalar(u8, ip, ':')) |colon_pos| {
+        hostname = ip[0..colon_pos];
+        port = std.fmt.parseInt(u16, ip[colon_pos + 1 ..], 10) catch return error.NetworkError;
+    }
+    const addr = std.net.Address.parseIp4(hostname, port) catch return error.NetworkError;
 
     const stream = std.net.tcpConnectToAddress(addr) catch |err| {
         return switch (err) {
@@ -37,7 +43,7 @@ pub fn httpGet(allocator: std.mem.Allocator, ip: []const u8, path: []const u8, t
 
     // Build and send request
     var req_buf: [512]u8 = [_]u8{0} ** 512;
-    const req = std.fmt.bufPrint(&req_buf, "GET {s} HTTP/1.1\r\nHost: {s}\r\nConnection: close\r\n\r\n", .{ path, ip }) catch return error.RequestTooLong;
+    const req = std.fmt.bufPrint(&req_buf, "GET {s} HTTP/1.1\r\nHost: {s}\r\nConnection: close\r\n\r\n", .{ path, hostname }) catch return error.RequestTooLong;
 
     var sent: usize = 0;
     while (sent < req.len) {

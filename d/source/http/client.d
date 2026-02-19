@@ -8,7 +8,16 @@ import std.array : Appender;
 import core.time : dur, Duration;
 
 string httpGet(string ip, string path, Duration timeout) {
-    auto addr = new InternetAddress(ip, 80);
+    // Parse optional host:port from ip parameter
+    string hostname = ip;
+    ushort port = 80;
+    auto colonIdx = ip.indexOf(':');
+    if (colonIdx >= 0) {
+        hostname = ip[0 .. colonIdx];
+        port = ip[colonIdx + 1 .. $].to!ushort;
+    }
+
+    auto addr = new InternetAddress(hostname, port);
     auto sock = new TcpSocket();
 
     sock.setOption(SocketOptionLevel.SOCKET, SocketOption.SNDTIMEO, timeout);
@@ -16,7 +25,7 @@ string httpGet(string ip, string path, Duration timeout) {
 
     sock.connect(addr);
 
-    auto request = format!"GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n"(path, ip);
+    auto request = format!"GET %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n"(path, hostname);
     sock.send(cast(const(ubyte)[]) request);
 
     // Read full response (cap at 1 MB to prevent OOM from rogue devices)

@@ -6,7 +6,12 @@ use crate::error::AppError;
 
 pub(crate) fn http_get(ip: &str, path: &str, timeout: Duration) -> Result<String, AppError> {
     const MAX_RESPONSE: usize = 1024 * 1024;
-    let addr = format!("{ip}:80");
+    let (addr, host) = if ip.contains(':') {
+        let host = ip.split(':').next().unwrap_or(ip);
+        (ip.to_owned(), host)
+    } else {
+        (format!("{ip}:80"), ip)
+    };
     let mut stream = TcpStream::connect_timeout(
         &addr
             .parse()
@@ -17,7 +22,7 @@ pub(crate) fn http_get(ip: &str, path: &str, timeout: Duration) -> Result<String
     stream.set_read_timeout(Some(timeout))?;
     stream.set_write_timeout(Some(timeout))?;
 
-    write!(stream, "GET {path} HTTP/1.1\r\nHost: {ip}\r\nConnection: close\r\n\r\n")?;
+    write!(stream, "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\n\r\n")?;
     stream.flush()?;
 
     let mut reader = BufReader::new(stream);
