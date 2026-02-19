@@ -1252,3 +1252,276 @@ test "getFilteredCount empty db" {
     const count = try getFilteredCount(db, 0, nowMillis() + 1000, null);
     try testing.expectEqual(@as(i64, 0), count);
 }
+
+// ---- test-spec.json aligned tests ----
+
+// Downsample bucket verification: all 7 buckets from test-spec.json
+test "spec: downsample buckets map to correct ms values" {
+    const Expected = struct { param: []const u8, ms: i64 };
+    const buckets = [_]Expected{
+        .{ .param = "5m", .ms = 300000 },
+        .{ .param = "10m", .ms = 600000 },
+        .{ .param = "15m", .ms = 900000 },
+        .{ .param = "30m", .ms = 1800000 },
+        .{ .param = "1h", .ms = 3600000 },
+        .{ .param = "1d", .ms = 86400000 },
+        .{ .param = "1w", .ms = 604800000 },
+    };
+
+    // Load and parse the config JSON directly (same path resolution as config.zig)
+    const allocator = testing.allocator;
+    const content = std.fs.cwd().readFileAlloc(allocator, "../airgradientz.json", 1_048_576) catch |e| {
+        std.debug.print("Failed to read config: {}\n", .{e});
+        return error.TestSetup;
+    };
+    defer allocator.free(content);
+
+    const parsed = try std.json.parseFromSlice(std.json.Value, allocator, content, .{});
+    defer parsed.deinit();
+
+    const ds_obj = parsed.value.object.get("downsampleBuckets") orelse return error.TestSetup;
+    try testing.expect(ds_obj == .object);
+
+    // Verify all 7 buckets exist with correct values
+    for (&buckets) |b| {
+        const val = ds_obj.object.get(b.param) orelse {
+            std.debug.print("Missing bucket: {s}\n", .{b.param});
+            return error.TestUnexpectedResult;
+        };
+        try testing.expect(val == .integer);
+        try testing.expectEqual(b.ms, val.integer);
+    }
+
+    // Verify exactly 7 buckets (no extras)
+    try testing.expectEqual(@as(usize, 7), ds_obj.object.count());
+}
+
+// Query edge cases from test-spec.json
+
+test "spec: from > to returns empty results" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    const fixture = try loadFixtureJson(testing.allocator, "indoorFull");
+    defer testing.allocator.free(fixture);
+    try testParseAndInsert(db, "10.0.0.1", fixture);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    // from=9999999999999, to=1 — reversed range
+    const readings = try queryReadings(alloc, db, .{
+        .device = null,
+        .from = 9_999_999_999_999,
+        .to = 1,
+        .limit = 100,
+    });
+
+    try testing.expectEqual(@as(usize, 0), readings.len);
+}
+
+test "spec: nonexistent device returns empty results" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    const fixture = try loadFixtureJson(testing.allocator, "indoorFull");
+    defer testing.allocator.free(fixture);
+    try testParseAndInsert(db, "10.0.0.1", fixture);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const readings = try queryReadings(alloc, db, .{
+        .device = "nonexistent-serial-xyz",
+        .from = 0,
+        .to = nowMillis() + 1000,
+        .limit = 100,
+    });
+
+    try testing.expectEqual(@as(usize, 0), readings.len);
+}
+
+test "spec: limit=1 returns exactly 1 result" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    const indoor = try loadFixtureJson(testing.allocator, "indoorFull");
+    defer testing.allocator.free(indoor);
+    const outdoor = try loadFixtureJson(testing.allocator, "outdoorFull");
+    defer testing.allocator.free(outdoor);
+    try testParseAndInsert(db, "10.0.0.1", indoor);
+    try testParseAndInsert(db, "10.0.0.2", outdoor);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const readings = try queryReadings(alloc, db, .{
+        .device = null,
+        .from = 0,
+        .to = nowMillis() + 1000,
+        .limit = 1,
+    });
+
+    try testing.expectEqual(@as(usize, 1), readings.len);
+}
+
+test "spec: count with from > to returns zero" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    const fixture = try loadFixtureJson(testing.allocator, "indoorFull");
+    defer testing.allocator.free(fixture);
+    try testParseAndInsert(db, "10.0.0.1", fixture);
+
+    const count = try getFilteredCount(db, 9_999_999_999_999, 1, null);
+    try testing.expectEqual(@as(i64, 0), count);
+}
+
+test "spec: count with nonexistent device returns zero" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    const fixture = try loadFixtureJson(testing.allocator, "indoorFull");
+    defer testing.allocator.free(fixture);
+    try testParseAndInsert(db, "10.0.0.1", fixture);
+
+    const count = try getFilteredCount(db, 0, nowMillis() + 1000, "nonexistent-serial-xyz");
+    try testing.expectEqual(@as(i64, 0), count);
+}
+
+// Response shape tests from test-spec.json
+
+test "spec: reading JSON has all required fields and no raw_json" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    const fixture = try loadFixtureJson(testing.allocator, "indoorFull");
+    defer testing.allocator.free(fixture);
+    try testParseAndInsert(db, "10.0.0.1", fixture);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const readings = try queryReadings(alloc, db, .{
+        .device = null,
+        .from = 0,
+        .to = nowMillis() + 1000,
+        .limit = 100,
+    });
+
+    try testing.expectEqual(@as(usize, 1), readings.len);
+    const json = try readingToJson(alloc, &readings[0]);
+
+    // All required fields from test-spec.json responseShapes.reading.requiredFields
+    const required = [_][]const u8{
+        "id",             "timestamp",      "device_id",        "device_type",
+        "device_ip",      "pm01",           "pm02",             "pm10",
+        "pm02_compensated", "rco2",         "atmp",             "atmp_compensated",
+        "rhum",           "rhum_compensated", "tvoc_index",     "nox_index",
+        "wifi",
+    };
+    for (&required) |field| {
+        if (!json.object.contains(field)) {
+            std.debug.print("Missing required field: {s}\n", .{field});
+            return error.TestUnexpectedResult;
+        }
+    }
+
+    // Forbidden fields from test-spec.json responseShapes.reading.forbiddenFields
+    try testing.expect(!json.object.contains("raw_json"));
+}
+
+test "spec: downsampled reading JSON has all required fields, no raw_json or id" {
+    const db = try testOpenDb();
+    defer closeDb(db);
+
+    const ts_base: i64 = 1_000_000_000_000;
+    try testInsertRaw(db, ts_base, "dev1", 10.0, 400);
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const readings = try queryReadings(alloc, db, .{
+        .device = null,
+        .from = ts_base - 1000,
+        .to = ts_base + 1000,
+        .limit = 100,
+        .downsample_ms = 3_600_000,
+    });
+
+    try testing.expectEqual(@as(usize, 1), readings.len);
+    const json = try readingToJson(alloc, &readings[0]);
+
+    // All required fields from test-spec.json responseShapes.readingDownsampled.requiredFields
+    const required = [_][]const u8{
+        "timestamp",      "device_id",        "device_type",    "device_ip",
+        "pm01",           "pm02",             "pm10",           "pm02_compensated",
+        "rco2",           "atmp",             "atmp_compensated",
+        "rhum",           "rhum_compensated", "tvoc_index",     "nox_index",
+        "wifi",
+    };
+    for (&required) |field| {
+        if (!json.object.contains(field)) {
+            std.debug.print("Missing required field: {s}\n", .{field});
+            return error.TestUnexpectedResult;
+        }
+    }
+
+    // Forbidden fields from test-spec.json responseShapes.readingDownsampled.forbiddenFields
+    try testing.expect(!json.object.contains("raw_json"));
+    try testing.expect(!json.object.contains("id"));
+}
+
+test "spec: device summary JSON has all required fields and no first_seen" {
+    const summary = DeviceSummary{
+        .device_id = "test123",
+        .device_type = "indoor",
+        .device_ip = "10.0.0.1",
+        .last_seen = 1000,
+        .reading_count = 5,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const json = try deviceSummaryToJson(alloc, &summary);
+
+    // All required fields from test-spec.json responseShapes.device.requiredFields
+    const required = [_][]const u8{
+        "device_id", "device_type", "device_ip", "last_seen", "reading_count",
+    };
+    for (&required) |field| {
+        if (!json.object.contains(field)) {
+            std.debug.print("Missing required field: {s}\n", .{field});
+            return error.TestUnexpectedResult;
+        }
+    }
+
+    // Forbidden fields from test-spec.json responseShapes.device.forbiddenFields
+    try testing.expect(!json.object.contains("first_seen"));
+}
+
+test "spec: device summary JSON field count matches required exactly" {
+    const summary = DeviceSummary{
+        .device_id = "abc",
+        .device_type = "outdoor",
+        .device_ip = "10.0.0.2",
+        .last_seen = 2000,
+        .reading_count = 3,
+    };
+
+    var arena = std.heap.ArenaAllocator.init(testing.allocator);
+    defer arena.deinit();
+    const alloc = arena.allocator();
+
+    const json = try deviceSummaryToJson(alloc, &summary);
+
+    // Exactly 5 fields: device_id, device_type, device_ip, last_seen, reading_count
+    try testing.expectEqual(@as(usize, 5), json.object.count());
+}
