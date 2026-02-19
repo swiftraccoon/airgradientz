@@ -1564,6 +1564,246 @@ static void test_query_param_single(void)
 }
 
 /* ================================================================
+ * Response shape tests (test-spec.json aligned)
+ * ================================================================ */
+
+static void test_reading_json_required_fields(void)
+{
+    /* A normal reading (id>0) serialized to JSON must contain all required
+       fields from test-spec.json and must NOT contain "raw_json". */
+    Reading r;
+    memset(&r, 0, sizeof(r));
+    r.id = 1;
+    r.timestamp = 1700000000000LL;
+    r.device_id = strdup("84fce602549c");
+    r.device_type = strdup("indoor");
+    r.device_ip = strdup("192.168.1.1");
+    r.has_pm01 = true;  r.pm01 = 5.0;
+    r.has_pm02 = true;  r.pm02 = 10.0;
+    r.has_pm10 = true;  r.pm10 = 15.0;
+    r.has_pm02_compensated = true; r.pm02_compensated = 8.0;
+    r.has_rco2 = true;  r.rco2 = 450;
+    r.has_atmp = true;  r.atmp = 22.5;
+    r.has_atmp_compensated = true; r.atmp_compensated = 21.0;
+    r.has_rhum = true;  r.rhum = 55.0;
+    r.has_rhum_compensated = true; r.rhum_compensated = 53.0;
+    r.has_tvoc_index = true; r.tvoc_index = 100.0;
+    r.has_nox_index = true;  r.nox_index = 1.0;
+    r.has_wifi = true;  r.wifi = -51;
+
+    JsonValue *json = reading_to_json(&r);
+    ASSERT_NOT_NULL(json);
+
+    char *s = serialize(json);
+    ASSERT_NOT_NULL(s);
+
+    /* All required fields from test-spec.json reading.requiredFields */
+    ASSERT(strstr(s, "\"id\"") != NULL);
+    ASSERT(strstr(s, "\"timestamp\"") != NULL);
+    ASSERT(strstr(s, "\"device_id\"") != NULL);
+    ASSERT(strstr(s, "\"device_type\"") != NULL);
+    ASSERT(strstr(s, "\"device_ip\"") != NULL);
+    ASSERT(strstr(s, "\"pm01\"") != NULL);
+    ASSERT(strstr(s, "\"pm02\"") != NULL);
+    ASSERT(strstr(s, "\"pm10\"") != NULL);
+    ASSERT(strstr(s, "\"pm02_compensated\"") != NULL);
+    ASSERT(strstr(s, "\"rco2\"") != NULL);
+    ASSERT(strstr(s, "\"atmp\"") != NULL);
+    ASSERT(strstr(s, "\"atmp_compensated\"") != NULL);
+    ASSERT(strstr(s, "\"rhum\"") != NULL);
+    ASSERT(strstr(s, "\"rhum_compensated\"") != NULL);
+    ASSERT(strstr(s, "\"tvoc_index\"") != NULL);
+    ASSERT(strstr(s, "\"nox_index\"") != NULL);
+    ASSERT(strstr(s, "\"wifi\"") != NULL);
+
+    /* Forbidden field: raw_json must NOT appear */
+    ASSERT(strstr(s, "\"raw_json\"") == NULL);
+
+    free(s);
+    json_free(json);
+    free(r.device_id);
+    free(r.device_type);
+    free(r.device_ip);
+}
+
+static void test_downsampled_json_no_id(void)
+{
+    /* A downsampled reading (id=0) must NOT contain "id" in JSON,
+       per test-spec.json readingDownsampled.forbiddenFields. */
+    Reading r;
+    memset(&r, 0, sizeof(r));
+    r.id = 0;
+    r.timestamp = 1700000000000LL;
+    r.device_id = strdup("84fce602549c");
+    r.device_type = strdup("indoor");
+    r.device_ip = strdup("192.168.1.1");
+    r.has_pm01 = true;  r.pm01 = 5.0;
+    r.has_pm02 = true;  r.pm02 = 10.0;
+    r.has_pm10 = true;  r.pm10 = 15.0;
+    r.has_pm02_compensated = true; r.pm02_compensated = 8.0;
+    r.has_rco2 = true;  r.rco2 = 450;
+    r.has_atmp = true;  r.atmp = 22.5;
+    r.has_atmp_compensated = true; r.atmp_compensated = 21.0;
+    r.has_rhum = true;  r.rhum = 55.0;
+    r.has_rhum_compensated = true; r.rhum_compensated = 53.0;
+    r.has_tvoc_index = true; r.tvoc_index = 100.0;
+    r.has_nox_index = true;  r.nox_index = 1.0;
+    r.has_wifi = true;  r.wifi = -51;
+
+    JsonValue *json = reading_to_json(&r);
+    ASSERT_NOT_NULL(json);
+
+    char *s = serialize(json);
+    ASSERT_NOT_NULL(s);
+
+    /* id must NOT be present */
+    ASSERT(strstr(s, "\"id\"") == NULL);
+    /* raw_json must NOT be present */
+    ASSERT(strstr(s, "\"raw_json\"") == NULL);
+
+    /* But all other required fields from readingDownsampled.requiredFields must be present */
+    ASSERT(strstr(s, "\"timestamp\"") != NULL);
+    ASSERT(strstr(s, "\"device_id\"") != NULL);
+    ASSERT(strstr(s, "\"device_type\"") != NULL);
+    ASSERT(strstr(s, "\"device_ip\"") != NULL);
+    ASSERT(strstr(s, "\"pm01\"") != NULL);
+    ASSERT(strstr(s, "\"pm02\"") != NULL);
+    ASSERT(strstr(s, "\"pm10\"") != NULL);
+    ASSERT(strstr(s, "\"pm02_compensated\"") != NULL);
+    ASSERT(strstr(s, "\"rco2\"") != NULL);
+    ASSERT(strstr(s, "\"atmp\"") != NULL);
+    ASSERT(strstr(s, "\"atmp_compensated\"") != NULL);
+    ASSERT(strstr(s, "\"rhum\"") != NULL);
+    ASSERT(strstr(s, "\"rhum_compensated\"") != NULL);
+    ASSERT(strstr(s, "\"tvoc_index\"") != NULL);
+    ASSERT(strstr(s, "\"nox_index\"") != NULL);
+    ASSERT(strstr(s, "\"wifi\"") != NULL);
+
+    free(s);
+    json_free(json);
+    free(r.device_id);
+    free(r.device_type);
+    free(r.device_ip);
+}
+
+static void test_device_json_no_first_seen(void)
+{
+    /* Device summary JSON must NOT contain "first_seen" and must contain
+       all required fields from test-spec.json device.requiredFields. */
+    DeviceSummary d;
+    memset(&d, 0, sizeof(d));
+    d.device_id = strdup("84fce602549c");
+    d.device_type = strdup("indoor");
+    d.device_ip = strdup("192.168.1.1");
+    d.last_seen = 1700000000000LL;
+    d.reading_count = 42;
+
+    JsonValue *json = device_summary_to_json(&d);
+    ASSERT_NOT_NULL(json);
+
+    char *s = serialize(json);
+    ASSERT_NOT_NULL(s);
+
+    /* Forbidden: first_seen */
+    ASSERT(strstr(s, "\"first_seen\"") == NULL);
+
+    /* Required fields */
+    ASSERT(strstr(s, "\"device_id\"") != NULL);
+    ASSERT(strstr(s, "\"device_type\"") != NULL);
+    ASSERT(strstr(s, "\"device_ip\"") != NULL);
+    ASSERT(strstr(s, "\"last_seen\"") != NULL);
+    ASSERT(strstr(s, "\"reading_count\"") != NULL);
+
+    free(s);
+    json_free(json);
+    free(d.device_id);
+    free(d.device_type);
+    free(d.device_ip);
+}
+
+/* ================================================================
+ * Query edge case tests (test-spec.json aligned)
+ * ================================================================ */
+
+static void test_query_from_greater_than_to(void)
+{
+    /* from > to should return 0 results */
+    sqlite3 *db = setup_test_db();
+    ASSERT_NOT_NULL(db);
+
+    JsonValue *data = indoor_fixture();
+    ASSERT_NOT_NULL(data);
+    db_insert_reading(db, "192.168.1.1", data);
+    json_free(data);
+
+    ReadingQuery q = { .device = NULL, .from = 9999999999999LL, .to = 1, .limit = 0 };
+    ReadingList rl;
+    ASSERT_INT_EQ(db_query_readings(db, &q, &rl), 0);
+    ASSERT_INT_EQ(rl.count, 0);
+    reading_list_free(&rl);
+    sqlite3_close(db);
+}
+
+static void test_query_nonexistent_device(void)
+{
+    /* Querying for a device that doesn't exist should return 0 results */
+    sqlite3 *db = setup_test_db();
+    ASSERT_NOT_NULL(db);
+
+    JsonValue *data = indoor_fixture();
+    ASSERT_NOT_NULL(data);
+    db_insert_reading(db, "192.168.1.1", data);
+    json_free(data);
+
+    ReadingQuery q = { .device = "nonexistent-xyz", .from = 0, .to = INT64_MAX, .limit = 0 };
+    ReadingList rl;
+    ASSERT_INT_EQ(db_query_readings(db, &q, &rl), 0);
+    ASSERT_INT_EQ(rl.count, 0);
+    reading_list_free(&rl);
+    sqlite3_close(db);
+}
+
+static void test_query_limit_one(void)
+{
+    /* limit=1 should return exactly 1 result when 2 exist */
+    sqlite3 *db = setup_test_db();
+    ASSERT_NOT_NULL(db);
+
+    JsonValue *d1 = indoor_fixture();
+    JsonValue *d2 = outdoor_fixture();
+    ASSERT_NOT_NULL(d1);
+    ASSERT_NOT_NULL(d2);
+    db_insert_reading(db, "192.168.1.1", d1);
+    db_insert_reading(db, "192.168.1.2", d2);
+    json_free(d1);
+    json_free(d2);
+
+    ReadingQuery q = { .device = NULL, .from = 0, .to = INT64_MAX, .limit = 1 };
+    ReadingList rl;
+    ASSERT_INT_EQ(db_query_readings(db, &q, &rl), 0);
+    ASSERT_INT_EQ(rl.count, 1);
+    reading_list_free(&rl);
+    sqlite3_close(db);
+}
+
+static void test_count_nonexistent_device(void)
+{
+    /* db_get_filtered_count with a nonexistent device should return 0 */
+    sqlite3 *db = setup_test_db();
+    ASSERT_NOT_NULL(db);
+
+    JsonValue *data = indoor_fixture();
+    ASSERT_NOT_NULL(data);
+    db_insert_reading(db, "192.168.1.1", data);
+    json_free(data);
+
+    int64_t count = db_get_filtered_count(db, 0, INT64_MAX, "nonexistent-xyz");
+    ASSERT_INT_EQ(count, 0);
+
+    sqlite3_close(db);
+}
+
+/* ================================================================
  * Main
  * ================================================================ */
 
@@ -1665,6 +1905,17 @@ int main(void)
     RUN_TEST(test_query_param_no_value);
     RUN_TEST(test_query_param_first_and_last);
     RUN_TEST(test_query_param_single);
+
+    fprintf(stderr, "\n=== Response shape tests (test-spec.json) ===\n");
+    RUN_TEST(test_reading_json_required_fields);
+    RUN_TEST(test_downsampled_json_no_id);
+    RUN_TEST(test_device_json_no_first_seen);
+
+    fprintf(stderr, "\n=== Query edge case tests (test-spec.json) ===\n");
+    RUN_TEST(test_query_from_greater_than_to);
+    RUN_TEST(test_query_nonexistent_device);
+    RUN_TEST(test_query_limit_one);
+    RUN_TEST(test_count_nonexistent_device);
 
     fprintf(stderr, "\n========================================\n");
     fprintf(stderr, "  %d passed, %d failed, %d total\n",
