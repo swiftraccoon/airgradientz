@@ -678,6 +678,144 @@ assert_contains "devices query has device_ip" "${asm_devices}" "device_ip"
 echo ""
 
 # ═══════════════════════════════════════════════════════════════════
+# TEST-SPEC: DOWNSAMPLE BUCKET VERIFICATION
+# ═══════════════════════════════════════════════════════════════════
+
+echo "--- test-spec: downsample bucket verification ---"
+
+# All 7 valid downsample bucket values must return 200
+for bucket in 5m 10m 15m 30m 1h 1d 1w; do
+    code=$(curl -s -o /dev/null -w "%{http_code}" "${BASE}/api/readings?downsample=${bucket}" 2>/dev/null) || code="000"
+    assert_eq "downsample=${bucket} returns 200" "200" "${code}"
+done
+
+# Invalid bucket returns 400
+code=$(curl -s -o /dev/null -w "%{http_code}" "${BASE}/api/readings?downsample=2h" 2>/dev/null) || code="000"
+assert_eq "downsample=2h (invalid) returns 400" "400" "${code}"
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════
+# TEST-SPEC: QUERY EDGE CASES
+# ═══════════════════════════════════════════════════════════════════
+
+echo "--- test-spec: query edge cases ---"
+
+# from > to returns empty array
+body=$(curl -sf "${BASE}/api/readings?from=9999999999999&to=1")
+assert_json_length "from > to returns empty array" "${body}" "0"
+
+# nonexistent device returns empty array
+body=$(curl -sf "${BASE}/api/readings?device=nonexistent-serial-xyz")
+assert_json_length "nonexistent device returns empty array" "${body}" "0"
+
+# limit=1 returns exactly 1 result
+body=$(curl -sf "${BASE}/api/readings?limit=1")
+assert_json_length "limit=1 returns exactly 1" "${body}" "1"
+
+# count with from > to returns zero
+body=$(curl -sf "${BASE}/api/readings/count?from=9999999999999&to=1")
+count_val=$(jq '.count' <<< "${body}")
+assert_eq "count from > to returns 0" "0" "${count_val}"
+
+# count with nonexistent device returns zero
+body=$(curl -sf "${BASE}/api/readings/count?device=nonexistent-serial-xyz")
+count_val=$(jq '.count' <<< "${body}")
+assert_eq "count nonexistent device returns 0" "0" "${count_val}"
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════
+# TEST-SPEC: RESPONSE SHAPE VALIDATION
+# ═══════════════════════════════════════════════════════════════════
+
+echo "--- test-spec: response shape validation ---"
+
+# Readings response must NOT contain "raw_json" field
+body=$(curl -sf "${BASE}/api/readings?limit=1")
+count_items=$(jq 'length' <<< "${body}")
+if (( count_items > 0 )); then
+    has_raw_json=$(jq '.[0] | has("raw_json")' <<< "${body}")
+    assert_eq "readings response has no raw_json" "false" "${has_raw_json}"
+
+    # Readings must have required fields
+    for field in id timestamp device_id device_type device_ip pm01 pm02 pm10 pm02_compensated rco2 atmp atmp_compensated rhum rhum_compensated tvoc_index nox_index wifi; do
+        has_field=$(jq ".[0] | has(\"${field}\")" <<< "${body}")
+        assert_eq "readings has required field '${field}'" "true" "${has_field}"
+    done
+else
+    FAIL=$(( FAIL + 1 ))
+    ERRORS+=("FAIL: readings should have data for shape validation")
+    echo "  FAIL: readings should have data" >&2
+fi
+
+# Downsampled response must NOT contain "raw_json" or "id"
+body=$(curl -sf "${BASE}/api/readings?downsample=1h")
+ds_items=$(jq 'length' <<< "${body}")
+if (( ds_items > 0 )); then
+    has_raw_json=$(jq '.[0] | has("raw_json")' <<< "${body}")
+    assert_eq "downsampled response has no raw_json" "false" "${has_raw_json}"
+    has_id=$(jq '.[0] | has("id")' <<< "${body}")
+    assert_eq "downsampled response has no id" "false" "${has_id}"
+else
+    FAIL=$(( FAIL + 1 ))
+    ERRORS+=("FAIL: downsampled readings should have data for shape validation")
+    echo "  FAIL: downsampled should have data" >&2
+fi
+
+# Devices response must NOT contain "first_seen"
+body=$(curl -sf "${BASE}/api/devices")
+dev_items=$(jq 'length' <<< "${body}")
+if (( dev_items > 0 )); then
+    has_first_seen=$(jq '.[0] | has("first_seen")' <<< "${body}")
+    assert_eq "devices response has no first_seen" "false" "${has_first_seen}"
+
+    # Devices must have required fields
+    for field in device_id device_type device_ip last_seen reading_count; do
+        has_field=$(jq ".[0] | has(\"${field}\")" <<< "${body}")
+        assert_eq "devices has required field '${field}'" "true" "${has_field}"
+    done
+else
+    FAIL=$(( FAIL + 1 ))
+    ERRORS+=("FAIL: devices should have data for shape validation")
+    echo "  FAIL: devices should have data" >&2
+fi
+
+# Count response has exactly {"count": N} — no extra fields
+body=$(curl -sf "${BASE}/api/readings/count")
+count_keys=$(jq -c 'keys' <<< "${body}")
+assert_eq "count response has exactly {\"count\"} key" '["count"]' "${count_keys}"
+
+# Config response shape
+body=$(curl -sf "${BASE}/api/config")
+for field in pollIntervalMs downsampleBuckets devices; do
+    has_field=$(jq "has(\"${field}\")" <<< "${body}")
+    assert_eq "config has required field '${field}'" "true" "${has_field}"
+done
+has_forbidden=$(jq 'has("downsampleThreshold")' <<< "${body}")
+assert_eq "config has no downsampleThreshold" "false" "${has_forbidden}"
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════
+# TEST-SPEC: SECURITY
+# ═══════════════════════════════════════════════════════════════════
+
+echo "--- test-spec: security ---"
+
+# Path traversal returns 403 or 404 (ASM impl returns 404 for path traversal)
+assert_http_status "path traversal /../../../etc/passwd" "${BASE}/../../../etc/passwd" "GET" "404"
+assert_http_status "encoded path traversal /%2e%2e/%2e%2e/etc/passwd" "${BASE}/%2e%2e/%2e%2e/etc/passwd" "GET" "404"
+
+# Unknown API path returns 404
+assert_http_status "unknown API /api/nonexistent" "${BASE}/api/nonexistent" "GET" "404"
+
+# POST on readings returns 405
+assert_http_status "POST /api/readings returns 405" "${BASE}/api/readings" "POST" "405"
+
+echo ""
+
+# ═══════════════════════════════════════════════════════════════════
 # SUMMARY
 # ═══════════════════════════════════════════════════════════════════
 
