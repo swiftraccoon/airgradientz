@@ -59,6 +59,17 @@ impl HttpResponse {
         resp
     }
 
+    pub(crate) fn forbidden() -> Self {
+        let body = b"{\"error\":\"Forbidden\"}".to_vec();
+        let mut resp = Self::new(403, "Forbidden");
+        resp.headers
+            .push(("Content-Type".to_string(), "application/json".to_string()));
+        resp.headers
+            .push(("Content-Length".to_string(), body.len().to_string()));
+        resp.body = body;
+        resp
+    }
+
     pub(crate) fn not_found() -> Self {
         let body = b"{\"error\":\"Not found\"}".to_vec();
         let mut resp = Self::new(404, "Not Found");

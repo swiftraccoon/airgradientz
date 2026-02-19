@@ -34,14 +34,10 @@ pub fn handleReadings(allocator: std.mem.Allocator, state: *http_server.ServerSt
         }
     }
 
-    // Validate time range
-    const safe_from = if (from <= to) from else default_from;
-    const safe_to = if (to >= safe_from) to else now;
-
     const q = db_mod.ReadingQuery{
         .device = device orelse "all",
-        .from = safe_from,
-        .to = safe_to,
+        .from = from,
+        .to = to,
         .limit = effective_limit,
         .downsample_ms = downsample_ms,
     };

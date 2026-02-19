@@ -18,6 +18,7 @@ extern sql_downsample_json, sql_ds_group_by
 extern sql_count_filtered, sql_count_where_ts, sql_count_and_device
 extern sql_latest_json, sql_devices_json, sql_count_readings, sql_checkpoint
 extern log_db_opened
+extern str_all
 extern MAX_QUERY_SIZE
 
 section .text
@@ -351,10 +352,16 @@ db_get_readings:
     add ebx, eax
 
     ; Add device filter if specified (parameterized — just appends " AND device_id = ?")
+    ; "all" means no filter (same as NULL)
     test r14, r14
     jz .gr_add_order
     cmp byte [r14], 0
     je .gr_clear_device
+    mov rdi, r14
+    lea rsi, [str_all]
+    call strcmp wrt ..plt
+    test eax, eax
+    jz .gr_clear_device
 
     lea rdi, [rsp + rbx]
     mov esi, 4096
@@ -372,6 +379,11 @@ db_get_readings:
     jz .gr_add_order
     cmp byte [r14], 0
     je .gr_clear_device
+    mov rdi, r14
+    lea rsi, [str_all]
+    call strcmp wrt ..plt
+    test eax, eax
+    jz .gr_clear_device
 
     lea rdi, [rsp + rbx]
     mov esi, 4096
@@ -468,11 +480,16 @@ db_get_readings_downsampled:
     call snprintf wrt ..plt
     add ebx, eax
 
-    ; Add device filter if specified
+    ; Add device filter if specified ("all" = no filter)
     test r14, r14
     jz .grd_add_group
     cmp byte [r14], 0
     je .grd_clear_device
+    mov rdi, r14
+    lea rsi, [str_all]
+    call strcmp wrt ..plt
+    test eax, eax
+    jz .grd_clear_device
 
     lea rdi, [rsp + rbx]
     mov esi, 4096
@@ -560,11 +577,16 @@ db_get_filtered_count:
     call snprintf wrt ..plt
     add ebx, eax
 
-    ; Add device filter if specified
+    ; Add device filter if specified ("all" = no filter)
     test r14, r14
     jz .gfc_finalize
     cmp byte [r14], 0
     je .gfc_clear_device
+    mov rdi, r14
+    lea rsi, [str_all]
+    call strcmp wrt ..plt
+    test eax, eax
+    jz .gfc_clear_device
 
     lea rdi, [rsp + rbx]
     mov esi, 4096

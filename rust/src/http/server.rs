@@ -58,12 +58,12 @@ fn serve_static(req_path: &str) -> HttpResponse {
 
     // Check for path traversal in decoded path
     if decoded.contains("..") {
-        return HttpResponse::not_found();
+        return HttpResponse::forbidden();
     }
 
     // Reject control characters (0x00-0x1F, 0x7F)
     if decoded.bytes().any(|b| b < 0x20 || b == 0x7f) {
-        return HttpResponse::not_found();
+        return HttpResponse::forbidden();
     }
 
     let relative = decoded.trim_start_matches('/');
@@ -81,7 +81,7 @@ fn serve_static(req_path: &str) -> HttpResponse {
         return HttpResponse::not_found();
     };
     if !canonical.starts_with(&public_canonical) {
-        return HttpResponse::not_found();
+        return HttpResponse::forbidden();
     }
 
     let Ok(meta) = fs::metadata(&canonical) else {

@@ -189,7 +189,7 @@ handle_static() {
 
     # Reject paths containing ..
     if [[ "${decoded_path}" == *'..'* ]]; then
-        send_error "404 Not Found" "Not found"
+        send_error "403 Forbidden" "Forbidden"
         return
     fi
 

@@ -7,6 +7,7 @@ extern content_type_for
 
 extern str_public_dir, str_index_html, str_dotdot
 extern http_200_file_hdr, http_404_response, http_404_response_len
+extern http_403_response, http_403_response_len
 extern fmt_path_join
 extern O_RDONLY
 
@@ -37,7 +38,7 @@ serve_static_file:
     lea rsi, [str_dotdot]
     call strstr wrt ..plt
     test rax, rax
-    jnz .ssf_404
+    jnz .ssf_403
 
     ; Build filesystem path: "public" + url_path
     ; If path is "/" → "public/index.html"
@@ -93,7 +94,7 @@ serve_static_file:
     extern strncmp
     call strncmp wrt ..plt
     test eax, eax
-    jnz .ssf_404            ; path escapes public dir
+    jnz .ssf_403            ; path escapes public dir
 
     ; stat the file to get size
     lea rdi, [rsp + 512]    ; resolved path
@@ -175,6 +176,20 @@ serve_static_file:
 .ssf_close_fail:
     mov edi, r12d
     call close wrt ..plt
+
+.ssf_403:
+    ; Return 403 (path traversal)
+    mov rdi, http_403_response_len + 1
+    call malloc wrt ..plt
+    test rax, rax
+    jz .ssf_null
+    mov [r13], rax
+    mov rdi, rax
+    lea rsi, [http_403_response]
+    mov rdx, http_403_response_len
+    call memcpy wrt ..plt
+    mov qword [r14], http_403_response_len
+    jmp .ssf_done
 
 .ssf_404:
     ; Return 404

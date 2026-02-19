@@ -248,7 +248,7 @@ proc buildStaticResponse(reqPath: string): string =
   # Path traversal check on decoded path
   let decoded = urlDecode(reqPath)
   if ".." in decoded:
-    return errorResponse(404, "Not Found", "Not found")
+    return errorResponse(403, "Forbidden", "Forbidden")
 
   var relative = decoded
   while relative.len > 0 and relative[0] == '/':

@@ -58,6 +58,15 @@ struct HttpResponse {
         return r;
     }
 
+    static HttpResponse forbidden() {
+        enum bodyStr = `{"error":"Forbidden"}`;
+        auto r = make(403, "Forbidden");
+        r.headers ~= Header("Content-Type", "application/json");
+        r.headers ~= Header("Content-Length", bodyStr.length.to!string);
+        r.body_ = cast(const(ubyte)[]) bodyStr;
+        return r;
+    }
+
     static HttpResponse notFound() {
         enum bodyStr = `{"error":"Not found"}`;
         auto r = make(404, "Not Found");

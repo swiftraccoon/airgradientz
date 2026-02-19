@@ -11,7 +11,7 @@ import Control.Concurrent (forkFinally)
 import Control.Concurrent.MVar (MVar, withMVar)
 import Control.Exception (SomeException, bracket, try)
 import Control.Monad (when, void)
-import Data.Char (toLower, ord)
+import Data.Char (toLower, ord, digitToInt, isHexDigit)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Data.List (isPrefixOf)
@@ -284,9 +284,17 @@ handleStats conn dbMVar cfg pollerH stats = do
         ]
   sendJSON conn (Aeson.encode body)
 
+urlDecodePath :: String -> String
+urlDecodePath [] = []
+urlDecodePath ('%':h:l:rest)
+  | isHexDigit h && isHexDigit l =
+      toEnum (digitToInt h * 16 + digitToInt l) : urlDecodePath rest
+urlDecodePath (c:rest) = c : urlDecodePath rest
+
 serveStatic :: NS.Socket -> String -> IO ()
 serveStatic conn reqPath = do
-  if not (isValidStaticPath reqPath)
+  let decoded = urlDecodePath reqPath
+  if not (isValidStaticPath decoded)
     then sendErrorResponse conn 403 "Forbidden"
     else do
       let relative = dropWhile (== '/') reqPath

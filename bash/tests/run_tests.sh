@@ -525,15 +525,15 @@ assert_eq "missing file returns 404" "404" "${status}"
 # TestPathTraversal
 response=$(do_handler_request GET "/../../etc/passwd")
 status=$(get_status_code "${response}")
-assert_eq "dotdot returns 404" "404" "${status}"
+assert_eq "dotdot returns 403" "403" "${status}"
 
 response=$(do_handler_request GET "/%2e%2e/etc/passwd")
 status=$(get_status_code "${response}")
-assert_eq "encoded dotdot returns 404" "404" "${status}"
+assert_eq "encoded dotdot returns 403" "403" "${status}"
 
 response=$(do_handler_request GET "/foo/../../../etc/passwd")
 status=$(get_status_code "${response}")
-assert_eq "dotdot in middle returns 404" "404" "${status}"
+assert_eq "dotdot in middle returns 403" "403" "${status}"
 
 # TestRawJSONNotInAPIResponse
 response=$(do_handler_request GET "/api/readings?limit=1")

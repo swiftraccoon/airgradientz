@@ -379,6 +379,12 @@ defmodule Airgradientz.DB do
     end
   end
 
+  # SQLite REAL columns return floats even for whole numbers (1.0 instead of 1).
+  # Convert whole-number floats to integers to match the canonical JSON output.
+  defp maybe_int(nil), do: nil
+  defp maybe_int(v) when is_float(v) and trunc(v) == v, do: trunc(v)
+  defp maybe_int(v), do: v
+
   defp row_to_reading([id, ts, dev_id, dev_type, dev_ip | rest]) do
     [pm01, pm02, pm10, pm02c, rco2, atmp, atmpc, rhum, rhumc, tvoc, nox, wifi] = rest
 
@@ -388,17 +394,17 @@ defmodule Airgradientz.DB do
       device_id: dev_id,
       device_type: dev_type,
       device_ip: dev_ip,
-      pm01: pm01,
-      pm02: pm02,
-      pm10: pm10,
-      pm02_compensated: pm02c,
+      pm01: maybe_int(pm01),
+      pm02: maybe_int(pm02),
+      pm10: maybe_int(pm10),
+      pm02_compensated: maybe_int(pm02c),
       rco2: rco2,
-      atmp: atmp,
-      atmp_compensated: atmpc,
-      rhum: rhum,
-      rhum_compensated: rhumc,
-      tvoc_index: tvoc,
-      nox_index: nox,
+      atmp: maybe_int(atmp),
+      atmp_compensated: maybe_int(atmpc),
+      rhum: maybe_int(rhum),
+      rhum_compensated: maybe_int(rhumc),
+      tvoc_index: maybe_int(tvoc),
+      nox_index: maybe_int(nox),
       wifi: wifi
     }
   end
@@ -411,17 +417,17 @@ defmodule Airgradientz.DB do
       device_id: dev_id,
       device_type: dev_type,
       device_ip: dev_ip,
-      pm01: pm01,
-      pm02: pm02,
-      pm10: pm10,
-      pm02_compensated: pm02c,
+      pm01: maybe_int(pm01),
+      pm02: maybe_int(pm02),
+      pm10: maybe_int(pm10),
+      pm02_compensated: maybe_int(pm02c),
       rco2: rco2,
-      atmp: atmp,
-      atmp_compensated: atmpc,
-      rhum: rhum,
-      rhum_compensated: rhumc,
-      tvoc_index: tvoc,
-      nox_index: nox,
+      atmp: maybe_int(atmp),
+      atmp_compensated: maybe_int(atmpc),
+      rhum: maybe_int(rhum),
+      rhum_compensated: maybe_int(rhumc),
+      tvoc_index: maybe_int(tvoc),
+      nox_index: maybe_int(nox),
       wifi: wifi
     }
   end

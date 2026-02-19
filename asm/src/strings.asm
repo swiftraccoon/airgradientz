@@ -40,15 +40,25 @@ sql_insert_reading:
     db `?,?,?,?,?,`
     db `?,?,?,?);`, 0
 
+; IIF(col=CAST(col AS INTEGER),CAST(col AS INTEGER),col) converts whole-number
+; floats to integers — e.g. 1.0 → 1, 20.78 → 20.78, NULL → NULL
 global sql_readings_json
 sql_readings_json:
     db `SELECT COALESCE(json_group_array(json_object(`
     db `'id',id,'timestamp',timestamp,`
     db `'device_id',device_id,'device_type',device_type,'device_ip',device_ip,`
-    db `'pm01',pm01,'pm02',pm02,'pm10',pm10,'pm02_compensated',pm02_compensated,`
-    db `'rco2',rco2,'atmp',atmp,'atmp_compensated',atmp_compensated,`
-    db `'rhum',rhum,'rhum_compensated',rhum_compensated,`
-    db `'tvoc_index',tvoc_index,'nox_index',nox_index,'wifi',wifi`
+    db `'pm01',IIF(pm01=CAST(pm01 AS INTEGER),CAST(pm01 AS INTEGER),pm01),`
+    db `'pm02',IIF(pm02=CAST(pm02 AS INTEGER),CAST(pm02 AS INTEGER),pm02),`
+    db `'pm10',IIF(pm10=CAST(pm10 AS INTEGER),CAST(pm10 AS INTEGER),pm10),`
+    db `'pm02_compensated',IIF(pm02_compensated=CAST(pm02_compensated AS INTEGER),CAST(pm02_compensated AS INTEGER),pm02_compensated),`
+    db `'rco2',rco2,`
+    db `'atmp',IIF(atmp=CAST(atmp AS INTEGER),CAST(atmp AS INTEGER),atmp),`
+    db `'atmp_compensated',IIF(atmp_compensated=CAST(atmp_compensated AS INTEGER),CAST(atmp_compensated AS INTEGER),atmp_compensated),`
+    db `'rhum',IIF(rhum=CAST(rhum AS INTEGER),CAST(rhum AS INTEGER),rhum),`
+    db `'rhum_compensated',IIF(rhum_compensated=CAST(rhum_compensated AS INTEGER),CAST(rhum_compensated AS INTEGER),rhum_compensated),`
+    db `'tvoc_index',IIF(tvoc_index=CAST(tvoc_index AS INTEGER),CAST(tvoc_index AS INTEGER),tvoc_index),`
+    db `'nox_index',IIF(nox_index=CAST(nox_index AS INTEGER),CAST(nox_index AS INTEGER),nox_index),`
+    db `'wifi',wifi`
     db `)),'[]') FROM (SELECT * FROM readings`, 0
 
 ; Suffix fragments for building query
@@ -77,10 +87,18 @@ sql_latest_json:
     db `SELECT COALESCE(json_group_array(json_object(`
     db `'id',id,'timestamp',timestamp,`
     db `'device_id',device_id,'device_type',device_type,'device_ip',device_ip,`
-    db `'pm01',pm01,'pm02',pm02,'pm10',pm10,'pm02_compensated',pm02_compensated,`
-    db `'rco2',rco2,'atmp',atmp,'atmp_compensated',atmp_compensated,`
-    db `'rhum',rhum,'rhum_compensated',rhum_compensated,`
-    db `'tvoc_index',tvoc_index,'nox_index',nox_index,'wifi',wifi`
+    db `'pm01',IIF(pm01=CAST(pm01 AS INTEGER),CAST(pm01 AS INTEGER),pm01),`
+    db `'pm02',IIF(pm02=CAST(pm02 AS INTEGER),CAST(pm02 AS INTEGER),pm02),`
+    db `'pm10',IIF(pm10=CAST(pm10 AS INTEGER),CAST(pm10 AS INTEGER),pm10),`
+    db `'pm02_compensated',IIF(pm02_compensated=CAST(pm02_compensated AS INTEGER),CAST(pm02_compensated AS INTEGER),pm02_compensated),`
+    db `'rco2',rco2,`
+    db `'atmp',IIF(atmp=CAST(atmp AS INTEGER),CAST(atmp AS INTEGER),atmp),`
+    db `'atmp_compensated',IIF(atmp_compensated=CAST(atmp_compensated AS INTEGER),CAST(atmp_compensated AS INTEGER),atmp_compensated),`
+    db `'rhum',IIF(rhum=CAST(rhum AS INTEGER),CAST(rhum AS INTEGER),rhum),`
+    db `'rhum_compensated',IIF(rhum_compensated=CAST(rhum_compensated AS INTEGER),CAST(rhum_compensated AS INTEGER),rhum_compensated),`
+    db `'tvoc_index',IIF(tvoc_index=CAST(tvoc_index AS INTEGER),CAST(tvoc_index AS INTEGER),tvoc_index),`
+    db `'nox_index',IIF(nox_index=CAST(nox_index AS INTEGER),CAST(nox_index AS INTEGER),nox_index),`
+    db `'wifi',wifi`
     db `)),'[]') FROM (`
     db `SELECT r.* FROM readings r `
     db `INNER JOIN (SELECT device_id, MAX(id) AS max_id FROM readings GROUP BY device_id) g `
@@ -101,10 +119,18 @@ sql_downsample_json:
     db `SELECT COALESCE(json_group_array(json_object(`
     db `'timestamp',timestamp,`
     db `'device_id',device_id,'device_type',device_type,'device_ip',device_ip,`
-    db `'pm01',pm01,'pm02',pm02,'pm10',pm10,'pm02_compensated',pm02_compensated,`
-    db `'rco2',rco2,'atmp',atmp,'atmp_compensated',atmp_compensated,`
-    db `'rhum',rhum,'rhum_compensated',rhum_compensated,`
-    db `'tvoc_index',tvoc_index,'nox_index',nox_index,'wifi',wifi`
+    db `'pm01',IIF(pm01=CAST(pm01 AS INTEGER),CAST(pm01 AS INTEGER),pm01),`
+    db `'pm02',IIF(pm02=CAST(pm02 AS INTEGER),CAST(pm02 AS INTEGER),pm02),`
+    db `'pm10',IIF(pm10=CAST(pm10 AS INTEGER),CAST(pm10 AS INTEGER),pm10),`
+    db `'pm02_compensated',IIF(pm02_compensated=CAST(pm02_compensated AS INTEGER),CAST(pm02_compensated AS INTEGER),pm02_compensated),`
+    db `'rco2',rco2,`
+    db `'atmp',IIF(atmp=CAST(atmp AS INTEGER),CAST(atmp AS INTEGER),atmp),`
+    db `'atmp_compensated',IIF(atmp_compensated=CAST(atmp_compensated AS INTEGER),CAST(atmp_compensated AS INTEGER),atmp_compensated),`
+    db `'rhum',IIF(rhum=CAST(rhum AS INTEGER),CAST(rhum AS INTEGER),rhum),`
+    db `'rhum_compensated',IIF(rhum_compensated=CAST(rhum_compensated AS INTEGER),CAST(rhum_compensated AS INTEGER),rhum_compensated),`
+    db `'tvoc_index',IIF(tvoc_index=CAST(tvoc_index AS INTEGER),CAST(tvoc_index AS INTEGER),tvoc_index),`
+    db `'nox_index',IIF(nox_index=CAST(nox_index AS INTEGER),CAST(nox_index AS INTEGER),nox_index),`
+    db `'wifi',wifi`
     db `)),'[]') FROM (SELECT (timestamp / %lld) * %lld AS timestamp,`
     db `device_id,device_type,device_ip,`
     db `AVG(pm01) AS pm01,AVG(pm02) AS pm02,AVG(pm10) AS pm10,`
@@ -162,39 +188,51 @@ http_200_file_hdr:
     db `Connection: close\r\n`
     db `\r\n`, 0
 
-global http_404_response
-http_404_response:
-    db `HTTP/1.1 404 Not Found\r\n`
-    db `Content-Type: text/plain\r\n`
-    db `Content-Length: 9\r\n`
+global http_403_response
+http_403_response:
+    db `HTTP/1.1 403 Forbidden\r\n`
+    db `Content-Type: application/json\r\n`
+    db `Content-Length: 21\r\n`
     db `X-Content-Type-Options: nosniff\r\n`
     db `X-Frame-Options: DENY\r\n`
     db `Connection: close\r\n`
-    db `\r\nNot Found`, 0
+    db `\r\n{"error":"Forbidden"}`, 0
+global http_403_response_len
+http_403_response_len equ $ - http_403_response - 1
+
+global http_404_response
+http_404_response:
+    db `HTTP/1.1 404 Not Found\r\n`
+    db `Content-Type: application/json\r\n`
+    db `Content-Length: 21\r\n`
+    db `X-Content-Type-Options: nosniff\r\n`
+    db `X-Frame-Options: DENY\r\n`
+    db `Connection: close\r\n`
+    db `\r\n{"error":"Not found"}`, 0
 global http_404_response_len
 http_404_response_len equ $ - http_404_response - 1
 
 global http_405_response
 http_405_response:
     db `HTTP/1.1 405 Method Not Allowed\r\n`
-    db `Content-Type: text/plain\r\n`
-    db `Content-Length: 18\r\n`
+    db `Content-Type: application/json\r\n`
+    db `Content-Length: 30\r\n`
     db `X-Content-Type-Options: nosniff\r\n`
     db `X-Frame-Options: DENY\r\n`
     db `Connection: close\r\n`
-    db `\r\nMethod Not Allowed`, 0
+    db `\r\n{"error":"Method not allowed"}`, 0
 global http_405_response_len
 http_405_response_len equ $ - http_405_response - 1
 
 global http_400_response
 http_400_response:
     db `HTTP/1.1 400 Bad Request\r\n`
-    db `Content-Type: text/plain\r\n`
-    db `Content-Length: 11\r\n`
+    db `Content-Type: application/json\r\n`
+    db `Content-Length: 39\r\n`
     db `X-Content-Type-Options: nosniff\r\n`
     db `X-Frame-Options: DENY\r\n`
     db `Connection: close\r\n`
-    db `\r\nBad Request`, 0
+    db `\r\n{"error":"Invalid downsample interval"}`, 0
 global http_400_response_len
 http_400_response_len equ $ - http_400_response - 1
 
@@ -553,6 +591,10 @@ str_param_to:
 global str_param_device
 str_param_device:
     db `device`, 0
+
+global str_all
+str_all:
+    db `all`, 0
 
 global str_param_limit
 str_param_limit:

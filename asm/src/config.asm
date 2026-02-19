@@ -486,24 +486,34 @@ load_config:
     mov [g_ds_bucket_values + rcx*8], rax
 
     ; Advance cursor past the number (find next ',' or '}')
+    ; Must check if '}' comes before ',' to avoid parsing past the object
+    mov rdi, r12
+    mov sil, '}'
+    call strchr wrt ..plt
+    mov rbx, rax                ; rbx = closing brace ptr (or NULL)
+
     mov rdi, r12
     mov sil, ','
     call strchr wrt ..plt
+    ; rax = comma ptr (or NULL), rbx = brace ptr (or NULL)
+
+    test rbx, rbx
+    jz .dsb_try_comma           ; no brace found, try comma
     test rax, rax
-    jz .dsb_try_close
+    jz .dsb_last_entry          ; no comma, brace ends the object
+    cmp rax, rbx
+    jg .dsb_last_entry          ; comma is past brace — this is last entry
+
+.dsb_try_comma:
+    test rax, rax
+    jz .dsb_done                ; no comma and no brace — done
     lea r12, [rax + 1]          ; move past ','
     inc r14d
     jmp .dsb_loop
 
-.dsb_try_close:
-    ; No more commas — find closing '}'
-    mov rdi, r12
-    mov sil, '}'
-    call strchr wrt ..plt
-    test rax, rax
-    jz .dsb_done_inc
-    lea r12, [rax + 1]
-.dsb_done_inc:
+.dsb_last_entry:
+    ; '}' comes before ',' — this is the last entry in the object
+    lea r12, [rbx + 1]          ; move past '}'
     inc r14d
     jmp .dsb_done
 

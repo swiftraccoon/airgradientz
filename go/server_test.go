@@ -297,8 +297,8 @@ func TestStaticPathTraversal(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			rr := doGet(h, tt.path)
-			if rr.Code != 404 {
-				t.Errorf("status = %d, want 404 for path traversal attempt", rr.Code)
+			if rr.Code != 403 {
+				t.Errorf("status = %d, want 403 for path traversal attempt", rr.Code)
 			}
 		})
 	}
@@ -317,8 +317,8 @@ func TestStaticControlChars(t *testing.T) {
 	}
 	rr := httptest.NewRecorder()
 	h.ServeHTTP(rr, req)
-	if rr.Code != 404 {
-		t.Errorf("status = %d, want 404 for control char path", rr.Code)
+	if rr.Code != 403 {
+		t.Errorf("status = %d, want 403 for control char path", rr.Code)
 	}
 }
 

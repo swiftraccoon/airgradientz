@@ -36,11 +36,34 @@ app.use((_req, res, next) => {
 app.locals.startedAt = startedAt;
 app.locals.getRequestsServed = () => requestsServed;
 
+// Reject non-GET methods early (405 Method Not Allowed)
+app.use((req, res, next) => {
+  if (req.method !== 'GET') {
+    return res.status(405).json({ error: 'Method not allowed' });
+  }
+  next();
+});
+
 app.use('/api', apiRouter);
+
+// Path traversal detection (before static file serving)
+app.use((req, res, next) => {
+  const decoded = decodeURIComponent(req.path);
+  if (decoded.includes('..')) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  next();
+});
+
 app.use(express.static(path.join(__dirname, 'public'), {
   maxAge: '10m',
   etag: true,
 }));
+
+// Catch-all 404 for unmatched routes
+app.use((_req, res) => {
+  res.status(404).json({ error: 'Not found' });
+});
 
 // --- Start ---
 const server = app.listen(config.port, () => {

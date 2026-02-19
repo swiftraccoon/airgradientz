@@ -12,7 +12,7 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 
-HEALTH_TIMEOUT=30   # seconds to wait for impl to become ready
+HEALTH_TIMEOUT=60   # seconds to wait for impl to become ready
 HEALTH_INTERVAL=0.5 # seconds between health checks
 POLL_WAIT=20        # seconds to wait for at least one poll cycle
 BASE_PORT=19000     # starting port for impl allocation
@@ -228,7 +228,7 @@ jq -n \
     --argjson ports "${PORTS_JSON}" \
     --arg mock_ip "127.0.0.1:${MOCK_PORT}" \
     '{
-        pollIntervalMs: 10000,
+        pollIntervalMs: 120000,
         fetchTimeoutMs: 5000,
         maxApiRows: 10000,
         downsampleBuckets: {"5m": 300000, "10m": 600000, "15m": 900000, "30m": 1800000, "1h": 3600000, "1d": 86400000, "1w": 604800000},

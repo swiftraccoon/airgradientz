@@ -598,7 +598,7 @@ run_security_status_test() {
     for (( idx=0; idx<IMPL_COUNT; idx++ )); do
         local code
         code="$(curl -s -o /dev/null -w '%{http_code}' --max-time "${CURL_TIMEOUT}" \
-            -X "${method}" "http://localhost:${IMPL_PORTS[${idx}]}${path}" 2>/dev/null)" || code="000"
+            --path-as-is -X "${method}" "http://localhost:${IMPL_PORTS[${idx}]}${path}" 2>/dev/null)" || code="000"
 
         if [[ "${code}" != "${expected_status}" ]]; then
             report_fail "${test_name}" "${IMPL_NAMES[${idx}]}: HTTP ${code}, expected ${expected_status}"

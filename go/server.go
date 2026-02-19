@@ -266,7 +266,7 @@ func (h *handler) serveStatic(w http.ResponseWriter, r *http.Request) {
 	reqPath := r.URL.Path
 
 	if !isValidStaticPath(reqPath) {
-		writeError(w, http.StatusNotFound, "Not found")
+		writeError(w, http.StatusForbidden, "Forbidden")
 		return
 	}
 

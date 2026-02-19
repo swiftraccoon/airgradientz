@@ -44,12 +44,12 @@ private HttpResponse serveStatic(string reqPath) {
 
     // Check for path traversal in decoded path
     if (indexOf(decoded, "..") >= 0)
-        return HttpResponse.notFound();
+        return HttpResponse.forbidden();
 
     // Reject control characters (0x00-0x1F, 0x7F)
     foreach (ch; decoded) {
         if (ch < 0x20 || ch == 0x7F)
-            return HttpResponse.notFound();
+            return HttpResponse.forbidden();
     }
 
     // Strip leading slash

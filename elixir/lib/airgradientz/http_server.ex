@@ -319,6 +319,10 @@ defmodule Airgradientz.HttpServer do
     send_json(socket, stats)
   end
 
+  defp route(socket, "GET", "/api/" <> _rest, _query, _config) do
+    send_json_error(socket, 404, "Not found")
+  end
+
   defp route(socket, "GET", path, _query, _config) do
     serve_static(socket, path)
   end
@@ -369,22 +373,10 @@ defmodule Airgradientz.HttpServer do
             send_response(socket, 200, "OK", content_type, content)
 
           {:error, _reason} ->
-            serve_index_fallback(socket)
+            send_json_error(socket, 404, "Not found")
         end
 
       _not_found ->
-        serve_index_fallback(socket)
-    end
-  end
-
-  defp serve_index_fallback(socket) do
-    index_path = Path.join(public_dir(), "index.html")
-
-    case File.read(index_path) do
-      {:ok, content} ->
-        send_response(socket, 200, "OK", "text/html; charset=utf-8", content)
-
-      {:error, _reason} ->
         send_json_error(socket, 404, "Not found")
     end
   end

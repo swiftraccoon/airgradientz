@@ -8,12 +8,15 @@ import std.typecons : Nullable;
 import d2sqlite3 : Database, Statement, Row;
 
 // Package-level SQL loaded from queries.sql (or hardcoded fallbacks).
-private string loadedQueryCols;
-private string loadedInsertSQL;
-private string loadedLatestSQL;
-private string loadedDevicesSQL;
-private string loadedCountSQL;
-private bool queriesLoaded = false;
+// Must be __gshared because they are written during init on the main thread
+// and read from the poller thread. D module-level variables are thread-local
+// by default — without __gshared the poller would see empty strings.
+private __gshared string loadedQueryCols;
+private __gshared string loadedInsertSQL;
+private __gshared string loadedLatestSQL;
+private __gshared string loadedDevicesSQL;
+private __gshared string loadedCountSQL;
+private __gshared bool queriesLoaded = false;
 
 long nowMillis() {
     import core.time : convert;
