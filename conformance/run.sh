@@ -615,8 +615,6 @@ while [[ ${idx} -lt ${#TESTABLE_IMPLS[@]} ]]; do
     # Start batch servers with staggered startup
     declare -a batch_pid_ports=()
     declare -a batch_compare_args=("${REF_IMPL}:${ref_port}")
-    batch_all_ready=true
-
     for entry in "${BATCH[@]}"; do
         name="$(get_field "${entry}" 1)"
         port="${IMPL_PORT_MAP[${name}]}"
@@ -632,7 +630,6 @@ while [[ ${idx} -lt ${#TESTABLE_IMPLS[@]} ]]; do
         wait_ready "${name}" "${port}" && ready=true
         if [[ "${ready}" == "false" ]]; then
             log "WARNING: ${name} failed health check, excluding from batch"
-            batch_all_ready=false
         else
             batch_compare_args+=("${name}:${port}")
             tested_count=$((tested_count + 1))
