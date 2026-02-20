@@ -872,6 +872,34 @@ run_web_test \
     "200" \
     "/api/readings"
 
+# ── Static file Content-Type tests ───────────────────────────────────────────
+# With X-Content-Type-Options: nosniff, wrong Content-Type = broken page
+
+run_static_content_type_test() {
+    local test_name="$1" path="$2" expected_ct="$3"
+    local idx
+
+    for (( idx=0; idx<IMPL_COUNT; idx++ )); do
+        local ct=""
+        local attempt
+        for (( attempt=1; attempt<=RETRY_COUNT; attempt++ )); do
+            ct="$(curl -s -o /dev/null -w '%{content_type}' --max-time "${CURL_TIMEOUT}" \
+                "http://localhost:${IMPL_PORTS[${idx}]}${path}" 2>/dev/null)" && break
+            [[ ${attempt} -lt ${RETRY_COUNT} ]] && sleep "${RETRY_DELAY}"
+            ct=""
+        done
+        if [[ "${ct}" != *"${expected_ct}"* ]]; then
+            report_fail "${test_name}" "${IMPL_NAMES[${idx}]}: Content-Type='${ct}', expected '${expected_ct}'"
+            return
+        fi
+    done
+    report_pass "${test_name}"
+}
+
+run_static_content_type_test "Content-Type: text/html for /" "/" "text/html"
+run_static_content_type_test "Content-Type: text/css for /style.css" "/style.css" "text/css"
+run_static_content_type_test "Content-Type: application/javascript for /app.js" "/app.js" "application/javascript"
+
 # ── Summary ──────────────────────────────────────────────────────────────────
 
 echo ""

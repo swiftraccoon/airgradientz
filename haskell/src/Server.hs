@@ -412,9 +412,9 @@ contentTypeFor path =
 takeExtension :: String -> String
 takeExtension path =
   let name = reverse (takeWhile (/= '/') (reverse path))
-  in case dropWhile (/= '.') (reverse name) of
+  in case dropWhile (/= '.') name of
        [] -> ""
-       ext -> reverse ext
+       ext -> ext
 
 -- Query string parsing
 
