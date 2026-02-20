@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-ALL_IMPLS=(c nodejs rust zig d elixir nim go bash asm haskell)
+ALL_IMPLS=(c nodejs rust zig d elixir nim go bash asm haskell forth)
 STRICT=true
 
 usage() {
@@ -256,6 +256,16 @@ for impl in "${impls[@]}"; do
                 fi
             else
                 if ! skip_tool "cabal" "install: ghcup install cabal"; then impl_ok=false; fi
+            fi
+            ;;
+        forth)
+            # Shellcheck on build/start scripts
+            if command -v shellcheck >/dev/null 2>&1; then
+                if ! run_lint "shellcheck" shellcheck -x -o all forth/build.sh forth/start.sh; then
+                    impl_ok=false
+                fi
+            else
+                if ! skip_tool "shellcheck" "install: sudo dnf install ShellCheck"; then impl_ok=false; fi
             fi
             ;;
         *)

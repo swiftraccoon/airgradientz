@@ -3,7 +3,7 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
-ALL_IMPLS=(c nodejs rust zig d elixir nim go bash asm haskell)
+ALL_IMPLS=(c nodejs rust zig d elixir nim go bash asm haskell forth)
 
 # Determine which impls to test
 if [[ $# -eq 0 ]]; then
@@ -107,6 +107,14 @@ for impl in "${impls[@]}"; do
         haskell)
             echo "==> Testing $impl..."
             if (export PATH="$HOME/.ghcup/bin:$PATH" && cd haskell && cabal test --project-file=cabal.project); then
+                succeeded+=("$impl")
+            else
+                failed+=("$impl")
+            fi
+            ;;
+        forth)
+            echo "==> Testing $impl..."
+            if (cd forth && bash tests/run_tests.sh); then
                 succeeded+=("$impl")
             else
                 failed+=("$impl")

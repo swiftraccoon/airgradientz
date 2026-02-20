@@ -54,6 +54,7 @@ IMPL_REGISTRY=(
     "bash|bash|cd bash && bash build.sh|cd bash && bash server.sh"
     "asm|asm|cd asm && make clean && make|cd asm && ./airgradientz"
     "haskell|haskell|cd haskell && export PATH=\$HOME/.ghcup/bin:\$PATH && cabal build 2>/dev/null|cd haskell && export PATH=\$HOME/.ghcup/bin:\$PATH && cabal run airgradientz 2>/dev/null"
+    "forth|forth|cd forth && bash build.sh|cd forth && gforth src/main.fs"
 )
 
 # ── Helper functions ─────────────────────────────────────────────────────────

@@ -18,6 +18,7 @@ Local dashboard for AirGradient air quality monitors. Multiple independent imple
 - `bash/` — Pure Bash (port 3017), ncat + sqlite3 CLI + jq + curl
 - `asm/` — x86_64 NASM assembly (port 3018), links libc + vendored sqlite3.o
 - `haskell/` — Haskell/GHC 9.10 (port 3019), direct-sqlite
+- `forth/` — GNU Forth/gforth 0.7.3 (port 3020), C FFI for SQLite/libcurl/sockets
 - `airgradientz.json` — shared config (devices, poll interval, timeouts)
 - `schema.sql` — shared DB schema (single source of truth)
 - `c/public/` — canonical web UI (HTML/CSS/JS); all other impls symlink to it
@@ -55,6 +56,7 @@ go/build.sh && go/start.sh      # Go (port 3016)
 bash/build.sh && bash/start.sh  # Bash (port 3017)
 asm/build.sh && asm/start.sh    # ASM (port 3018)
 haskell/build.sh && haskell/start.sh  # Haskell (port 3019)
+forth/build.sh && forth/start.sh      # Forth (port 3020)
 
 # Debug / direct commands
 cd c && make debug           # ASan + UBSan
@@ -88,9 +90,10 @@ Config file search order: `CONFIG_PATH` env, `./airgradientz.json`, `../airgradi
 - Bash: ncat fork-per-connection, sqlite3 CLI, jq for JSON, shellcheck -o all clean
 - ASM: x86_64 NASM, epoll event loop, System V AMD64 ABI, links libc + sqlite3.o from `../c/sqlite3.c`
 - Haskell: GHC2021, `-Wall -Wextra -Werror`, direct-sqlite, custom HTTP server via network, MVar-synchronized DB
+- Forth: gforth 0.7.3, C FFI (`c-library`/`\c` inline C), libsqlite3 + libcurl + pthread, fork-per-connection
 - SQLite: WAL mode, bundled amalgamation (vendored in `c/sqlite3.c`)
 - Web UI: vanilla HTML/CSS/JS, no build step
-- All compiled impls except Go, Bash, and Haskell: single-threaded non-blocking I/O (no thread-per-connection, ASM uses poller thread for background polling)
+- All compiled impls except Go, Bash, Haskell, and Forth: single-threaded non-blocking I/O (no thread-per-connection, ASM uses poller thread for background polling)
 
 ## API Endpoints (all impls)
 
@@ -120,6 +123,7 @@ All implementations have tests. Run `./test.sh` for all, or `./test.sh <impl>` f
 | Bash | Custom test runner | `cd bash && bash tests/run_tests.sh` | 164 |
 | ASM | Custom test runner | `make -C asm test` | 148 |
 | Haskell | tasty + tasty-hunit | `cd haskell && cabal test` | 178 |
+| Forth | Custom test runner | `cd forth && bash tests/run_tests.sh` | 124 |
 
 ## Linting
 
@@ -138,6 +142,7 @@ Run `./lint.sh` for all, or `./lint.sh <impl>` for specific implementations. CI 
 | D | LDC compiler | — |
 | ASM | NASM syntax check | — |
 | Haskell | GHC `-Wall -Wextra -Werror` | `haskell/cabal.project` |
+| Forth | shellcheck on scripts | — |
 
 ## Gotchas
 
@@ -151,6 +156,7 @@ Run `./lint.sh` for all, or `./lint.sh <impl>` for specific implementations. CI 
 - Bash requires ncat (nmap), sqlite3, jq, curl at runtime
 - ASM requires nasm assembler and gcc linker at build time
 - Haskell requires GHCup (GHC 9.10, cabal 3.14) — `~/.ghcup/bin` must be on PATH
+- Forth requires gforth 0.7.3+, gcc, libsqlite3-devel, libcurl-devel; FFI library name must be valid C identifier
 - Schema changes go in `schema.sql`, not in individual implementations
 - Query column lists come from `queries.sql` — keep in sync with `schema.sql`
 - Test suites should load `test-fixtures.json` for device payloads instead of hardcoding

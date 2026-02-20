@@ -10,7 +10,8 @@
     "go": 3016,
     "bash": 3017,
     "asm": 3018,
-    "haskell": 3019
+    "haskell": 3019,
+    "forth": 3020
   },
   "devices": [
     { "ip": "192.168.88.6", "label": "outdoor" },
