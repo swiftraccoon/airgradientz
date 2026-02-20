@@ -41,6 +41,14 @@
     "error": {
       "exactFields": ["error"],
       "noExtraFields": true
+    },
+    "stats": {
+      "requiredFields": [
+        "implementation", "pid", "uptime_ms", "memory_rss_bytes",
+        "db_size_bytes", "readings_count", "requests_served",
+        "active_connections", "poll_successes", "poll_failures",
+        "pool_alloc_count", "pool_bytes_used", "started_at"
+      ]
     }
   },
   "queryEdgeCases": [
