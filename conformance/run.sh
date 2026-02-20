@@ -6,9 +6,11 @@ set -euo pipefail
 # poll, then runs compare.sh to verify all produce identical API responses.
 #
 # Usage: ./conformance/run.sh [--batch-size N] [--ref IMPL] [impl...]
+#        ./conformance/run.sh --solo IMPL
 #        e.g. ./conformance/run.sh c nodejs go
 #        ./conformance/run.sh --batch-size 3 --ref c
-#        ./conformance/run.sh          # all implementations at once
+#        ./conformance/run.sh --solo haskell  # test single impl (~30s)
+#        ./conformance/run.sh                 # all implementations at once
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -18,6 +20,7 @@ POLL_WAIT=20        # seconds to wait for at least one poll cycle
 BASE_PORT=19000     # starting port for impl allocation
 BATCH_SIZE=0        # max impls per batch (0 = all at once)
 REF_IMPL="c"        # reference implementation name
+SOLO_IMPL=""         # single-impl mode (empty = disabled)
 
 log() { echo "[conformance] $*" >&2; }
 
@@ -213,6 +216,155 @@ start_impl() {
 
 check_deps
 
+# ── Solo mode: test a single implementation ─────────────────────────────────
+
+solo_main() {
+    local impl_name="$1"
+
+    # Find impl in registry
+    local impl_entry=""
+    for entry in "${IMPL_REGISTRY[@]}"; do
+        local name
+        name="$(get_field "${entry}" 1)"
+        if [[ "${name}" == "${impl_name}" ]]; then
+            impl_entry="${entry}"
+            break
+        fi
+    done
+
+    if [[ -z "${impl_entry}" ]]; then
+        log "ERROR: Unknown implementation '${impl_name}'"
+        local avail=""
+        for entry in "${IMPL_REGISTRY[@]}"; do
+            avail+="$(get_field "${entry}" 1) "
+        done
+        log "Available: ${avail}"
+        exit 1
+    fi
+
+    local dir
+    dir="$(get_field "${impl_entry}" 2)"
+    if [[ ! -d "${REPO_ROOT}/${dir}" ]]; then
+        log "ERROR: Directory ${dir} does not exist for ${impl_name}"
+        exit 1
+    fi
+
+    log "Solo mode: testing ${impl_name}"
+
+    # Create temp directory
+    TMPDIR_PATH="$(mktemp -d)"
+    log "Temp directory: ${TMPDIR_PATH}"
+
+    # Start mock device on ephemeral port
+    local mock_port
+    mock_port="$(find_free_port)"
+    log "Mock device port: ${mock_port}"
+
+    bash "${SCRIPT_DIR}/mock-device.sh" "${mock_port}" &
+    local mock_pid=$!
+    CHILD_PIDS+=("${mock_pid}")
+    ALLOCATED_PORTS+=("${mock_port}")
+
+    local mock_ready=false
+    for _ in $(seq 1 10); do
+        if curl -sf "http://localhost:${mock_port}/health" -o /dev/null 2>/dev/null; then
+            mock_ready=true
+            break
+        fi
+        sleep 0.5
+    done
+    if [[ "${mock_ready}" == "false" ]]; then
+        log "ERROR: Mock device not responding on port ${mock_port}"
+        exit 1
+    fi
+    log "Mock device is ready"
+
+    # Assign ephemeral port for impl
+    local impl_port
+    impl_port="$(find_free_port)"
+
+    # Create config JSON
+    CONFIG_PATH="${TMPDIR_PATH}/airgradientz.json"
+    export CONFIG_PATH
+    jq -n \
+        --arg impl "${impl_name}" \
+        --argjson port "${impl_port}" \
+        --arg mock_ip "127.0.0.1:${mock_port}" \
+        '{
+            pollIntervalMs: 600000,
+            fetchTimeoutMs: 5000,
+            maxApiRows: 10000,
+            downsampleBuckets: {"5m": 300000, "10m": 600000, "15m": 900000, "30m": 1800000, "1h": 3600000, "1d": 86400000, "1w": 604800000},
+            ports: { ($impl): $port },
+            devices: [
+                { ip: $mock_ip, label: "indoor" }
+            ]
+        }' > "${CONFIG_PATH}"
+    log "Config written to ${CONFIG_PATH}"
+
+    # Set up maps needed by start_impl
+    declare -A IMPL_PORT_MAP=()
+    declare -A IMPL_DB_MAP=()
+    IMPL_PORT_MAP[${impl_name}]="${impl_port}"
+    IMPL_DB_MAP[${impl_name}]="${TMPDIR_PATH}/${impl_name}.db"
+
+    # Build
+    local build_cmd
+    build_cmd="$(get_field "${impl_entry}" 3)"
+    log "Building ${impl_name}..."
+    if ! (cd "${REPO_ROOT}" && eval "${build_cmd}") >/dev/null 2>&1; then
+        log "ERROR: Build failed for ${impl_name}"
+        exit 1
+    fi
+    log "Build succeeded: ${impl_name}"
+
+    # Start
+    log "Starting ${impl_name} on port ${impl_port}..."
+    local impl_pid
+    impl_pid="$(start_impl "${impl_entry}")"
+    CHILD_PIDS+=("${impl_pid}")
+    ALLOCATED_PORTS+=("${impl_port}")
+
+    # Wait for health
+    # shellcheck disable=SC2310
+    if ! wait_ready "${impl_name}" "${impl_port}"; then
+        log "ERROR: ${impl_name} failed health check"
+        exit 1
+    fi
+
+    # Wait for poll cycle
+    log "Waiting ${POLL_WAIT}s for ${impl_name} to poll mock device..."
+    sleep "${POLL_WAIT}"
+
+    # Verify readings exist
+    local reading_count
+    reading_count="$(curl -sf "http://localhost:${impl_port}/api/readings/count?from=0&to=9999999999999" 2>/dev/null | jq -r '.count // 0')" || reading_count=0
+    if [[ "${reading_count}" -eq 0 ]]; then
+        log "WARNING: ${impl_name} has 0 readings, extending wait by 15s..."
+        sleep 15
+        reading_count="$(curl -sf "http://localhost:${impl_port}/api/readings/count?from=0&to=9999999999999" 2>/dev/null | jq -r '.count // 0')" || reading_count=0
+        if [[ "${reading_count}" -eq 0 ]]; then
+            log "ERROR: ${impl_name} still has 0 readings. Aborting."
+            exit 1
+        fi
+    fi
+    log "${impl_name} has ${reading_count} reading(s)"
+
+    # Run test runner
+    log "Running test runner against ${impl_name}..."
+    local runner_exit=0
+    bash "${SCRIPT_DIR}/runner.sh" "localhost:${impl_port}" || runner_exit=$?
+
+    echo ""
+    if [[ ${runner_exit} -eq 0 ]]; then
+        log "Solo test passed: ${impl_name}"
+    else
+        log "Solo test failed: ${impl_name}"
+    fi
+
+    exit "${runner_exit}"
+}
+
 # Parse --flags before positional args
 POSITIONAL_ARGS=()
 while [[ $# -gt 0 ]]; do
@@ -233,9 +385,17 @@ while [[ $# -gt 0 ]]; do
             REF_IMPL="${1#*=}"
             shift
             ;;
+        --solo)
+            SOLO_IMPL="$2"
+            shift 2
+            ;;
+        --solo=*)
+            SOLO_IMPL="${1#*=}"
+            shift
+            ;;
         -*)
             log "ERROR: Unknown option: $1"
-            log "Usage: $0 [--batch-size N] [--ref IMPL] [impl...]"
+            log "Usage: $0 [--batch-size N] [--ref IMPL] [--solo IMPL] [impl...]"
             exit 1
             ;;
         *)
@@ -244,6 +404,10 @@ while [[ $# -gt 0 ]]; do
             ;;
     esac
 done
+
+if [[ -n "${SOLO_IMPL}" ]]; then
+    solo_main "${SOLO_IMPL}"
+fi
 
 # Resolve implementations
 IMPLS=()
