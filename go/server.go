@@ -2,11 +2,11 @@ package main
 
 import (
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -33,13 +33,13 @@ type serverStats struct {
 }
 
 type handler struct {
-	db     *sql.DB
+	db     *DB
 	cfg    *Config
 	poller *Poller
 	stats  *serverStats
 }
 
-func RunServer(ctx context.Context, db *sql.DB, cfg *Config, poller *Poller) {
+func RunServer(ctx context.Context, db *DB, cfg *Config, poller *Poller) {
 	stats := &serverStats{startedAt: NowMillis()}
 
 	h := &handler{db: db, cfg: cfg, poller: poller, stats: stats}
@@ -116,13 +116,15 @@ func (h *handler) handleReadings(w http.ResponseWriter, r *http.Request) {
 	now := NowMillis()
 	defaultFrom := now - 24*60*60*msPerSecond
 
-	from := parseInt64Param(r, "from", defaultFrom)
-	to := parseInt64Param(r, "to", now)
-	device := r.URL.Query().Get("device")
+	query := r.URL.Query()
+
+	from := parseInt64Query(query, "from", defaultFrom)
+	to := parseInt64Query(query, "to", now)
+	device := query.Get("device")
 
 	// Parse downsample parameter
 	var downsampleMs int64
-	if ds := r.URL.Query().Get("downsample"); ds != "" {
+	if ds := query.Get("downsample"); ds != "" {
 		bucketMs, ok := h.cfg.DownsampleBuckets[ds]
 		if !ok {
 			writeError(w, http.StatusBadRequest, "invalid downsample value")
@@ -131,7 +133,7 @@ func (h *handler) handleReadings(w http.ResponseWriter, r *http.Request) {
 		downsampleMs = bucketMs
 	}
 
-	rawLimit := parseInt64Param(r, "limit", int64(h.cfg.MaxAPIRows))
+	rawLimit := parseInt64Query(query, "limit", int64(h.cfg.MaxAPIRows))
 	effectiveLimit := h.cfg.MaxAPIRows
 	if rawLimit > 0 && rawLimit < int64(h.cfg.MaxAPIRows) {
 		effectiveLimit = int(rawLimit)
@@ -148,43 +150,42 @@ func (h *handler) handleReadings(w http.ResponseWriter, r *http.Request) {
 		q.Device = "all"
 	}
 
-	readings, err := QueryReadings(h.db, q)
+	readings, err := h.db.QueryReadings(q)
 	if err != nil {
 		logf("[api] query_readings error: %v", err)
 		writeError(w, http.StatusInternalServerError, "Internal server error")
 		return
 	}
 
-	items := make([]map[string]any, len(readings))
-	for i := range readings {
-		items[i] = ReadingToJSON(&readings[i])
-	}
-	writeJSON(w, items)
+	buf := GetBuffer(len(readings)*estimatedReadingJSONSize + 2)
+	WriteReadingsJSON(buf, readings)
+	writeJSONBytes(w, buf.Bytes())
+	PutBuffer(buf)
 }
 
 func (h *handler) handleReadingsLatest(w http.ResponseWriter, _ *http.Request) {
-	readings, err := GetLatestReadings(h.db)
+	readings, err := h.db.GetLatestReadings()
 	if err != nil {
 		logf("[api] get_latest_readings error: %v", err)
 		writeError(w, http.StatusInternalServerError, "Internal server error")
 		return
 	}
 
-	items := make([]map[string]any, len(readings))
-	for i := range readings {
-		items[i] = ReadingToJSON(&readings[i])
-	}
-	writeJSON(w, items)
+	buf := GetBuffer(len(readings)*estimatedReadingJSONSize + 2)
+	WriteReadingsJSON(buf, readings)
+	writeJSONBytes(w, buf.Bytes())
+	PutBuffer(buf)
 }
 
 func (h *handler) handleReadingsCount(w http.ResponseWriter, r *http.Request) {
 	now := NowMillis()
 
-	from := parseInt64Param(r, "from", 0)
-	to := parseInt64Param(r, "to", now)
-	device := r.URL.Query().Get("device")
+	query := r.URL.Query()
+	from := parseInt64Query(query, "from", 0)
+	to := parseInt64Query(query, "to", now)
+	device := query.Get("device")
 
-	count, err := GetFilteredCount(h.db, from, to, device)
+	count, err := h.db.GetFilteredCount(from, to, device)
 	if err != nil {
 		logf("[api] get_filtered_count error: %v", err)
 		writeError(w, http.StatusInternalServerError, "Internal server error")
@@ -195,22 +196,22 @@ func (h *handler) handleReadingsCount(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *handler) handleDevices(w http.ResponseWriter, _ *http.Request) {
-	devices, err := GetDevices(h.db)
+	devices, err := h.db.GetDevices()
 	if err != nil {
 		logf("[api] get_devices error: %v", err)
 		writeError(w, http.StatusInternalServerError, "Internal server error")
 		return
 	}
 
-	items := make([]map[string]any, len(devices))
-	for i := range devices {
-		items[i] = DeviceSummaryToJSON(&devices[i])
-	}
-	writeJSON(w, items)
+	buf := GetBuffer(len(devices)*estimatedDeviceJSONSize + 2)
+	WriteDevicesJSON(buf, devices)
+	writeJSONBytes(w, buf.Bytes())
+	PutBuffer(buf)
 }
 
 func (h *handler) handleHealth(w http.ResponseWriter, _ *http.Request) {
-	writeJSON(w, h.poller.HealthJSON())
+	buf := h.poller.HealthJSONBytes()
+	writeJSONBytes(w, buf)
 }
 
 func (h *handler) handleConfig(w http.ResponseWriter, _ *http.Request) {
@@ -220,9 +221,9 @@ func (h *handler) handleConfig(w http.ResponseWriter, _ *http.Request) {
 	}
 
 	writeJSON(w, map[string]any{
-		"pollIntervalMs":      h.cfg.PollIntervalMs,
+		"pollIntervalMs":    h.cfg.PollIntervalMs,
 		"downsampleBuckets": h.cfg.DownsampleBuckets,
-		"devices":             devices,
+		"devices":           devices,
 	})
 }
 
@@ -230,7 +231,7 @@ func (h *handler) handleStats(w http.ResponseWriter, _ *http.Request) {
 	now := NowMillis()
 	uptimeMs := now - h.stats.startedAt
 
-	readingsCount, err := GetReadingsCount(h.db)
+	readingsCount, err := h.db.GetReadingsCount()
 	if err != nil {
 		logf("[api] get_readings_count error: %v", err)
 	}
@@ -361,6 +362,13 @@ func writeJSON(w http.ResponseWriter, data any) {
 	_, _ = w.Write(body)
 }
 
+// writeJSONBytes writes pre-serialized JSON bytes directly to the response.
+func writeJSONBytes(w http.ResponseWriter, body []byte) {
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(body)
+}
+
 func writeError(w http.ResponseWriter, status int, msg string) {
 	body, err := json.Marshal(map[string]string{"error": msg})
 	if err != nil {
@@ -375,7 +383,12 @@ func writeError(w http.ResponseWriter, status int, msg string) {
 }
 
 func parseInt64Param(r *http.Request, name string, defaultVal int64) int64 {
-	s := r.URL.Query().Get(name)
+	return parseInt64Query(r.URL.Query(), name, defaultVal)
+}
+
+// parseInt64Query extracts an int64 query parameter from pre-parsed url.Values.
+func parseInt64Query(query url.Values, name string, defaultVal int64) int64 {
+	s := query.Get(name)
 	if s == "" {
 		return defaultVal
 	}

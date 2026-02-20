@@ -13,12 +13,12 @@ func newTestHandler(t *testing.T) *handler {
 	db := openTestDB(t)
 
 	cfg := &Config{
-		Port:                3016,
-		Devices:             []DeviceConfig{{IP: "192.168.1.1", Label: "test-indoor"}},
-		PollIntervalMs:      15000,
-		FetchTimeoutMs:      5000,
-		MaxAPIRows:          10000,
-		DownsampleBuckets:   map[string]int64{"5m": 300000, "10m": 600000, "15m": 900000, "30m": 1800000, "1h": 3600000, "1d": 86400000, "1w": 604800000},
+		Port:              3016,
+		Devices:           []DeviceConfig{{IP: "192.168.1.1", Label: "test-indoor"}},
+		PollIntervalMs:    15000,
+		FetchTimeoutMs:    5000,
+		MaxAPIRows:        10000,
+		DownsampleBuckets: map[string]int64{"5m": 300000, "10m": 600000, "15m": 900000, "30m": 1800000, "1h": 3600000, "1d": 86400000, "1w": 604800000},
 	}
 
 	poller := NewPoller(db, cfg)
@@ -46,7 +46,7 @@ func parseJSON(t *testing.T, rr *httptest.ResponseRecorder) any {
 func TestReadingsEndpoint(t *testing.T) {
 	h := newTestHandler(t)
 
-	if err := InsertReading(h.db, "192.168.1.1", indoorFull); err != nil {
+	if err := h.db.InsertReading("192.168.1.1", indoorFull); err != nil {
 		t.Fatal(err)
 	}
 
@@ -76,10 +76,10 @@ func TestReadingsEndpoint(t *testing.T) {
 func TestReadingsWithDeviceFilter(t *testing.T) {
 	h := newTestHandler(t)
 
-	if err := InsertReading(h.db, "192.168.1.1", indoorFull); err != nil {
+	if err := h.db.InsertReading("192.168.1.1", indoorFull); err != nil {
 		t.Fatal(err)
 	}
-	if err := InsertReading(h.db, "192.168.1.2", outdoorFull); err != nil {
+	if err := h.db.InsertReading("192.168.1.2", outdoorFull); err != nil {
 		t.Fatal(err)
 	}
 
@@ -94,7 +94,7 @@ func TestReadingsWithLimit(t *testing.T) {
 	h := newTestHandler(t)
 
 	for range 5 {
-		if err := InsertReading(h.db, "192.168.1.1", indoorFull); err != nil {
+		if err := h.db.InsertReading("192.168.1.1", indoorFull); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -111,7 +111,7 @@ func TestReadingsLimitCannotExceedMax(t *testing.T) {
 	h.cfg.MaxAPIRows = 3
 
 	for range 5 {
-		if err := InsertReading(h.db, "192.168.1.1", indoorFull); err != nil {
+		if err := h.db.InsertReading("192.168.1.1", indoorFull); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -139,13 +139,13 @@ func TestReadingsEmpty(t *testing.T) {
 func TestReadingsLatest(t *testing.T) {
 	h := newTestHandler(t)
 
-	if err := InsertReading(h.db, "192.168.1.1", indoorFull); err != nil {
+	if err := h.db.InsertReading("192.168.1.1", indoorFull); err != nil {
 		t.Fatal(err)
 	}
-	if err := InsertReading(h.db, "192.168.1.1", indoorFull); err != nil {
+	if err := h.db.InsertReading("192.168.1.1", indoorFull); err != nil {
 		t.Fatal(err)
 	}
-	if err := InsertReading(h.db, "192.168.1.2", outdoorFull); err != nil {
+	if err := h.db.InsertReading("192.168.1.2", outdoorFull); err != nil {
 		t.Fatal(err)
 	}
 
@@ -163,11 +163,11 @@ func TestDevicesEndpoint(t *testing.T) {
 	h := newTestHandler(t)
 
 	for range 3 {
-		if err := InsertReading(h.db, "192.168.1.1", indoorFull); err != nil {
+		if err := h.db.InsertReading("192.168.1.1", indoorFull); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := InsertReading(h.db, "192.168.1.2", outdoorFull); err != nil {
+	if err := h.db.InsertReading("192.168.1.2", outdoorFull); err != nil {
 		t.Fatal(err)
 	}
 
@@ -401,10 +401,10 @@ func TestRequestCounter(t *testing.T) {
 func TestReadingsCountEndpoint(t *testing.T) {
 	h := newTestHandler(t)
 
-	if err := InsertReading(h.db, "192.168.1.1", indoorFull); err != nil {
+	if err := h.db.InsertReading("192.168.1.1", indoorFull); err != nil {
 		t.Fatal(err)
 	}
-	if err := InsertReading(h.db, "192.168.1.2", outdoorFull); err != nil {
+	if err := h.db.InsertReading("192.168.1.2", outdoorFull); err != nil {
 		t.Fatal(err)
 	}
 
@@ -423,13 +423,13 @@ func TestReadingsCountEndpoint(t *testing.T) {
 func TestReadingsCountWithDeviceFilter(t *testing.T) {
 	h := newTestHandler(t)
 
-	if err := InsertReading(h.db, "192.168.1.1", indoorFull); err != nil {
+	if err := h.db.InsertReading("192.168.1.1", indoorFull); err != nil {
 		t.Fatal(err)
 	}
-	if err := InsertReading(h.db, "192.168.1.1", indoorFull); err != nil {
+	if err := h.db.InsertReading("192.168.1.1", indoorFull); err != nil {
 		t.Fatal(err)
 	}
-	if err := InsertReading(h.db, "192.168.1.2", outdoorFull); err != nil {
+	if err := h.db.InsertReading("192.168.1.2", outdoorFull); err != nil {
 		t.Fatal(err)
 	}
 
@@ -450,7 +450,7 @@ func TestReadingsDownsampleEndpoint(t *testing.T) {
 
 	// Insert multiple readings
 	for range 3 {
-		if err := InsertReading(h.db, "192.168.1.1", indoorFull); err != nil {
+		if err := h.db.InsertReading("192.168.1.1", indoorFull); err != nil {
 			t.Fatal(err)
 		}
 	}

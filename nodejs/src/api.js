@@ -1,98 +1,130 @@
 'use strict';
 
 const fs = require('node:fs');
-const express = require('express');
 const { timestamp } = require('./log');
 const { queryReadings, getDevices, getLatestReadings, getReadingsCount, getFilteredCount } = require('./db');
 const { getHealth, getPollStats } = require('./poller');
 const config = require('../config');
 
-const router = express.Router();
+function sendJson(res, statusCode, data) {
+  const body = JSON.stringify(data);
+  res.writeHead(statusCode, {
+    'Content-Type': 'application/json',
+    'Content-Length': Buffer.byteLength(body),
+  });
+  res.end(body);
+}
 
-router.get('/readings', (req, res, next) => {
+/**
+ * Handle API requests. pathname should already have /api prefix stripped.
+ * Returns true if the route was handled, false otherwise.
+ */
+function handleApi(req, res, pathname, query, appLocals) {
   try {
-    const { device, from, to, limit, downsample } = req.query;
-
-    if (downsample !== undefined) {
-      if (!Object.hasOwn(config.downsampleBuckets, downsample)) {
-        return res.status(400).json({ error: 'invalid downsample value' });
-      }
+    if (pathname === '/readings') {
+      return handleReadings(res, query);
     }
-
-    const now = Date.now();
-    const effectiveFrom = from || String(now - 24 * 60 * 60 * 1000);
-    const effectiveTo = to || String(now);
-
-    const requestedLimit = limit ? Number(limit) : config.maxApiRows;
-    const effectiveLimit = Math.min(
-      Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : config.maxApiRows,
-      config.maxApiRows,
-    );
-
-    const readings = queryReadings({
-      device: device || 'all',
-      from: effectiveFrom,
-      to: effectiveTo,
-      limit: effectiveLimit,
-      // eslint-disable-next-line security/detect-object-injection -- validated via Object.hasOwn above
-      downsampleMs: downsample && Object.hasOwn(config.downsampleBuckets, downsample) ? config.downsampleBuckets[downsample] : undefined,
-    });
-
-    res.json(readings);
+    if (pathname === '/readings/latest') {
+      return handleLatest(res);
+    }
+    if (pathname === '/readings/count') {
+      return handleCount(res, query);
+    }
+    if (pathname === '/devices') {
+      return handleDevices(res);
+    }
+    if (pathname === '/health') {
+      return handleHealth(res);
+    }
+    if (pathname === '/config') {
+      return handleConfig(res);
+    }
+    if (pathname === '/stats') {
+      return handleStats(res, appLocals);
+    }
+    return false;
   } catch (err) {
-    next(err);
+    console.error(`${timestamp()} [api] Unhandled error:`, err);
+    sendJson(res, 500, { error: 'Internal server error' });
+    return true;
   }
-});
+}
 
-router.get('/devices', (_req, res, next) => {
-  try {
-    res.json(getDevices());
-  } catch (err) {
-    next(err);
+function handleReadings(res, query) {
+  const { device, from, to, limit, downsample } = query;
+
+  if (downsample !== undefined) {
+    if (!Object.hasOwn(config.downsampleBuckets, downsample)) {
+      sendJson(res, 400, { error: 'invalid downsample value' });
+      return true;
+    }
   }
-});
 
-router.get('/readings/latest', (_req, res, next) => {
-  try {
-    res.json(getLatestReadings());
-  } catch (err) {
-    next(err);
-  }
-});
+  const now = Date.now();
+  const effectiveFrom = from || String(now - 24 * 60 * 60 * 1000);
+  const effectiveTo = to || String(now);
 
-router.get('/readings/count', (req, res, next) => {
-  try {
-    const { device, from, to } = req.query;
+  const requestedLimit = limit ? Number(limit) : config.maxApiRows;
+  const effectiveLimit = Math.min(
+    Number.isFinite(requestedLimit) && requestedLimit > 0 ? requestedLimit : config.maxApiRows,
+    config.maxApiRows,
+  );
 
-    const now = Date.now();
-    const effectiveFrom = from || '0';
-    const effectiveTo = to || String(now);
+  const readings = queryReadings({
+    device: device || 'all',
+    from: effectiveFrom,
+    to: effectiveTo,
+    limit: effectiveLimit,
+    // eslint-disable-next-line security/detect-object-injection -- validated via Object.hasOwn above
+    downsampleMs: downsample && Object.hasOwn(config.downsampleBuckets, downsample) ? config.downsampleBuckets[downsample] : undefined,
+  });
 
-    const count = getFilteredCount({
-      from: effectiveFrom,
-      to: effectiveTo,
-      device,
-    });
+  sendJson(res, 200, readings);
+  return true;
+}
 
-    res.json({ count });
-  } catch (err) {
-    next(err);
-  }
-});
+function handleLatest(res) {
+  sendJson(res, 200, getLatestReadings());
+  return true;
+}
 
-router.get('/health', (_req, res) => {
-  res.json(getHealth());
-});
+function handleCount(res, query) {
+  const { device, from, to } = query;
 
-router.get('/config', (_req, res) => {
-  res.json({
+  const now = Date.now();
+  const effectiveFrom = from || '0';
+  const effectiveTo = to || String(now);
+
+  const count = getFilteredCount({
+    from: effectiveFrom,
+    to: effectiveTo,
+    device,
+  });
+
+  sendJson(res, 200, { count });
+  return true;
+}
+
+function handleDevices(res) {
+  sendJson(res, 200, getDevices());
+  return true;
+}
+
+function handleHealth(res) {
+  sendJson(res, 200, getHealth());
+  return true;
+}
+
+function handleConfig(res) {
+  sendJson(res, 200, {
     pollIntervalMs: config.pollIntervalMs,
     downsampleBuckets: config.downsampleBuckets,
     devices: config.devices.map(d => ({ ip: d.ip, label: d.label })),
   });
-});
+  return true;
+}
 
-router.get('/stats', (req, res) => {
+function handleStats(res, appLocals) {
   const { pollSuccesses, pollFailures } = getPollStats();
   let dbSizeBytes = 0;
   try {
@@ -101,25 +133,20 @@ router.get('/stats', (req, res) => {
     dbSizeBytes = fs.statSync(config.dbPath).size; // eslint-disable-line security/detect-non-literal-fs-filename
   } catch {}
 
-  res.json({
+  sendJson(res, 200, {
     implementation: 'nodejs',
     pid: process.pid,
-    uptime_ms: Date.now() - req.app.locals.startedAt,
+    uptime_ms: Date.now() - appLocals.startedAt,
     memory_rss_bytes: process.memoryUsage.rss(),
     db_size_bytes: dbSizeBytes,
     readings_count: getReadingsCount(),
-    requests_served: req.app.locals.getRequestsServed(),
+    requests_served: appLocals.getRequestsServed(),
     active_connections: 0,
     poll_successes: pollSuccesses,
     poll_failures: pollFailures,
-    started_at: req.app.locals.startedAt,
+    started_at: appLocals.startedAt,
   });
-});
+  return true;
+}
 
-// JSON error handler — all DB or unexpected errors return JSON, not HTML
-router.use((err, _req, res, _next) => {
-  console.error(`${timestamp()} [api] Unhandled error:`, err);
-  res.status(500).json({ error: 'Internal server error' });
-});
-
-module.exports = router;
+module.exports = { handleApi, sendJson };

@@ -6,9 +6,9 @@ defmodule Airgradientz.SpecTest do
   use ExUnit.Case, async: false
 
   @spec_path Path.join([__DIR__, "..", "..", "test-spec.json"])
-  @test_spec Jason.decode!(File.read!(@spec_path))
+  @test_spec Airgradientz.Json.decode!(File.read!(@spec_path))
 
-  @fixtures Jason.decode!(File.read!(Path.join([__DIR__, "..", "..", "test-fixtures.json"])))
+  @fixtures Airgradientz.Json.decode!(File.read!(Path.join([__DIR__, "..", "..", "test-fixtures.json"])))
   @indoor_data Map.get(@fixtures, "indoorFull")
 
   setup do
@@ -42,7 +42,7 @@ defmodule Airgradientz.SpecTest do
     end
 
     test "all spec buckets match config downsample_buckets" do
-      config_json = Jason.decode!(File.read!(Path.join([__DIR__, "..", "..", "airgradientz.json"])))
+      config_json = Airgradientz.Json.decode!(File.read!(Path.join([__DIR__, "..", "..", "airgradientz.json"])))
       config_buckets = Map.get(config_json, "downsampleBuckets")
 
       for bucket <- @spec_buckets do
@@ -57,7 +57,7 @@ defmodule Airgradientz.SpecTest do
 
     test "config parses all 7 buckets into downsample_buckets map" do
       # Build a config struct from the real config file and verify the parsed map
-      config_json = Jason.decode!(File.read!(Path.join([__DIR__, "..", "..", "airgradientz.json"])))
+      config_json = Airgradientz.Json.decode!(File.read!(Path.join([__DIR__, "..", "..", "airgradientz.json"])))
       config_buckets = Map.get(config_json, "downsampleBuckets")
 
       for bucket <- @spec_buckets do
@@ -193,7 +193,7 @@ defmodule Airgradientz.SpecTest do
       [reading] = Airgradientz.DB.query_readings(%{from: 0, to: now + 1000, limit: 1})
 
       # Convert atom-keyed map to string-keyed (as JSON would produce)
-      json_map = reading |> Jason.encode!() |> Jason.decode!()
+      json_map = reading |> Airgradientz.Json.encode!() |> Airgradientz.Json.decode!()
 
       for field <- @reading_shape["requiredFields"] do
         assert Map.has_key?(json_map, field),
@@ -219,7 +219,7 @@ defmodule Airgradientz.SpecTest do
           bucket_ms: 3_600_000
         })
 
-      json_map = reading |> Jason.encode!() |> Jason.decode!()
+      json_map = reading |> Airgradientz.Json.encode!() |> Airgradientz.Json.decode!()
 
       for field <- @reading_ds_shape["requiredFields"] do
         assert Map.has_key?(json_map, field),
@@ -236,7 +236,7 @@ defmodule Airgradientz.SpecTest do
       :ok = Airgradientz.DB.insert_reading("10.0.0.1", @indoor_data)
 
       [device] = Airgradientz.DB.get_devices()
-      json_map = device |> Jason.encode!() |> Jason.decode!()
+      json_map = device |> Airgradientz.Json.encode!() |> Airgradientz.Json.decode!()
 
       for field <- @device_shape["requiredFields"] do
         assert Map.has_key?(json_map, field),
@@ -251,7 +251,7 @@ defmodule Airgradientz.SpecTest do
 
     test "count response has exact fields and no extras" do
       count_result = %{count: 0}
-      json_map = count_result |> Jason.encode!() |> Jason.decode!()
+      json_map = count_result |> Airgradientz.Json.encode!() |> Airgradientz.Json.decode!()
 
       for field <- @count_shape["exactFields"] do
         assert Map.has_key?(json_map, field),
@@ -269,7 +269,7 @@ defmodule Airgradientz.SpecTest do
 
     test "config response has required fields and no forbidden fields" do
       # Build a config-like map matching what the HTTP server would return
-      config_json = Jason.decode!(File.read!(Path.join([__DIR__, "..", "..", "airgradientz.json"])))
+      config_json = Airgradientz.Json.decode!(File.read!(Path.join([__DIR__, "..", "..", "airgradientz.json"])))
       buckets = Map.get(config_json, "downsampleBuckets")
       devices = Map.get(config_json, "devices")
 
@@ -279,7 +279,7 @@ defmodule Airgradientz.SpecTest do
         devices: Enum.map(devices, &%{ip: &1["ip"], label: &1["label"]})
       }
 
-      json_map = config_response |> Jason.encode!() |> Jason.decode!()
+      json_map = config_response |> Airgradientz.Json.encode!() |> Airgradientz.Json.decode!()
 
       for field <- @config_shape["requiredFields"] do
         assert Map.has_key?(json_map, field),

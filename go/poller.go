@@ -1,12 +1,13 @@
 package main
 
 import (
+	"bytes"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
+	"strconv"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -29,7 +30,7 @@ type DeviceHealth struct {
 }
 
 type Poller struct {
-	db        *sql.DB
+	db        *DB
 	cfg       *Config
 	health    []DeviceHealth
 	successes int64
@@ -37,7 +38,7 @@ type Poller struct {
 	mu        sync.RWMutex
 }
 
-func NewPoller(db *sql.DB, cfg *Config) *Poller {
+func NewPoller(db *DB, cfg *Config) *Poller {
 	health := make([]DeviceHealth, len(cfg.Devices))
 	for i, d := range cfg.Devices {
 		health[i] = DeviceHealth{
@@ -68,7 +69,7 @@ func (p *Poller) Run(ctx context.Context) {
 			p.pollAll()
 			pollCount++
 			if pollCount%checkpointIntervalPolls == 0 {
-				if err := Checkpoint(p.db); err != nil {
+				if err := p.db.Checkpoint(); err != nil {
 					logf("[poller] checkpoint error: %v", err)
 				}
 			}
@@ -123,7 +124,7 @@ func (p *Poller) fetchDevice(idx int) {
 		return
 	}
 
-	if err := InsertReading(p.db, d.IP, data); err != nil {
+	if err := p.db.InsertReading(d.IP, data); err != nil {
 		p.setError(idx, fmt.Sprintf("DB insert failed: %v", err))
 		return
 	}
@@ -186,6 +187,50 @@ func (p *Poller) HealthJSON() []map[string]any {
 		result[i] = obj
 	}
 	return result
+}
+
+// HealthJSONBytes returns the health status as pre-serialized JSON bytes,
+// bypassing encoding/json for maximum throughput.
+func (p *Poller) HealthJSONBytes() []byte {
+	p.mu.RLock()
+	defer p.mu.RUnlock()
+
+	buf := bytes.NewBuffer(make([]byte, 0, len(p.health)*200+2))
+	buf.WriteByte('[')
+	for i, h := range p.health {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		buf.WriteString(`{"ip":`)
+		writeJSONString(buf, h.IP)
+		buf.WriteString(`,"label":`)
+		writeJSONString(buf, h.Label)
+		buf.WriteString(`,"status":`)
+		writeJSONString(buf, h.Status)
+		buf.WriteString(`,"lastSuccess":`)
+		if h.LastSuccess != 0 {
+			buf.WriteString(strconv.FormatInt(h.LastSuccess, 10))
+		} else {
+			buf.WriteString("null")
+		}
+		buf.WriteString(`,"lastError":`)
+		if h.LastError != 0 {
+			buf.WriteString(strconv.FormatInt(h.LastError, 10))
+		} else {
+			buf.WriteString("null")
+		}
+		buf.WriteString(`,"lastErrorMessage":`)
+		if h.LastErrorMessage != "" {
+			writeJSONString(buf, h.LastErrorMessage)
+		} else {
+			buf.WriteString("null")
+		}
+		buf.WriteString(`,"consecutiveFailures":`)
+		buf.WriteString(strconv.Itoa(h.ConsecutiveFailures))
+		buf.WriteByte('}')
+	}
+	buf.WriteByte(']')
+	return buf.Bytes()
 }
 
 func (p *Poller) PollStats() (successes, failures int64) {

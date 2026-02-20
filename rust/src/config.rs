@@ -94,7 +94,7 @@ impl Config {
                 if let Some(ms) = val.as_i64()
                     && ms > 0
                 {
-                    downsample_buckets.push((key.clone(), ms));
+                    downsample_buckets.push((key.to_string(), ms));
                 }
             }
         }

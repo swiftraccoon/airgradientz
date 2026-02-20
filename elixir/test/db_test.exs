@@ -1,7 +1,7 @@
 defmodule Airgradientz.DBTest do
   use ExUnit.Case, async: false
 
-  @fixtures Jason.decode!(File.read!(Path.join([__DIR__, "..", "..", "test-fixtures.json"])))
+  @fixtures Airgradientz.Json.decode!(File.read!(Path.join([__DIR__, "..", "..", "test-fixtures.json"])))
   @indoor_data Map.get(@fixtures, "indoorFull")
   @outdoor_data Map.get(@fixtures, "outdoorFull")
   @null_fields_data Map.get(@fixtures, "afterBoot")

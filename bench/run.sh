@@ -2,49 +2,44 @@
 set -euo pipefail
 
 # ── Benchmark harness for airgradientz implementations ──────────────────────
-# Usage: ./bench/run.sh [--concurrent N] [impl...]
+# Usage: ./bench/run.sh [--concurrent N] [--requests N] [--seed-rows N] [impl...]
 #        e.g. ./bench/run.sh --concurrent 50 c rust zig
-#        ./bench/run.sh             default: all implementations, sequential only
+#        ./bench/run.sh c nodejs       benchmark specific impls
+#        ./bench/run.sh                default: all implementations
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-DATE="$(date +%Y-%m-%d)"
+TIMESTAMP="$(date +%Y%m%d_%H%M%S)"
 RESULTS_DIR="$REPO_ROOT/bench/results"
-RESULTS_FILE="$RESULTS_DIR/$DATE.md"
-REQUESTS_PER_ENDPOINT=100
+RESULTS_FILE="$RESULTS_DIR/${TIMESTAMP}.md"
+REQUESTS=100
+WARMUP=20
+SEED_ROWS=1000
 CONCURRENT=0
-HEALTH_TIMEOUT=15   # seconds
-HEALTH_INTERVAL=0.5 # seconds
+HEALTH_TIMEOUT=30
+BENCH_TMP="$(mktemp -d)"
 
-# ── Dependency check ────────────────────────────────────────────────────────
+# ── Dependencies ─────────────────────────────────────────────────────────────
 
 check_deps() {
     local missing=()
-    for cmd in bash curl jq bc; do
-        if ! command -v "$cmd" &>/dev/null; then
-            missing+=("$cmd")
-        fi
+    for cmd in curl jq awk sqlite3; do
+        command -v "$cmd" &>/dev/null || missing+=("$cmd")
     done
     if [[ ${#missing[@]} -gt 0 ]]; then
         echo "ERROR: Missing required dependencies: ${missing[*]}" >&2
-        echo "Install them with your package manager, e.g.:" >&2
-        echo "  sudo apt install ${missing[*]}" >&2
-        echo "  brew install ${missing[*]}" >&2
         exit 1
     fi
 }
 
 # ── Logging ──────────────────────────────────────────────────────────────────
 
-log() { echo "[bench] $*" >&2; }
+log() { printf '[bench] %s\n' "$*" >&2; }
 
 # ── Implementation registry ─────────────────────────────────────────────────
 # Format: name|port|directory|build_cmd|start_cmd|binary_path
 
-# Read ports from airgradientz.json (fall back to defaults if jq fails)
 get_port() {
-    local impl="$1"
-    local default="$2"
-    local port
+    local impl="$1" default="$2" port
     port=$(jq -r ".ports.${impl} // empty" "$REPO_ROOT/airgradientz.json" 2>/dev/null) || true
     echo "${port:-$default}"
 }
@@ -75,313 +70,234 @@ IMPL_REGISTRY=(
     "haskell|${PORT_HASKELL}|haskell|cd haskell && export PATH=\$HOME/.ghcup/bin:\$PATH && cabal build 2>/dev/null|cd haskell && export PATH=\$HOME/.ghcup/bin:\$PATH && cabal run airgradientz 2>/dev/null|n/a"
 )
 
-# Display names for the report header
 declare -A DISPLAY_NAMES=(
-    [c]="C"
-    [nodejs]="Node.js"
-    [rust]="Rust"
-    [zig]="Zig"
-    [d]="D"
-    [elixir]="Elixir"
-    [nim]="Nim"
-    [go]="Go"
-    [bash]="Bash"
-    [asm]="x86_64 ASM"
-    [haskell]="Haskell"
+    [c]="C" [nodejs]="Node.js" [rust]="Rust" [zig]="Zig" [d]="D"
+    [elixir]="Elixir" [nim]="Nim" [go]="Go" [bash]="Bash"
+    [asm]="x86_64 ASM" [haskell]="Haskell"
 )
 
-# Canonical order for table columns
 IMPL_ORDER=(c nodejs rust zig d elixir nim go bash asm haskell)
 
-# ── Process tracking for cleanup ─────────────────────────────────────────────
+# ── Process management ───────────────────────────────────────────────────────
 
 ACTIVE_PID=""
+ACTIVE_PORT=""
 
 cleanup() {
-    if [[ -n "$ACTIVE_PID" ]] && kill -0 "$ACTIVE_PID" 2>/dev/null; then
-        log "Cleaning up process $ACTIVE_PID..."
-        kill_impl "$ACTIVE_PID"
+    if [[ -n "$ACTIVE_PID" ]]; then
+        kill_impl "$ACTIVE_PID" "$ACTIVE_PORT"
     fi
+    rm -rf "$BENCH_TMP"
 }
 trap cleanup EXIT INT TERM
 
-# ── Functions ────────────────────────────────────────────────────────────────
-
-get_field() {
-    local entry="$1" field="$2"
-    echo "$entry" | cut -d'|' -f"$field"
+kill_impl() {
+    local pid="$1" port="${2:-}"
+    # Kill the entire process group (negative PID) to catch child processes
+    # that outlive the subshell (e.g., ncat, beam, cabal-run wrappers).
+    kill -0 "$pid" 2>/dev/null || { wait "$pid" 2>/dev/null || true; return; }
+    kill -- "-$pid" 2>/dev/null || kill "$pid" 2>/dev/null || true
+    local waited=0
+    while kill -0 "$pid" 2>/dev/null && [[ $waited -lt 6 ]]; do
+        sleep 0.5
+        waited=$((waited + 1))
+    done
+    if kill -0 "$pid" 2>/dev/null; then
+        kill -9 -- "-$pid" 2>/dev/null || kill -9 "$pid" 2>/dev/null || true
+    fi
+    wait "$pid" 2>/dev/null || true
+    # Final safety: if the port is still held, force-kill whatever owns it
+    if [[ -n "$port" ]]; then
+        fuser -k "${port}/tcp" 2>/dev/null || true
+    fi
 }
 
+# ── Utility functions ────────────────────────────────────────────────────────
+
+get_field() { echo "$1" | cut -d'|' -f"$2"; }
+
+bytes_to_mb() {
+    local b="$1"
+    [[ -z "$b" || "$b" == "-" || "$b" == "null" ]] && { echo "-"; return; }
+    awk "BEGIN { printf \"%.2f\", $b / 1048576 }"
+}
+
+get_binary_size() {
+    [[ "$1" == "n/a" ]] && { echo "-"; return; }
+    local f="$REPO_ROOT/$1"
+    if [[ -f "$f" ]]; then
+        bytes_to_mb "$(stat --printf='%s' "$f" 2>/dev/null || echo "")"
+    else
+        echo "-"
+    fi
+}
+
+get_stats() { curl -sf "http://localhost:$1/api/stats" 2>/dev/null || echo "{}"; }
+
+# ── Build & startup ─────────────────────────────────────────────────────────
+
 build_impl() {
-    local name="$1" build_cmd="$2"
+    local name="$1" build_cmd="$2" t0
     log "Building $name..."
+    t0="$(date +%s%N)"
     if ! (cd "$REPO_ROOT" && eval "$build_cmd") >/dev/null 2>&1; then
         log "WARNING: Build failed for $name, skipping."
         return 1
     fi
-    log "Build succeeded for $name."
-    return 0
+    local elapsed_ms=$(( ($(date +%s%N) - t0) / 1000000 ))
+    log "Built $name (${elapsed_ms}ms)."
+    echo "$elapsed_ms"
 }
 
 start_impl() {
-    local name="$1" start_cmd="$2"
-    log "Starting $name..."
-    (cd "$REPO_ROOT" && eval "$start_cmd") >/dev/null 2>&1 &
-    local pid=$!
-    echo "$pid"
-}
-
-wait_ready() {
-    local name="$1" port="$2"
-    local url="http://localhost:$port/api/health"
-    local elapsed=0
-
-    log "Waiting for $name to be ready on port $port..."
-    while (( $(echo "$elapsed < $HEALTH_TIMEOUT" | bc -l) )); do
-        if curl -sf "$url" -o /dev/null 2>/dev/null; then
-            log "$name is ready (${elapsed}s)."
-            return 0
-        fi
-        sleep "$HEALTH_INTERVAL"
-        elapsed="$(echo "$elapsed + $HEALTH_INTERVAL" | bc -l)"
-    done
-
-    log "WARNING: $name did not become ready within ${HEALTH_TIMEOUT}s."
-    return 1
+    # Start in a new session (setsid) so the server and all its children
+    # share a process group ID equal to the leader PID.  This lets kill_impl
+    # send signals to -$pid and reliably reap the entire tree.
+    setsid bash -c "cd \"$REPO_ROOT\" && eval \"\$1\"" -- "$1" >/dev/null 2>&1 &
+    echo $!
 }
 
 measure_startup() {
-    local port="$1"
-    local url="http://localhost:$port/api/health"
-    local start_ns end_ns elapsed_ms
-
-    start_ns="$(date +%s%N)"
-
-    # The server is already started; we measure from now until health responds.
-    # Caller should call this immediately after start_impl.
-    local elapsed=0
-    while (( $(echo "$elapsed < $HEALTH_TIMEOUT" | bc -l) )); do
-        if curl -sf "$url" -o /dev/null 2>/dev/null; then
-            end_ns="$(date +%s%N)"
-            elapsed_ms="$(echo "($end_ns - $start_ns) / 1000000" | bc)"
-            echo "$elapsed_ms"
+    local port="$1" t0 deadline
+    t0="$(date +%s%N)"
+    deadline=$(( t0 + HEALTH_TIMEOUT * 1000000000 ))
+    while [[ "$(date +%s%N)" -lt "$deadline" ]]; do
+        if curl -sf -o /dev/null "http://localhost:$port/api/health" 2>/dev/null; then
+            echo "$(( ($(date +%s%N) - t0) / 1000000 ))"
             return 0
         fi
-        sleep "$HEALTH_INTERVAL"
-        elapsed="$(echo "$elapsed + $HEALTH_INTERVAL" | bc -l)"
+        sleep 0.05
     done
-
     echo "-"
     return 1
 }
 
-get_stats() {
+# ── Database seeding ─────────────────────────────────────────────────────────
+
+seed_db() {
+    local db_path="$1"
+    log "Seeding DB with $SEED_ROWS rows..."
+    local now_ms
+    now_ms="$(date +%s)000"
+
+    {
+        echo ".bail on"
+        cat "$REPO_ROOT/schema.sql"
+        echo "PRAGMA journal_mode=WAL;"
+        echo "PRAGMA busy_timeout=5000;"
+        echo "BEGIN;"
+        awk -v now="$now_ms" -v rows="$SEED_ROWS" -v q="'" '
+        BEGIN {
+            interval = int(86400000 / rows)
+            cols = "timestamp,device_id,device_type,device_ip,pm01,pm02,pm10,pm02_compensated,rco2,atmp,atmp_compensated,rhum,rhum_compensated,tvoc_index,nox_index,wifi,raw_json"
+            for (i = 0; i < rows; i++) {
+                ts = int(now - (rows - i) * interval)
+                if (i % 2 == 0) {
+                    printf "INSERT INTO readings (%s) VALUES (%d,%s84fce602549c%s,%sindoor%s,%s10.0.0.100%s,23.83,41.67,54.5,31.18,489,20.78,20.78,32.19,32.19,423.0,1,-51,%s{}%s);\n", cols, ts, q,q, q,q, q,q, q,q
+                } else {
+                    printf "INSERT INTO readings (%s) VALUES (%d,%secda3b1d09d8%s,%soutdoor%s,%s10.0.0.101%s,23.17,35.33,39.17,23.72,440,9.8,6.27,35.0,51.41,231.08,1,-42,%s{}%s);\n", cols, ts, q,q, q,q, q,q, q,q
+                }
+            }
+        }'
+        echo "COMMIT;"
+    } | sqlite3 "$db_path" >/dev/null
+}
+
+clean_db() {
+    rm -f "$1/airgradientz.db" "$1/airgradientz.db-wal" "$1/airgradientz.db-shm"
+}
+
+# ── Load testing ─────────────────────────────────────────────────────────────
+
+warmup() {
     local port="$1"
-    curl -sf "http://localhost:$port/api/stats" 2>/dev/null || echo "{}"
+    log "Warming up ($WARMUP requests per endpoint)..."
+    local endpoints=(/api/health /api/stats /api/devices /api/readings/latest
+        "/api/readings?from=0&to=9999999999999"
+        "/api/readings/count?from=0&to=9999999999999"
+        "/api/readings?from=0&to=9999999999999&downsample=1h")
+    for ep in "${endpoints[@]}"; do
+        for (( i=0; i<WARMUP; i++ )); do
+            curl -sf -o /dev/null "http://localhost:$port$ep" 2>/dev/null || true
+        done
+    done
 }
 
-get_rss_from_stats() {
-    local stats_json="$1"
-    echo "$stats_json" | jq -r '.memory_rss_bytes // empty' 2>/dev/null || echo ""
-}
-
-get_requests_from_stats() {
-    local stats_json="$1"
-    echo "$stats_json" | jq -r '.requests_served // empty' 2>/dev/null || echo ""
-}
-
-bytes_to_mb() {
-    local bytes="$1"
-    if [[ -z "$bytes" || "$bytes" == "-" || "$bytes" == "null" ]]; then
-        echo "-"
-        return
-    fi
-    # bc may omit leading zero; printf fixes it
-    local val
-    val="$(echo "scale=2; $bytes / 1048576" | bc -l)"
-    printf '%.2f' "$val"
-}
-
+# Run sequential load test. Returns "avg / p95" in milliseconds.
 run_load() {
-    local port="$1" endpoint="$2"
+    local port="$1" endpoint="$2" label="$3"
     local url="http://localhost:$port$endpoint"
-    local total=0
-    local count=0
+    local tmpfile="$BENCH_TMP/${label}.txt"
+    : > "$tmpfile"
 
-    for (( i=1; i<=REQUESTS_PER_ENDPOINT; i++ )); do
-        local time_s
-        time_s="$(curl -sf -o /dev/null -w '%{time_total}' "$url" 2>/dev/null || echo "")"
-        if [[ -n "$time_s" ]]; then
-            total="$(echo "$total + $time_s" | bc -l)"
-            count=$((count + 1))
-        fi
+    for (( i=0; i<REQUESTS; i++ )); do
+        curl -sf -o /dev/null -w '%{time_total}\n' "$url" >> "$tmpfile" 2>/dev/null || true
     done
 
-    if [[ $count -eq 0 ]]; then
-        echo "-"
-        return
-    fi
-
-    # Average in milliseconds
-    local avg
-    avg="$(echo "scale=2; ($total / $count) * 1000" | bc -l)"
-    printf '%.2f' "$avg"
+    sort -n "$tmpfile" | awk '
+    { t[NR] = $1; sum += $1; n++ }
+    END {
+        if (n == 0) { print "-"; exit }
+        avg = (sum / n) * 1000
+        p95i = int(n * 0.95); if (p95i < 1) p95i = 1
+        p95 = t[p95i] * 1000
+        printf "%.1f / %.1f", avg, p95
+    }'
 }
 
+# Run concurrent load test. Returns "avg / p95 / max" in milliseconds.
 run_concurrent_load() {
-    local port="$1" endpoint="$2" concurrency="$3"
+    local port="$1" endpoint="$2" n="$3"
     local url="http://localhost:$port$endpoint"
-    local tmpdir
-    tmpdir="$(mktemp -d)"
+    local tmpdir="$BENCH_TMP/conc"
+    mkdir -p "$tmpdir"
 
-    # Spawn N concurrent curl processes
-    for (( i=1; i<=concurrency; i++ )); do
-        curl -sf -o /dev/null -w '%{time_total}\n' "$url" > "$tmpdir/$i.txt" 2>/dev/null &
+    for (( i=0; i<n; i++ )); do
+        curl -sf -o /dev/null -w '%{time_total}\n' "$url" > "$tmpdir/$i" 2>/dev/null &
     done
     wait
 
-    # Collect times
-    local total=0 count=0 max=0
-    for (( i=1; i<=concurrency; i++ )); do
-        local t
-        t="$(cat "$tmpdir/$i.txt" 2>/dev/null || echo "")"
-        if [[ -n "$t" ]]; then
-            total="$(echo "$total + $t" | bc -l)"
-            count=$((count + 1))
-            if (( $(echo "$t > $max" | bc -l) )); then
-                max="$t"
-            fi
-        fi
-    done
+    cat "$tmpdir"/* 2>/dev/null | sort -n | awk '
+    { t[NR] = $1; sum += $1; n++ }
+    END {
+        if (n == 0) { print "-"; exit }
+        avg = (sum / n) * 1000
+        p95i = int(n * 0.95); if (p95i < 1) p95i = 1
+        p95 = t[p95i] * 1000
+        max = t[n] * 1000
+        printf "%.1f / %.1f / %.1f", avg, p95, max
+    }'
     rm -rf "$tmpdir"
-
-    if [[ $count -eq 0 ]]; then
-        echo "- -"
-        return
-    fi
-
-    local avg_ms max_ms
-    avg_ms="$(printf '%.2f' "$(echo "($total / $count) * 1000" | bc -l)")"
-    max_ms="$(printf '%.2f' "$(echo "$max * 1000" | bc -l)")"
-    echo "$avg_ms $max_ms"
 }
 
-get_binary_size() {
-    local binary_path="$1"
-    if [[ "$binary_path" == "n/a" ]]; then
-        echo "-"
-        return
-    fi
-
-    local full_path="$REPO_ROOT/$binary_path"
-    if [[ -f "$full_path" ]]; then
-        local size_bytes
-        size_bytes="$(stat --printf='%s' "$full_path" 2>/dev/null || wc -c < "$full_path" 2>/dev/null || echo "")"
-        if [[ -n "$size_bytes" ]]; then
-            bytes_to_mb "$size_bytes"
-            return
-        fi
-    fi
-    echo "-"
-}
-
-kill_impl() {
-    local pid="$1"
-    if kill -0 "$pid" 2>/dev/null; then
-        kill "$pid" 2>/dev/null || true
-        # Wait up to 3 seconds for graceful shutdown
-        local waited=0
-        while kill -0 "$pid" 2>/dev/null && [[ $waited -lt 6 ]]; do
-            sleep 0.5
-            waited=$((waited + 1))
-        done
-        # Force kill if still alive
-        if kill -0 "$pid" 2>/dev/null; then
-            kill -9 "$pid" 2>/dev/null || true
-            wait "$pid" 2>/dev/null || true
-        fi
-    fi
-    wait "$pid" 2>/dev/null || true
-}
-
-# ── Parse arguments ─────────────────────────────────────────────────────────
+# ── Argument parsing ─────────────────────────────────────────────────────────
 
 resolve_impls() {
     local requested=("$@")
-    local resolved=()
-
     if [[ ${#requested[@]} -eq 0 ]]; then
-        # Default: all implementations
+        printf '%s\n' "${IMPL_REGISTRY[@]}"
+        return
+    fi
+    for req in "${requested[@]}"; do
+        local found=false
         for entry in "${IMPL_REGISTRY[@]}"; do
-            resolved+=("$entry")
-        done
-    else
-        for req in "${requested[@]}"; do
-            local found=false
-            for entry in "${IMPL_REGISTRY[@]}"; do
-                local name
-                name="$(get_field "$entry" 1)"
-                if [[ "$name" == "$req" ]]; then
-                    resolved+=("$entry")
-                    found=true
-                    break
-                fi
-            done
-            if [[ "$found" == "false" ]]; then
-                log "WARNING: Unknown implementation '$req', skipping."
+            if [[ "$(get_field "$entry" 1)" == "$req" ]]; then
+                echo "$entry"
+                found=true
+                break
             fi
         done
-    fi
-
-    printf '%s\n' "${resolved[@]}"
+        [[ "$found" == "false" ]] && log "WARNING: Unknown implementation '$req', skipping."
+    done
 }
 
-# ── Metric storage ──────────────────────────────────────────────────────────
-# We store results in associative arrays keyed by impl name.
-
-declare -A R_STARTUP
-declare -A R_RSS_BASELINE
-declare -A R_RSS_AFTER
-declare -A R_AVG_READINGS
-declare -A R_AVG_LATEST
-declare -A R_AVG_DEVICES
-declare -A R_AVG_STATS
-declare -A R_REQUESTS
-declare -A R_BINARY_SIZE
-declare -A R_CONC_AVG
-declare -A R_CONC_MAX
-
-# Initialize all impls to "-"
-for impl_name in "${IMPL_ORDER[@]}"; do
-    R_STARTUP[$impl_name]="-"
-    R_RSS_BASELINE[$impl_name]="-"
-    R_RSS_AFTER[$impl_name]="-"
-    R_AVG_READINGS[$impl_name]="-"
-    R_AVG_LATEST[$impl_name]="-"
-    R_AVG_DEVICES[$impl_name]="-"
-    R_AVG_STATS[$impl_name]="-"
-    R_REQUESTS[$impl_name]="-"
-    R_BINARY_SIZE[$impl_name]="-"
-    R_CONC_AVG[$impl_name]="-"
-    R_CONC_MAX[$impl_name]="-"
-done
-
-# ── Main ─────────────────────────────────────────────────────────────────────
-
-check_deps
-
-# Parse --concurrent flag
 POSITIONAL=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --concurrent)
-            CONCURRENT="$2"
-            shift 2
-            ;;
-        *)
-            POSITIONAL+=("$1")
-            shift
-            ;;
+        --concurrent)  CONCURRENT="$2"; shift 2 ;;
+        --requests)    REQUESTS="$2"; shift 2 ;;
+        --seed-rows)   SEED_ROWS="$2"; shift 2 ;;
+        *)             POSITIONAL+=("$1"); shift ;;
     esac
 done
 
@@ -395,7 +311,37 @@ if [[ ${#IMPLS[@]} -eq 0 ]]; then
     exit 1
 fi
 
-log "Benchmarking ${#IMPLS[@]} implementation(s)..."
+# ── Metric storage ───────────────────────────────────────────────────────────
+
+declare -A R_BUILD R_STARTUP R_BINARY
+declare -A R_RSS_IDLE R_RSS_LOADED
+declare -A R_READINGS R_LATEST R_COUNT R_DOWNSAMPLE R_DEVICES R_STATS
+declare -A R_TOTAL_REQ R_CONC
+
+for impl_name in "${IMPL_ORDER[@]}"; do
+    R_BUILD[$impl_name]="-"
+    R_STARTUP[$impl_name]="-"
+    R_BINARY[$impl_name]="-"
+    R_RSS_IDLE[$impl_name]="-"
+    R_RSS_LOADED[$impl_name]="-"
+    R_READINGS[$impl_name]="-"
+    R_LATEST[$impl_name]="-"
+    R_COUNT[$impl_name]="-"
+    R_DOWNSAMPLE[$impl_name]="-"
+    R_DEVICES[$impl_name]="-"
+    R_STATS[$impl_name]="-"
+    R_TOTAL_REQ[$impl_name]="-"
+    R_CONC[$impl_name]="-"
+done
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+
+check_deps
+
+log "Benchmarking ${#IMPLS[@]} implementation(s)"
+log "  Requests per endpoint: $REQUESTS (+ $WARMUP warmup)"
+log "  Seed rows: $SEED_ROWS"
+[[ $CONCURRENT -gt 0 ]] && log "  Concurrent connections: $CONCURRENT"
 log ""
 
 for entry in "${IMPLS[@]}"; do
@@ -406,94 +352,102 @@ for entry in "${IMPLS[@]}"; do
     start_cmd="$(get_field "$entry" 5)"
     binary_path="$(get_field "$entry" 6)"
 
-    log "============================================"
-    log "Testing $name (port $port)"
-    log "============================================"
+    log "════════════════════════════════════════════"
+    log "  $name (port $port)"
+    log "════════════════════════════════════════════"
 
-    # Check directory exists
     if [[ ! -d "$REPO_ROOT/$dir" ]]; then
-        log "WARNING: Directory $dir does not exist, skipping $name."
+        log "WARNING: Directory $dir does not exist, skipping."
         continue
     fi
+
+    # Clean slate
+    clean_db "$REPO_ROOT/$dir"
 
     # Build
-    if ! build_impl "$name" "$build_cmd"; then
-        continue
-    fi
+    build_time="$(build_impl "$name" "$build_cmd")" || continue
+    R_BUILD[$name]="$build_time"
 
-    # Start
-    pid="$(start_impl "$name" "$start_cmd")"
+    # Seed database before starting
+    seed_db "$REPO_ROOT/$dir/airgradientz.db"
+
+    # Start and measure startup time
+    pid="$(start_impl "$start_cmd")"
     ACTIVE_PID="$pid"
+    ACTIVE_PORT="$port"
 
-    # Measure startup time (polls health endpoint)
     startup_ms="$(measure_startup "$port")" || true
     if [[ "$startup_ms" == "-" ]]; then
-        log "WARNING: $name failed to start, skipping."
-        kill_impl "$pid"
+        log "WARNING: $name failed to start within ${HEALTH_TIMEOUT}s, skipping."
+        kill_impl "$pid" "$port"
         ACTIVE_PID=""
+        ACTIVE_PORT=""
+        clean_db "$REPO_ROOT/$dir"
         continue
     fi
     R_STARTUP[$name]="$startup_ms"
 
-    # Baseline stats
-    log "Collecting baseline stats..."
-    baseline_stats="$(get_stats "$port")"
-    baseline_rss="$(get_rss_from_stats "$baseline_stats")"
-    R_RSS_BASELINE[$name]="$(bytes_to_mb "$baseline_rss")"
+    # Warmup
+    warmup "$port"
 
-    # Load test
-    log "Running load test ($REQUESTS_PER_ENDPOINT requests per endpoint)..."
+    # Baseline RSS (after warmup, before load)
+    stats="$(get_stats "$port")"
+    R_RSS_IDLE[$name]="$(bytes_to_mb "$(echo "$stats" | jq -r '.memory_rss_bytes // empty')")"
 
-    log "  /api/readings..."
-    R_AVG_READINGS[$name]="$(run_load "$port" '/api/readings?from=0&to=9999999999999')"
+    # Load tests (avg / p95)
+    log "Load testing ($REQUESTS requests per endpoint)..."
 
-    log "  /api/readings/latest..."
-    R_AVG_LATEST[$name]="$(run_load "$port" '/api/readings/latest')"
+    log "  /api/readings ..."
+    R_READINGS[$name]="$(run_load "$port" '/api/readings?from=0&to=9999999999999' "${name}_readings")"
 
-    log "  /api/devices..."
-    R_AVG_DEVICES[$name]="$(run_load "$port" '/api/devices')"
+    log "  /api/readings/latest ..."
+    R_LATEST[$name]="$(run_load "$port" '/api/readings/latest' "${name}_latest")"
 
-    log "  /api/stats..."
-    R_AVG_STATS[$name]="$(run_load "$port" '/api/stats')"
+    log "  /api/readings/count ..."
+    R_COUNT[$name]="$(run_load "$port" '/api/readings/count?from=0&to=9999999999999' "${name}_count")"
 
-    # Concurrent load test
+    log "  /api/readings?downsample=1h ..."
+    R_DOWNSAMPLE[$name]="$(run_load "$port" '/api/readings?from=0&to=9999999999999&downsample=1h' "${name}_downsample")"
+
+    log "  /api/devices ..."
+    R_DEVICES[$name]="$(run_load "$port" '/api/devices' "${name}_devices")"
+
+    log "  /api/stats ..."
+    R_STATS[$name]="$(run_load "$port" '/api/stats' "${name}_stats")"
+
+    # Concurrent load
     if [[ $CONCURRENT -gt 0 ]]; then
-        log "  Concurrent load ($CONCURRENT connections to /api/readings/latest)..."
-        read -r conc_avg conc_max <<< "$(run_concurrent_load "$port" '/api/readings/latest' "$CONCURRENT")"
-        R_CONC_AVG[$name]="$conc_avg"
-        R_CONC_MAX[$name]="$conc_max"
+        log "  Concurrent ($CONCURRENT connections to /api/readings/latest)..."
+        R_CONC[$name]="$(run_concurrent_load "$port" '/api/readings/latest' "$CONCURRENT")"
     fi
 
     # Post-load stats
-    log "Collecting post-load stats..."
-    post_stats="$(get_stats "$port")"
-    post_rss="$(get_rss_from_stats "$post_stats")"
-    R_RSS_AFTER[$name]="$(bytes_to_mb "$post_rss")"
-
-    requests_served="$(get_requests_from_stats "$post_stats")"
-    R_REQUESTS[$name]="${requests_served:-"-"}"
+    stats="$(get_stats "$port")"
+    R_RSS_LOADED[$name]="$(bytes_to_mb "$(echo "$stats" | jq -r '.memory_rss_bytes // empty')")"
+    R_TOTAL_REQ[$name]="$(echo "$stats" | jq -r '.requests_served // "-"')"
 
     # Binary size
-    R_BINARY_SIZE[$name]="$(get_binary_size "$binary_path")"
+    R_BINARY[$name]="$(get_binary_size "$binary_path")"
 
-    # Kill
+    # Stop and clean up
     log "Stopping $name..."
-    kill_impl "$pid"
+    kill_impl "$pid" "$port"
     ACTIVE_PID=""
+    ACTIVE_PORT=""
+    clean_db "$REPO_ROOT/$dir"
 
     log "$name done."
     log ""
 done
 
-# ── Build results table ─────────────────────────────────────────────────────
+# ── Report generation ────────────────────────────────────────────────────────
 
-# Determine which impls to include in the table (those that were requested or all)
+# Determine which impls ran (in canonical order)
 requested_names=()
 for entry in "${IMPLS[@]}"; do
     requested_names+=("$(get_field "$entry" 1)")
 done
 
-# Build column list preserving canonical order
 cols=()
 for impl_name in "${IMPL_ORDER[@]}"; do
     for req in "${requested_names[@]}"; do
@@ -504,23 +458,18 @@ for impl_name in "${IMPL_ORDER[@]}"; do
     done
 done
 
-# Generate markdown table
 generate_table() {
     local header="| Metric |"
     local separator="|--------|"
-
     for col in "${cols[@]}"; do
         header+=" ${DISPLAY_NAMES[$col]} |"
-        separator+="------|"
+        separator+="---:|"
     done
-
     echo "$header"
     echo "$separator"
 
-    # Row helper
     print_row() {
-        local label="$1"
-        shift
+        local label="$1"; shift
         local -n arr=$1
         local row="| $label |"
         for col in "${cols[@]}"; do
@@ -529,47 +478,51 @@ generate_table() {
         echo "$row"
     }
 
+    print_row "Build (ms)" R_BUILD
     print_row "Startup (ms)" R_STARTUP
-    print_row "RSS baseline (MB)" R_RSS_BASELINE
-    print_row "RSS after load (MB)" R_RSS_AFTER
-    print_row "/api/readings avg (ms)" R_AVG_READINGS
-    print_row "/api/readings/latest avg (ms)" R_AVG_LATEST
-    print_row "/api/devices avg (ms)" R_AVG_DEVICES
-    print_row "/api/stats avg (ms)" R_AVG_STATS
-    print_row "Requests served" R_REQUESTS
-    print_row "Binary size (MB)" R_BINARY_SIZE
+    print_row "Binary (MB)" R_BINARY
+    print_row "RSS idle (MB)" R_RSS_IDLE
+    print_row "RSS loaded (MB)" R_RSS_LOADED
+    echo "|---|$(printf -- '---|%.0s' "${cols[@]}")"
+    print_row "/readings (avg/p95 ms)" R_READINGS
+    print_row "/latest (avg/p95 ms)" R_LATEST
+    print_row "/count (avg/p95 ms)" R_COUNT
+    print_row "/downsample (avg/p95 ms)" R_DOWNSAMPLE
+    print_row "/devices (avg/p95 ms)" R_DEVICES
+    print_row "/stats (avg/p95 ms)" R_STATS
+    echo "|---|$(printf -- '---|%.0s' "${cols[@]}")"
+    print_row "Requests served" R_TOTAL_REQ
 
     if [[ $CONCURRENT -gt 0 ]]; then
-        print_row "Concurrent avg (ms) [N=$CONCURRENT]" R_CONC_AVG
-        print_row "Concurrent max (ms) [N=$CONCURRENT]" R_CONC_MAX
+        print_row "Concurrent (avg/p95/max ms) [N=$CONCURRENT]" R_CONC
     fi
+}
+
+footer_text() {
+    echo ""
+    echo "*$REQUESTS requests/endpoint (+ $WARMUP warmup), $SEED_ROWS seeded rows, avg/p95 in ms.*"
+    [[ $CONCURRENT -gt 0 ]] && echo "*Concurrent: $CONCURRENT simultaneous connections, avg/p95/max in ms.*"
+    echo ""
+    echo "*Generated $(date -Iseconds)*"
 }
 
 # Write report
 mkdir -p "$RESULTS_DIR"
 
-footer_text() {
-    if [[ $CONCURRENT -gt 0 ]]; then
-        echo "*${REQUESTS_PER_ENDPOINT} sequential requests per endpoint, plus ${CONCURRENT} concurrent connections. Times in milliseconds.*"
-    else
-        echo "*${REQUESTS_PER_ENDPOINT} sequential requests per endpoint. Times in milliseconds.*"
-    fi
-}
-
 {
-    echo "# Benchmark Results -- $DATE"
+    echo "# Benchmark Results — $TIMESTAMP"
     echo ""
     generate_table
-    echo ""
     footer_text
 } > "$RESULTS_FILE"
 
-log "============================================"
+log "════════════════════════════════════════════"
 log "Results written to $RESULTS_FILE"
-log "============================================"
+log "════════════════════════════════════════════"
+
+# Also print to stdout
 echo ""
-echo "# Benchmark Results -- $DATE"
+echo "# Benchmark Results — $TIMESTAMP"
 echo ""
 generate_table
-echo ""
 footer_text

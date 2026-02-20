@@ -62,11 +62,11 @@ func TestResponseShapes(t *testing.T) {
 	t.Run("reading required fields", func(t *testing.T) {
 		db := openTestDB(t)
 
-		if err := InsertReading(db, "192.168.1.1", indoorFull); err != nil {
+		if err := db.InsertReading("192.168.1.1", indoorFull); err != nil {
 			t.Fatalf("InsertReading: %v", err)
 		}
 
-		readings, err := QueryReadings(db, ReadingQuery{
+		readings, err := db.QueryReadings(ReadingQuery{
 			Device: "all",
 			From:   0,
 			To:     NowMillis() + 1000,
@@ -97,11 +97,11 @@ func TestResponseShapes(t *testing.T) {
 	t.Run("device no first_seen", func(t *testing.T) {
 		db := openTestDB(t)
 
-		if err := InsertReading(db, "192.168.1.1", indoorFull); err != nil {
+		if err := db.InsertReading("192.168.1.1", indoorFull); err != nil {
 			t.Fatalf("InsertReading: %v", err)
 		}
 
-		devices, err := GetDevices(db)
+		devices, err := db.GetDevices()
 		if err != nil {
 			t.Fatalf("GetDevices: %v", err)
 		}
@@ -134,7 +134,7 @@ func TestQueryEdgeCases(t *testing.T) {
 
 	// Insert enough readings to exercise limit edge cases.
 	for range 10 {
-		if err := InsertReading(h.db, "192.168.1.1", indoorFull); err != nil {
+		if err := h.db.InsertReading("192.168.1.1", indoorFull); err != nil {
 			t.Fatalf("InsertReading: %v", err)
 		}
 	}

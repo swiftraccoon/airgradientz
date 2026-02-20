@@ -161,12 +161,12 @@ normalize_devices() {
 
 # shellcheck disable=SC2329
 normalize_health() {
-    jq -S '[.[] | .lastSuccess = 0 | .lastError = 0 | .lastAttempt = 0 | .consecutiveFailures = 0]' 2>/dev/null || echo "null"
+    jq -S '[.[] | .lastSuccess = 0 | .lastError = 0 | .consecutiveFailures = 0]' 2>/dev/null || echo "null"
 }
 
 normalize_health_no_message() {
     # Strip error messages and volatile fields for structural comparison
-    jq -S '[.[] | .lastSuccess = 0 | .lastError = 0 | .lastAttempt = 0 | .consecutiveFailures = 0 | del(.lastErrorMessage)]' 2>/dev/null || echo "null"
+    jq -S '[.[] | .lastSuccess = 0 | .lastError = 0 | .consecutiveFailures = 0 | del(.lastErrorMessage)]' 2>/dev/null || echo "null"
 }
 
 # shellcheck disable=SC2329

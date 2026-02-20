@@ -4,6 +4,7 @@
 #include "http_client.h"
 #include "json.h"
 #include "log.h"
+#include "strbuf.h"
 
 #include <stdatomic.h>
 #include <stdio.h>
@@ -243,4 +244,73 @@ JsonValue *poller_get_health_json(struct AppState *state)
     pthread_rwlock_unlock(&state->health_lock);
 
     return arr;
+}
+
+/* ---- direct health serialization ---- */
+
+void poller_serialize_health_to(struct AppState *state, StrBuf *out)
+{
+    strbuf_append_char(out, '[');
+
+    pthread_rwlock_rdlock(&state->health_lock);
+    for (size_t i = 0; i < state->config.device_count; i++) {
+        const DeviceHealth *h = &state->health[i];
+        if (i > 0) strbuf_append_char(out, ',');
+
+        strbuf_append_char(out, '{');
+
+        json_serialize_string_to("ip", out);
+        strbuf_append_char(out, ':');
+        json_serialize_string_to(h->ip, out);
+
+        strbuf_append_char(out, ',');
+        json_serialize_string_to("label", out);
+        strbuf_append_char(out, ':');
+        json_serialize_string_to(h->label, out);
+
+        strbuf_append_char(out, ',');
+        json_serialize_string_to("status", out);
+        strbuf_append_char(out, ':');
+        const char *status_str = "unknown";
+        if (h->status == HEALTH_OK)    status_str = "ok";
+        if (h->status == HEALTH_ERROR) status_str = "error";
+        json_serialize_string_to(status_str, out);
+
+        strbuf_append_char(out, ',');
+        json_serialize_string_to("lastSuccess", out);
+        strbuf_append_char(out, ':');
+        if (h->last_success) {
+            json_serialize_i64_to(h->last_success, out);
+        } else {
+            strbuf_append(out, "null", 4);
+        }
+
+        strbuf_append_char(out, ',');
+        json_serialize_string_to("lastError", out);
+        strbuf_append_char(out, ':');
+        if (h->last_error) {
+            json_serialize_i64_to(h->last_error, out);
+        } else {
+            strbuf_append(out, "null", 4);
+        }
+
+        strbuf_append_char(out, ',');
+        json_serialize_string_to("lastErrorMessage", out);
+        strbuf_append_char(out, ':');
+        if (h->last_error_message[0]) {
+            json_serialize_string_to(h->last_error_message, out);
+        } else {
+            strbuf_append(out, "null", 4);
+        }
+
+        strbuf_append_char(out, ',');
+        json_serialize_string_to("consecutiveFailures", out);
+        strbuf_append_char(out, ':');
+        json_serialize_i64_to((int64_t)h->consecutive_failures, out);
+
+        strbuf_append_char(out, '}');
+    }
+    pthread_rwlock_unlock(&state->health_lock);
+
+    strbuf_append_char(out, ']');
 }

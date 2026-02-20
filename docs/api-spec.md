@@ -10,7 +10,7 @@ Historical sensor readings.
 
 | Param    | Type    | Default | Description                              |
 |----------|---------|---------|------------------------------------------|
-| `from`   | integer | 0       | Start time, epoch ms (inclusive)         |
+| `from`   | integer | now - 24h | Start time, epoch ms (inclusive)       |
 | `to`     | integer | now     | End time, epoch ms (inclusive)           |
 | `device` | string  | —       | Filter by device_id                      |
 | `limit`  | integer | —       | Max rows returned (0, negative, or missing = no explicit limit; always capped by `maxApiRows`) |
@@ -144,7 +144,7 @@ All errors return a JSON object with a single `error` field:
 
 | Param | Edge Case | Behavior |
 |-------|-----------|----------|
-| `from` | missing or empty | Defaults to `0` (all time) |
+| `from` | missing or empty | Defaults to `now - 24 hours` |
 | `to` | missing or empty | Defaults to current time |
 | `limit` | missing | No explicit limit; result capped by `maxApiRows` |
 | `limit` | `0` | Treated as no explicit limit; capped by `maxApiRows` |

@@ -8,7 +8,7 @@ set -euo pipefail
 # Usage: ./conformance/run.sh [--batch-size N] [--ref IMPL] [impl...]
 #        e.g. ./conformance/run.sh c nodejs go
 #        ./conformance/run.sh --batch-size 3 --ref c
-#        ./conformance/run.sh          # all implementations, batch size 5
+#        ./conformance/run.sh          # all implementations at once
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
@@ -16,7 +16,7 @@ REPO_ROOT="$(cd "${SCRIPT_DIR}/.." && pwd)"
 HEALTH_TIMEOUT=60   # seconds to wait for impl to become ready
 POLL_WAIT=20        # seconds to wait for at least one poll cycle
 BASE_PORT=19000     # starting port for impl allocation
-BATCH_SIZE=5        # max impls per batch (0 = all at once)
+BATCH_SIZE=0        # max impls per batch (0 = all at once)
 REF_IMPL="c"        # reference implementation name
 
 log() { echo "[conformance] $*" >&2; }
@@ -68,21 +68,30 @@ find_free_port() {
 # ── Process tracking ─────────────────────────────────────────────────────────
 
 declare -a CHILD_PIDS=()
+declare -a ALLOCATED_PORTS=()
 TMPDIR_PATH=""
+
+# Kill any process listening on a specific port.
+kill_port() {
+    local port="$1"
+    fuser -k "${port}/tcp" >/dev/null 2>&1 || true
+}
 
 # shellcheck disable=SC2329  # invoked via trap
 cleanup() {
     log "Cleaning up..."
+    # Kill tracked PIDs first
     for pid in "${CHILD_PIDS[@]}"; do
-        if kill -0 "${pid}" 2>/dev/null; then
-            kill "${pid}" 2>/dev/null || true
-        fi
+        kill "${pid}" 2>/dev/null || true
     done
     sleep 1
+    # Force-kill any survivors by port (catches orphaned child processes
+    # from cabal run, mix run, node, etc.)
+    for port in "${ALLOCATED_PORTS[@]}"; do
+        kill_port "${port}"
+    done
     for pid in "${CHILD_PIDS[@]}"; do
-        if kill -0 "${pid}" 2>/dev/null; then
-            kill -9 "${pid}" 2>/dev/null || true
-        fi
+        kill -9 "${pid}" 2>/dev/null || true
         wait "${pid}" 2>/dev/null || true
     done
     if [[ -n "${TMPDIR_PATH}" && -d "${TMPDIR_PATH}" ]]; then
@@ -149,24 +158,35 @@ wait_ready() {
     return 1
 }
 
-# Stop specific PIDs. Used to stop batch servers between batches.
-stop_pids() {
-    local -a pids_to_stop=("$@")
+# Stop specific PIDs and their ports. Uses port-based killing to ensure
+# child processes (cabal run, mix run, node, etc.) are also terminated.
+stop_pids_and_ports() {
+    local -a pids_to_stop=()
+    local -a ports_to_stop=()
+    # Parse "pid:port" pairs
+    local pair
+    for pair in "$@"; do
+        pids_to_stop+=("${pair%%:*}")
+        ports_to_stop+=("${pair##*:}")
+    done
+    # SIGTERM tracked PIDs
     for pid in "${pids_to_stop[@]}"; do
-        if kill -0 "${pid}" 2>/dev/null; then
-            kill "${pid}" 2>/dev/null || true
-        fi
+        kill "${pid}" 2>/dev/null || true
     done
     sleep 1
+    # Force-kill by port to catch orphaned children
+    for port in "${ports_to_stop[@]}"; do
+        kill_port "${port}"
+    done
     for pid in "${pids_to_stop[@]}"; do
-        if kill -0 "${pid}" 2>/dev/null; then
-            kill -9 "${pid}" 2>/dev/null || true
-        fi
+        kill -9 "${pid}" 2>/dev/null || true
         wait "${pid}" 2>/dev/null || true
     done
 }
 
-# Start an implementation server. Prints its PID.
+# Start an implementation server. Prints its PID to stdout.
+# NOTE: This is called in $() command substitution, so array modifications
+# here are lost. Callers must track PIDs/ports in the parent shell.
 start_impl() {
     local entry="$1"
     local name start_cmd port db_path
@@ -174,6 +194,9 @@ start_impl() {
     start_cmd="$(get_field "${entry}" 4)"
     port="${IMPL_PORT_MAP[${name}]}"
     db_path="${IMPL_DB_MAP[${name}]}"
+
+    # Kill anything that might be lingering on this port from a previous run
+    kill_port "${port}"
 
     log "  Starting ${name} on port ${port}..."
     (
@@ -183,9 +206,7 @@ start_impl() {
         export CONFIG_PATH="${CONFIG_PATH}"
         eval "${start_cmd}"
     ) >/dev/null 2>&1 &
-    local pid=$!
-    CHILD_PIDS+=("${pid}")
-    echo "${pid}"
+    echo "$!"
 }
 
 # ── Main ─────────────────────────────────────────────────────────────────────
@@ -320,7 +341,7 @@ jq -n \
     --argjson ports "${PORTS_JSON}" \
     --arg mock_ip "127.0.0.1:${MOCK_PORT}" \
     '{
-        pollIntervalMs: 120000,
+        pollIntervalMs: 600000,
         fetchTimeoutMs: 5000,
         maxApiRows: 10000,
         downsampleBuckets: {"5m": 300000, "10m": 600000, "15m": 900000, "30m": 1800000, "1h": 3600000, "1d": 86400000, "1w": 604800000},
@@ -363,6 +384,8 @@ fi
 
 log "Starting reference implementation: ${REF_IMPL}"
 ref_pid="$(start_impl "${REF_ENTRY}")"
+CHILD_PIDS+=("${ref_pid}")
+ALLOCATED_PORTS+=("${IMPL_PORT_MAP[${REF_IMPL}]}")
 
 # shellcheck disable=SC2310
 if ! wait_ready "${REF_IMPL}" "${IMPL_PORT_MAP[${REF_IMPL}]}"; then
@@ -426,7 +449,7 @@ while [[ ${idx} -lt ${#TESTABLE_IMPLS[@]} ]]; do
     log "── Batch ${batch_num}/${total_batches}: ${batch_names[*]} ──"
 
     # Start batch servers with staggered startup
-    declare -a batch_pids=()
+    declare -a batch_pid_ports=()
     declare -a batch_compare_args=("${REF_IMPL}:${ref_port}")
     batch_all_ready=true
 
@@ -435,7 +458,9 @@ while [[ ${idx} -lt ${#TESTABLE_IMPLS[@]} ]]; do
         port="${IMPL_PORT_MAP[${name}]}"
 
         pid="$(start_impl "${entry}")"
-        batch_pids+=("${pid}")
+        CHILD_PIDS+=("${pid}")
+        ALLOCATED_PORTS+=("${port}")
+        batch_pid_ports+=("${pid}:${port}")
 
         # Staggered: wait for this server to be ready before starting next
         ready=false
@@ -472,8 +497,8 @@ while [[ ${idx} -lt ${#TESTABLE_IMPLS[@]} ]]; do
 
     # Stop batch servers (reference stays running)
     log "Stopping batch ${batch_num} servers..."
-    stop_pids "${batch_pids[@]}"
-    unset batch_pids
+    stop_pids_and_ports "${batch_pid_ports[@]}"
+    unset batch_pid_ports
 
     idx=${batch_end}
 done

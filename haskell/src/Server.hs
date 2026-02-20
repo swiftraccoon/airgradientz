@@ -22,10 +22,8 @@ import System.Posix.Files (FileStatus, getFileStatus, fileSize)
 import System.Posix.Process (getProcessID)
 import Text.Read (readMaybe)
 
-import qualified Data.Aeson as Aeson
 import qualified Data.ByteString as BS
 import qualified Data.ByteString.Char8 as BS8
-import qualified Data.ByteString.Lazy as LBS
 import qualified Data.Map.Strict as Map
 import qualified Data.Text as T
 import qualified Network.Socket as NS
@@ -36,6 +34,7 @@ import DB (DBHandle, ReadingQuery(..)
           , queryReadings, getLatestReadings, getDevices
           , getReadingsCount, getFilteredCount, nowMillis
           , readingToJSON, deviceSummaryToJSON)
+import Json (Value(..), encode, object, (.=))
 import Poller (PollerHandle, getHealthJSON, getPollStats)
 
 data ServerStats = ServerStats
@@ -195,7 +194,7 @@ doQuery conn dbMVar cfg from' to' device effectiveLimit bucket = do
       logMsg $ "[api] query_readings error: " ++ show e
       sendErrorResponse conn 500 "Internal server error"
     Right readings ->
-      sendJSON conn (Aeson.encode (map readingToJSON readings))
+      sendJSON conn (encode (Array (map readingToJSON readings)))
 
 handleLatest :: NS.Socket -> MVar DBHandle -> IO ()
 handleLatest conn dbMVar = do
@@ -205,7 +204,7 @@ handleLatest conn dbMVar = do
       logMsg $ "[api] get_latest_readings error: " ++ show e
       sendErrorResponse conn 500 "Internal server error"
     Right readings ->
-      sendJSON conn (Aeson.encode (map readingToJSON readings))
+      sendJSON conn (encode (Array (map readingToJSON readings)))
 
 handleReadingsCount :: NS.Socket -> MVar DBHandle -> BS.ByteString -> IO ()
 handleReadingsCount conn dbMVar qs = do
@@ -221,8 +220,8 @@ handleReadingsCount conn dbMVar qs = do
       logMsg $ "[api] readings_count error: " ++ show e
       sendErrorResponse conn 500 "Internal server error"
     Right count -> do
-      let body = Aeson.object [ "count" Aeson..= count ]
-      sendJSON conn (Aeson.encode body)
+      let body = object [ "count" .= count ]
+      sendJSON conn (encode body)
 
 handleDevices :: NS.Socket -> MVar DBHandle -> IO ()
 handleDevices conn dbMVar = do
@@ -232,27 +231,27 @@ handleDevices conn dbMVar = do
       logMsg $ "[api] get_devices error: " ++ show e
       sendErrorResponse conn 500 "Internal server error"
     Right devs ->
-      sendJSON conn (Aeson.encode (map deviceSummaryToJSON devs))
+      sendJSON conn (encode (Array (map deviceSummaryToJSON devs)))
 
 handleHealth :: NS.Socket -> PollerHandle -> IO ()
 handleHealth conn pollerH = do
   healthJSON <- getHealthJSON pollerH
-  sendJSON conn (Aeson.encode healthJSON)
+  sendJSON conn (encode (Array healthJSON))
 
 handleConfig :: NS.Socket -> Config -> IO ()
 handleConfig conn cfg = do
-  let devs = [ Aeson.object
-                 [ "ip"    Aeson..= deviceIp d
-                 , "label" Aeson..= deviceLabel d
+  let devs = [ object
+                 [ "ip"    .= deviceIp d
+                 , "label" .= deviceLabel d
                  ]
              | d <- cfgDevices cfg
              ]
-      body = Aeson.object
-        [ "pollIntervalMs"      Aeson..= cfgPollIntervalMs cfg
-        , "downsampleBuckets"   Aeson..= cfgDownsampleBuckets cfg
-        , "devices"             Aeson..= devs
+      body = object
+        [ "pollIntervalMs"      .= cfgPollIntervalMs cfg
+        , "downsampleBuckets"   .= cfgDownsampleBuckets cfg
+        , "devices"             .= devs
         ]
-  sendJSON conn (Aeson.encode body)
+  sendJSON conn (encode body)
 
 handleStats :: NS.Socket -> MVar DBHandle -> Config -> PollerHandle -> ServerStats -> IO ()
 handleStats conn dbMVar cfg pollerH stats = do
@@ -267,22 +266,22 @@ handleStats conn dbMVar cfg pollerH stats = do
   reqServed <- readIORef (ssRequestsServed stats)
   activeConns <- readIORef (ssActiveConnections stats)
   (successes, failures) <- getPollStats pollerH
-  let body = Aeson.object
-        [ "implementation"     Aeson..= ("haskell" :: T.Text)
-        , "pid"                Aeson..= pid
-        , "uptime_ms"          Aeson..= uptimeMs
-        , "memory_rss_bytes"   Aeson..= rss
-        , "db_size_bytes"      Aeson..= dbSize
-        , "readings_count"     Aeson..= readingsCount
-        , "requests_served"    Aeson..= reqServed
-        , "active_connections" Aeson..= activeConns
-        , "poll_successes"     Aeson..= successes
-        , "poll_failures"      Aeson..= failures
-        , "pool_alloc_count"   Aeson..= (0 :: Int64)
-        , "pool_bytes_used"    Aeson..= (0 :: Int64)
-        , "started_at"         Aeson..= ssStartedAt stats
+  let body = object
+        [ "implementation"     .= ("haskell" :: T.Text)
+        , "pid"                .= pid
+        , "uptime_ms"          .= uptimeMs
+        , "memory_rss_bytes"   .= rss
+        , "db_size_bytes"      .= dbSize
+        , "readings_count"     .= readingsCount
+        , "requests_served"    .= reqServed
+        , "active_connections" .= activeConns
+        , "poll_successes"     .= successes
+        , "poll_failures"      .= failures
+        , "pool_alloc_count"   .= (0 :: Int64)
+        , "pool_bytes_used"    .= (0 :: Int64)
+        , "started_at"         .= ssStartedAt stats
         ]
-  sendJSON conn (Aeson.encode body)
+  sendJSON conn (encode body)
 
 urlDecodePath :: String -> String
 urlDecodePath [] = []
@@ -341,10 +340,9 @@ securityHeaders =
   "X-Content-Type-Options: nosniff\r\n\
   \X-Frame-Options: DENY\r\n"
 
-sendJSON :: NS.Socket -> LBS.ByteString -> IO ()
-sendJSON conn body = do
-  let bodyBS = LBS.toStrict body
-      hdr = BS8.pack $ "HTTP/1.1 200 OK\r\n"
+sendJSON :: NS.Socket -> BS.ByteString -> IO ()
+sendJSON conn bodyBS = do
+  let hdr = BS8.pack $ "HTTP/1.1 200 OK\r\n"
         ++ "Content-Type: application/json\r\n"
         ++ "Content-Length: " ++ show (BS.length bodyBS) ++ "\r\n"
         ++ securityHeaders

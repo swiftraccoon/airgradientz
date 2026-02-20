@@ -59,8 +59,17 @@ pub(crate) fn handle_readings(state: &AppState, req: &HttpRequest) -> HttpRespon
 
     match db::query_readings(&conn, &query) {
         Ok(readings) => {
-            let items: Vec<JsonValue> = readings.iter().map(db::Reading::to_json).collect();
-            HttpResponse::ok_json(&json_array(items))
+            // Pre-allocate: ~300 bytes per reading for typical JSON output
+            let mut buf = String::with_capacity(readings.len() * 300 + 2);
+            buf.push('[');
+            for (i, reading) in readings.iter().enumerate() {
+                if i > 0 {
+                    buf.push(',');
+                }
+                reading.write_json(&mut buf);
+            }
+            buf.push(']');
+            HttpResponse::ok_json_raw(buf)
         }
         Err(e) => {
             log!("[api] query_readings error: {e}");
@@ -91,7 +100,8 @@ pub(crate) fn handle_readings_count(state: &AppState, req: &HttpRequest) -> Http
     match db::get_filtered_count(&conn, from, to, device.as_deref()) {
         Ok(count) => {
             let body = json_object(vec![("count", JsonValue::from_i64(count))]);
-            HttpResponse::ok_json(&body)
+            let serialized = crate::json::serialize_to_string(&body, 32);
+            HttpResponse::ok_json_raw(serialized)
         }
         Err(e) => {
             log!("[api] get_filtered_count error: {e}");
@@ -107,8 +117,16 @@ pub(crate) fn handle_readings_latest(state: &AppState) -> HttpResponse {
 
     match db::get_latest_readings(&conn) {
         Ok(readings) => {
-            let items: Vec<JsonValue> = readings.iter().map(db::Reading::to_json).collect();
-            HttpResponse::ok_json(&json_array(items))
+            let mut buf = String::with_capacity(readings.len() * 300 + 2);
+            buf.push('[');
+            for (i, reading) in readings.iter().enumerate() {
+                if i > 0 {
+                    buf.push(',');
+                }
+                reading.write_json(&mut buf);
+            }
+            buf.push(']');
+            HttpResponse::ok_json_raw(buf)
         }
         Err(e) => {
             log!("[api] get_latest_readings error: {e}");
@@ -124,8 +142,16 @@ pub(crate) fn handle_devices(state: &AppState) -> HttpResponse {
 
     match db::get_devices(&conn) {
         Ok(devices) => {
-            let items: Vec<JsonValue> = devices.iter().map(db::DeviceSummary::to_json).collect();
-            HttpResponse::ok_json(&json_array(items))
+            let mut buf = String::with_capacity(devices.len() * 150 + 2);
+            buf.push('[');
+            for (i, device) in devices.iter().enumerate() {
+                if i > 0 {
+                    buf.push(',');
+                }
+                device.write_json(&mut buf);
+            }
+            buf.push(']');
+            HttpResponse::ok_json_raw(buf)
         }
         Err(e) => {
             log!("[api] get_devices error: {e}");
@@ -136,7 +162,8 @@ pub(crate) fn handle_devices(state: &AppState) -> HttpResponse {
 
 pub(crate) fn handle_health(state: &AppState) -> HttpResponse {
     let json = poller::get_health_json(state);
-    HttpResponse::ok_json(&json)
+    let body = crate::json::serialize_to_string(&json, 256);
+    HttpResponse::ok_json_raw(body)
 }
 
 pub(crate) fn handle_config(state: &AppState) -> HttpResponse {
@@ -152,11 +179,11 @@ pub(crate) fn handle_config(state: &AppState) -> HttpResponse {
         })
         .collect();
 
-    let buckets: Vec<(String, JsonValue)> = state
+    let buckets: Vec<(std::borrow::Cow<'static, str>, JsonValue)> = state
         .config
         .downsample_buckets
         .iter()
-        .map(|(key, ms)| (key.clone(), JsonValue::from_i64(*ms)))
+        .map(|(key, ms)| (std::borrow::Cow::Owned(key.clone()), JsonValue::from_i64(*ms)))
         .collect();
 
     let config = json_object(vec![
@@ -171,7 +198,8 @@ pub(crate) fn handle_config(state: &AppState) -> HttpResponse {
         ("devices", json_array(devices)),
     ]);
 
-    HttpResponse::ok_json(&config)
+    let body = crate::json::serialize_to_string(&config, 512);
+    HttpResponse::ok_json_raw(body)
 }
 
 fn read_rss_bytes() -> u64 {
@@ -220,5 +248,6 @@ pub(crate) fn handle_stats(state: &AppState) -> HttpResponse {
         ("started_at", JsonValue::from_i64(state.started_at)),
     ]);
 
-    HttpResponse::ok_json(&body)
+    let serialized = crate::json::serialize_to_string(&body, 512);
+    HttpResponse::ok_json_raw(serialized)
 }

@@ -19,20 +19,19 @@ module DB
   ) where
 
 import Control.Exception (bracket)
-import Data.Aeson (Value(..), Object, encode, object, (.=))
 import Data.Int (Int64)
 import Data.Maybe (fromMaybe)
 import Data.Time.Clock.POSIX (getPOSIXTime)
 import System.Directory (doesFileExist)
 import Log (logMsg)
 
-import qualified Data.Aeson.Key as Key
-import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString as BS
-import qualified Data.ByteString.Lazy as LBS
 import qualified Data.Text as T
 import qualified Data.Text.Encoding as TE
 import qualified Database.SQLite3 as SQL
+
+import Json (Value(..), JsonNumber(..), JsonObject, encode, object, (.=),
+             objectLookup, objectEmpty)
 
 -- | Opaque database handle wrapping connection + loaded queries.
 data DBHandle = DBHandle
@@ -202,12 +201,12 @@ insertReading :: DBHandle -> T.Text -> Value -> IO ()
 insertReading h ip jsonVal = do
   let obj = case jsonVal of
               Object o -> o
-              _        -> KM.empty
+              _        -> objectEmpty
   ts <- nowMillis
   let serial    = getTextOr "unknown" "serialno" obj
       model     = getTextOr "" "model" obj
       devType   = classifyDevice model
-      rawJSON   = TE.decodeUtf8 $ LBS.toStrict $ encode jsonVal
+      rawJSON   = TE.decodeUtf8 $ encode jsonVal
 
   bracket (SQL.prepare (dbConn h) (dbInsertSQL h)) SQL.finalize $ \stmt -> do
     SQL.bindNamed stmt
@@ -272,12 +271,12 @@ queryDownsampled h q = do
       bucket = T.pack (show (rqDownsampleMs q))
       selectCols = "(timestamp / " <> bucket <> ") * " <> bucket <> " AS timestamp, "
                 <> "device_id, device_type, device_ip, "
-                <> "AVG(pm01) AS pm01, AVG(pm02) AS pm02, AVG(pm10) AS pm10, "
-                <> "AVG(pm02_compensated) AS pm02_compensated, "
+                <> "CAST(AVG(pm01) AS REAL) AS pm01, CAST(AVG(pm02) AS REAL) AS pm02, CAST(AVG(pm10) AS REAL) AS pm10, "
+                <> "CAST(AVG(pm02_compensated) AS REAL) AS pm02_compensated, "
                 <> "CAST(AVG(rco2) AS INTEGER) AS rco2, "
-                <> "AVG(atmp) AS atmp, AVG(atmp_compensated) AS atmp_compensated, "
-                <> "AVG(rhum) AS rhum, AVG(rhum_compensated) AS rhum_compensated, "
-                <> "AVG(tvoc_index) AS tvoc_index, AVG(nox_index) AS nox_index, "
+                <> "CAST(AVG(atmp) AS REAL) AS atmp, CAST(AVG(atmp_compensated) AS REAL) AS atmp_compensated, "
+                <> "CAST(AVG(rhum) AS REAL) AS rhum, CAST(AVG(rhum_compensated) AS REAL) AS rhum_compensated, "
+                <> "CAST(AVG(tvoc_index) AS REAL) AS tvoc_index, CAST(AVG(nox_index) AS REAL) AS nox_index, "
                 <> "CAST(AVG(wifi) AS INTEGER) AS wifi"
       baseSql = "SELECT " <> selectCols <> " FROM readings WHERE "
       (whereSql, params)
@@ -451,20 +450,22 @@ classifyDevice model
   | T.length model >= 2 && T.index model 0 == 'I' && T.index model 1 == '-' = "indoor"
   | otherwise = "outdoor"
 
-getTextOr :: T.Text -> T.Text -> Object -> T.Text
-getTextOr def key obj = case KM.lookup (Key.fromText key) obj of
+getTextOr :: T.Text -> T.Text -> JsonObject -> T.Text
+getTextOr def key obj = case objectLookup key obj of
   Just (String s) | not (T.null s) -> s
   _ -> def
 
-optFloat :: T.Text -> Object -> SQL.SQLData
-optFloat key obj = case KM.lookup (Key.fromText key) obj of
-  Just (Number n) -> SQL.SQLFloat (realToFrac n)
-  _               -> SQL.SQLNull
+optFloat :: T.Text -> JsonObject -> SQL.SQLData
+optFloat key obj = case objectLookup key obj of
+  Just (Number (JDbl n)) -> SQL.SQLFloat n
+  Just (Number (JInt n)) -> SQL.SQLFloat (fromIntegral n)
+  _                      -> SQL.SQLNull
 
-optInt :: T.Text -> Object -> SQL.SQLData
-optInt key obj = case KM.lookup (Key.fromText key) obj of
-  Just (Number n) -> SQL.SQLInteger (round n)
-  _               -> SQL.SQLNull
+optInt :: T.Text -> JsonObject -> SQL.SQLData
+optInt key obj = case objectLookup key obj of
+  Just (Number (JInt n)) -> SQL.SQLInteger n
+  Just (Number (JDbl n)) -> SQL.SQLInteger (round n)
+  _                      -> SQL.SQLNull
 
 sqlToInt64 :: SQL.SQLData -> Int64
 sqlToInt64 (SQL.SQLInteger i) = i

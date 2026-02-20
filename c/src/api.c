@@ -304,3 +304,121 @@ JsonValue *api_handle_stats(struct AppState *state, int *status)
     *status = 200;
     return obj;
 }
+
+/* ================================================================
+ * Fast pre-serialized handlers (no JSON DOM for array endpoints)
+ * ================================================================ */
+
+StrBuf api_handle_readings_fast(struct AppState *state, const HttpReq *req, int *status)
+{
+    int64_t now = db_now_millis();
+    int64_t default_from = now - 24LL * 60 * 60 * 1000;
+
+    int64_t from  = parse_i64_param(req->query, "from",  default_from);
+    int64_t to    = parse_i64_param(req->query, "to",    now);
+
+    char *device = query_param(req->query, "device");
+
+    /* Parse downsample parameter */
+    int64_t downsample_ms = 0;
+    char *ds = query_param(req->query, "downsample");
+    if (ds) {
+        if (ds[0] != '\0') {
+            downsample_ms = downsample_lookup(&state->config, ds);
+            if (downsample_ms == 0) {
+                free(ds);
+                free(device);
+                *status = 400;
+                StrBuf body = strbuf_new();
+                strbuf_append_cstr(&body, "{\"error\":\"invalid downsample value\"}");
+                return body;
+            }
+        }
+        free(ds);
+    }
+
+    int64_t requested_limit = parse_i64_param(req->query, "limit",
+                                              (int64_t)state->config.max_api_rows);
+    int64_t max = (int64_t)state->config.max_api_rows;
+    int64_t effective_limit = (requested_limit > 0 && requested_limit < max)
+                             ? requested_limit : max;
+
+    ReadingQuery q;
+    q.device        = device ? device : "all";
+    q.from          = from;
+    q.to            = to;
+    q.limit         = effective_limit;
+    q.downsample_ms = downsample_ms;
+
+    ReadingList rl;
+    pthread_mutex_lock(&state->db_mutex);
+    int rc = db_query_readings(state->db, &q, &rl);
+    pthread_mutex_unlock(&state->db_mutex);
+
+    free(device);
+
+    if (rc != 0) {
+        *status = 500;
+        StrBuf body = strbuf_new();
+        return body;
+    }
+
+    /* Pre-size: ~300 bytes per reading */
+    StrBuf body = strbuf_new_with_cap(rl.count * 300 + 2);
+    reading_list_serialize_to(&rl, &body);
+    reading_list_free(&rl);
+
+    *status = 200;
+    return body;
+}
+
+StrBuf api_handle_readings_latest_fast(struct AppState *state, int *status)
+{
+    ReadingList rl;
+    pthread_mutex_lock(&state->db_mutex);
+    int rc = db_get_latest_readings(state->db, &rl);
+    pthread_mutex_unlock(&state->db_mutex);
+
+    if (rc != 0) {
+        *status = 500;
+        StrBuf body = strbuf_new();
+        return body;
+    }
+
+    StrBuf body = strbuf_new_with_cap(rl.count * 300 + 2);
+    reading_list_serialize_to(&rl, &body);
+    reading_list_free(&rl);
+
+    *status = 200;
+    return body;
+}
+
+StrBuf api_handle_devices_fast(struct AppState *state, int *status)
+{
+    DeviceSummaryList dl;
+    pthread_mutex_lock(&state->db_mutex);
+    int rc = db_get_devices(state->db, &dl);
+    pthread_mutex_unlock(&state->db_mutex);
+
+    if (rc != 0) {
+        *status = 500;
+        StrBuf body = strbuf_new();
+        return body;
+    }
+
+    StrBuf body = strbuf_new_with_cap(dl.count * 200 + 2);
+    device_summary_list_serialize_to(&dl, &body);
+    device_summary_list_free(&dl);
+
+    *status = 200;
+    return body;
+}
+
+StrBuf api_handle_health_fast(struct AppState *state, int *status)
+{
+    StrBuf body = strbuf_new_with_cap(state->config.device_count * 300 + 2);
+    poller_serialize_health_to(state, &body);
+
+    *status = 200;
+    return body;
+}

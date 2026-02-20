@@ -47,7 +47,7 @@ defmodule Airgradientz.Config do
       Enum.reduce_while(candidates, :none, fn path, acc ->
         case File.read(path) do
           {:ok, content} ->
-            case Jason.decode(content) do
+            case Airgradientz.Json.decode(content) do
               {:ok, json} when is_map(json) ->
                 Logger.info("[config] Loaded config from #{Path.expand(path)}")
                 {:halt, {:ok, json}}

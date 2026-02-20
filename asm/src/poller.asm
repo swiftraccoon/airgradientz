@@ -643,7 +643,8 @@ poller_thread_main:
     mov rbp, rsp
     push rbx
     push r12
-    sub rsp, 32
+    push r13
+    sub rsp, 24
 
 .ptm_loop:
     cmp qword [g_shutdown], 0
@@ -667,25 +668,43 @@ poller_thread_main:
     jmp .ptm_device_loop
 
 .ptm_sleep:
-    ; Sleep for poll interval
-    ; Convert milliseconds to timespec {seconds, nanoseconds}
+    ; Sleep for poll interval in 1-second chunks so g_shutdown is checked promptly.
+    ; Convert milliseconds to total seconds (r13 = remaining seconds).
     mov eax, [g_poll_interval_ms]
     xor edx, edx
     mov ecx, 1000
     div ecx                  ; eax = seconds, edx = remaining ms
-    mov [rsp], rax           ; tv_sec (zero-extended)
+    mov r13d, eax            ; r13 = remaining whole seconds
+
+    ; Sleep the fractional part first (if any)
+    test edx, edx
+    jz .ptm_sleep_loop
+    mov qword [rsp], 0       ; tv_sec = 0
     imul edx, 1000000        ; ms to ns
     mov [rsp + 8], rdx       ; tv_nsec
-
     lea rdi, [rsp]
-    xor esi, esi             ; remaining = NULL
+    xor esi, esi
     call nanosleep wrt ..plt
 
-    jmp .ptm_loop
+.ptm_sleep_loop:
+    cmp qword [g_shutdown], 0
+    jne .ptm_exit
+    test r13d, r13d
+    jz .ptm_loop             ; done sleeping, poll again
+
+    mov qword [rsp], 1       ; tv_sec = 1
+    mov qword [rsp + 8], 0   ; tv_nsec = 0
+    lea rdi, [rsp]
+    xor esi, esi
+    call nanosleep wrt ..plt
+
+    dec r13d
+    jmp .ptm_sleep_loop
 
 .ptm_exit:
     xor eax, eax
-    add rsp, 32
+    add rsp, 24
+    pop r13
     pop r12
     pop rbx
     pop rbp

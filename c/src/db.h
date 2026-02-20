@@ -96,4 +96,10 @@ void db_get_pool_stats(uint64_t *alloc_count, uint64_t *bytes_used);
 JsonValue *reading_to_json(const Reading *r);
 JsonValue *device_summary_to_json(const DeviceSummary *d);
 
+/* Serialize an entire ReadingList as a JSON array directly to StrBuf. */
+void reading_list_serialize_to(const ReadingList *rl, StrBuf *out);
+
+/* Serialize an entire DeviceSummaryList as a JSON array directly to StrBuf. */
+void device_summary_list_serialize_to(const DeviceSummaryList *dl, StrBuf *out);
+
 #endif /* DB_H */

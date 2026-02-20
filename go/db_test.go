@@ -41,7 +41,7 @@ func TestMain(m *testing.M) {
 	os.Exit(m.Run())
 }
 
-func openTestDB(t *testing.T) *sql.DB {
+func openTestDB(t *testing.T) *DB {
 	t.Helper()
 	tmp := t.TempDir()
 	dbPath := filepath.Join(tmp, "test.db")
@@ -56,11 +56,11 @@ func openTestDB(t *testing.T) *sql.DB {
 func TestInsertAndQueryReading(t *testing.T) {
 	db := openTestDB(t)
 
-	if err := InsertReading(db, "192.168.1.1", indoorFull); err != nil {
+	if err := db.InsertReading("192.168.1.1", indoorFull); err != nil {
 		t.Fatalf("InsertReading: %v", err)
 	}
 
-	readings, err := QueryReadings(db, ReadingQuery{
+	readings, err := db.QueryReadings(ReadingQuery{
 		Device: "all",
 		From:   0,
 		To:     NowMillis() + 1000,
@@ -140,11 +140,11 @@ func TestGetSerial(t *testing.T) {
 func TestNullFieldsAfterBoot(t *testing.T) {
 	db := openTestDB(t)
 
-	if err := InsertReading(db, "192.168.1.1", afterBoot); err != nil {
+	if err := db.InsertReading("192.168.1.1", afterBoot); err != nil {
 		t.Fatalf("InsertReading: %v", err)
 	}
 
-	readings, err := QueryReadings(db, ReadingQuery{
+	readings, err := db.QueryReadings(ReadingQuery{
 		Device: "all", From: 0, To: NowMillis() + 1000, Limit: 100,
 	})
 	if err != nil {
@@ -184,11 +184,11 @@ func TestNullFieldsAfterBoot(t *testing.T) {
 func TestZeroCompensatedValues(t *testing.T) {
 	db := openTestDB(t)
 
-	if err := InsertReading(db, "192.168.1.1", zeroCompensated); err != nil {
+	if err := db.InsertReading("192.168.1.1", zeroCompensated); err != nil {
 		t.Fatalf("InsertReading: %v", err)
 	}
 
-	readings, err := QueryReadings(db, ReadingQuery{
+	readings, err := db.QueryReadings(ReadingQuery{
 		Device: "all", From: 0, To: NowMillis() + 1000, Limit: 100,
 	})
 	if err != nil {
@@ -216,15 +216,15 @@ func TestZeroCompensatedValues(t *testing.T) {
 func TestDeviceFiltering(t *testing.T) {
 	db := openTestDB(t)
 
-	if err := InsertReading(db, "192.168.1.1", indoorFull); err != nil {
+	if err := db.InsertReading("192.168.1.1", indoorFull); err != nil {
 		t.Fatal(err)
 	}
-	if err := InsertReading(db, "192.168.1.2", outdoorFull); err != nil {
+	if err := db.InsertReading("192.168.1.2", outdoorFull); err != nil {
 		t.Fatal(err)
 	}
 
 	t.Run("filter by device", func(t *testing.T) {
-		readings, err := QueryReadings(db, ReadingQuery{
+		readings, err := db.QueryReadings(ReadingQuery{
 			Device: testDeviceID, From: 0, To: NowMillis() + 1000, Limit: 100,
 		})
 		if err != nil {
@@ -239,7 +239,7 @@ func TestDeviceFiltering(t *testing.T) {
 	})
 
 	t.Run("all devices", func(t *testing.T) {
-		readings, err := QueryReadings(db, ReadingQuery{
+		readings, err := db.QueryReadings(ReadingQuery{
 			Device: "all", From: 0, To: NowMillis() + 1000, Limit: 100,
 		})
 		if err != nil {
@@ -251,7 +251,7 @@ func TestDeviceFiltering(t *testing.T) {
 	})
 
 	t.Run("empty device means all", func(t *testing.T) {
-		readings, err := QueryReadings(db, ReadingQuery{
+		readings, err := db.QueryReadings(ReadingQuery{
 			Device: "", From: 0, To: NowMillis() + 1000, Limit: 100,
 		})
 		if err != nil {
@@ -263,7 +263,7 @@ func TestDeviceFiltering(t *testing.T) {
 	})
 
 	t.Run("nonexistent device", func(t *testing.T) {
-		readings, err := QueryReadings(db, ReadingQuery{
+		readings, err := db.QueryReadings(ReadingQuery{
 			Device: "nonexistent", From: 0, To: NowMillis() + 1000, Limit: 100,
 		})
 		if err != nil {
@@ -279,12 +279,12 @@ func TestQueryLimit(t *testing.T) {
 	db := openTestDB(t)
 
 	for range 5 {
-		if err := InsertReading(db, "192.168.1.1", indoorFull); err != nil {
+		if err := db.InsertReading("192.168.1.1", indoorFull); err != nil {
 			t.Fatal(err)
 		}
 	}
 
-	readings, err := QueryReadings(db, ReadingQuery{
+	readings, err := db.QueryReadings(ReadingQuery{
 		Device: "all", From: 0, To: NowMillis() + 1000, Limit: 3,
 	})
 	if err != nil {
@@ -312,7 +312,7 @@ func TestQueryTimeRange(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	readings, err := QueryReadings(db, ReadingQuery{
+	readings, err := db.QueryReadings(ReadingQuery{
 		Device: "all", From: now - 5000, To: now + 1000, Limit: 100,
 	})
 	if err != nil {
@@ -326,17 +326,17 @@ func TestQueryTimeRange(t *testing.T) {
 func TestGetLatestReadings(t *testing.T) {
 	db := openTestDB(t)
 
-	if err := InsertReading(db, "192.168.1.1", indoorFull); err != nil {
+	if err := db.InsertReading("192.168.1.1", indoorFull); err != nil {
 		t.Fatal(err)
 	}
-	if err := InsertReading(db, "192.168.1.1", indoorFull); err != nil {
+	if err := db.InsertReading("192.168.1.1", indoorFull); err != nil {
 		t.Fatal(err)
 	}
-	if err := InsertReading(db, "192.168.1.2", outdoorFull); err != nil {
+	if err := db.InsertReading("192.168.1.2", outdoorFull); err != nil {
 		t.Fatal(err)
 	}
 
-	readings, err := GetLatestReadings(db)
+	readings, err := db.GetLatestReadings()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -349,15 +349,15 @@ func TestGetDevices(t *testing.T) {
 	db := openTestDB(t)
 
 	for range 3 {
-		if err := InsertReading(db, "192.168.1.1", indoorFull); err != nil {
+		if err := db.InsertReading("192.168.1.1", indoorFull); err != nil {
 			t.Fatal(err)
 		}
 	}
-	if err := InsertReading(db, "192.168.1.2", outdoorFull); err != nil {
+	if err := db.InsertReading("192.168.1.2", outdoorFull); err != nil {
 		t.Fatal(err)
 	}
 
-	devices, err := GetDevices(db)
+	devices, err := db.GetDevices()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -385,7 +385,7 @@ func TestGetDevices(t *testing.T) {
 func TestGetReadingsCount(t *testing.T) {
 	db := openTestDB(t)
 
-	count, err := GetReadingsCount(db)
+	count, err := db.GetReadingsCount()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -393,16 +393,16 @@ func TestGetReadingsCount(t *testing.T) {
 		t.Errorf("expected 0, got %d", count)
 	}
 
-	err = InsertReading(db, "192.168.1.1", indoorFull)
+	err = db.InsertReading("192.168.1.1", indoorFull)
 	if err != nil {
 		t.Fatal(err)
 	}
-	err = InsertReading(db, "192.168.1.2", outdoorFull)
+	err = db.InsertReading("192.168.1.2", outdoorFull)
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	count, err = GetReadingsCount(db)
+	count, err = db.GetReadingsCount()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -413,7 +413,7 @@ func TestGetReadingsCount(t *testing.T) {
 
 func TestCheckpoint(t *testing.T) {
 	db := openTestDB(t)
-	if err := Checkpoint(db); err != nil {
+	if err := db.Checkpoint(); err != nil {
 		t.Errorf("Checkpoint: %v", err)
 	}
 }
@@ -538,7 +538,7 @@ func TestOpenDBInvalidPath(t *testing.T) {
 func TestRawJSONStored(t *testing.T) {
 	db := openTestDB(t)
 
-	if err := InsertReading(db, "192.168.1.1", indoorFull); err != nil {
+	if err := db.InsertReading("192.168.1.1", indoorFull); err != nil {
 		t.Fatal(err)
 	}
 
@@ -592,7 +592,7 @@ func TestDownsampledQuery(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	readings, err := QueryReadings(db, ReadingQuery{
+	readings, err := db.QueryReadings(ReadingQuery{
 		Device:       "all",
 		From:         0,
 		To:           now + 1000,
@@ -676,7 +676,7 @@ func TestGetFilteredCount(t *testing.T) {
 	}
 
 	t.Run("all devices", func(t *testing.T) {
-		count, err := GetFilteredCount(db, 0, now+1000, "all")
+		count, err := db.GetFilteredCount(0, now+1000, "all")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -686,7 +686,7 @@ func TestGetFilteredCount(t *testing.T) {
 	})
 
 	t.Run("single device", func(t *testing.T) {
-		count, err := GetFilteredCount(db, 0, now+1000, "dev1")
+		count, err := db.GetFilteredCount(0, now+1000, "dev1")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -696,7 +696,7 @@ func TestGetFilteredCount(t *testing.T) {
 	})
 
 	t.Run("time range filter", func(t *testing.T) {
-		count, err := GetFilteredCount(db, now-7000, now+1000, "all")
+		count, err := db.GetFilteredCount(now-7000, now+1000, "all")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -706,7 +706,7 @@ func TestGetFilteredCount(t *testing.T) {
 	})
 
 	t.Run("empty device means all", func(t *testing.T) {
-		count, err := GetFilteredCount(db, 0, now+1000, "")
+		count, err := db.GetFilteredCount(0, now+1000, "")
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -739,7 +739,7 @@ func TestReadingsOrderedASC(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	readings, err := QueryReadings(db, ReadingQuery{
+	readings, err := db.QueryReadings(ReadingQuery{
 		Device: "all", From: 0, To: now + 1000, Limit: 100,
 	})
 	if err != nil {
@@ -778,7 +778,7 @@ func TestLatestByMaxIDNotTimestamp(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	readings, err := GetLatestReadings(db)
+	readings, err := db.GetLatestReadings()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -798,11 +798,11 @@ func TestLatestByMaxIDNotTimestamp(t *testing.T) {
 func TestDevicesNoFirstSeen(t *testing.T) {
 	db := openTestDB(t)
 
-	if err := InsertReading(db, "192.168.1.1", indoorFull); err != nil {
+	if err := db.InsertReading("192.168.1.1", indoorFull); err != nil {
 		t.Fatal(err)
 	}
 
-	devices, err := GetDevices(db)
+	devices, err := db.GetDevices()
 	if err != nil {
 		t.Fatal(err)
 	}

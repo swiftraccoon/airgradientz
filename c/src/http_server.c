@@ -310,40 +310,48 @@ static void route_request(AppState *state, const HttpReq *req,
         }
     } else if (strcmp(req->path, "/api/readings") == 0) {
         int status;
-        JsonValue *json = api_handle_readings(state, req, &status);
-        if (json) {
+        StrBuf body = api_handle_readings_fast(state, req, &status);
+        if (body.data && body.len > 0) {
             const char *status_text = (status == 200) ? "OK" : "Bad Request";
-            *resp = build_json_response(status, status_text, json, resp_len);
-            json_free(json);
+            *resp = build_response(status, status_text,
+                                    "application/json", strbuf_cstr(&body),
+                                    body.len, NULL, resp_len);
         } else {
             *resp = build_error_response(500, "Internal Server Error",
                                           "Internal server error", resp_len);
         }
+        strbuf_free(&body);
     } else if (strcmp(req->path, "/api/readings/latest") == 0) {
         int status;
-        JsonValue *json = api_handle_readings_latest(state, &status);
-        if (json) {
-            *resp = build_json_response(status, "OK", json, resp_len);
-            json_free(json);
+        StrBuf body = api_handle_readings_latest_fast(state, &status);
+        if (body.data && body.len > 0) {
+            *resp = build_response(status, "OK",
+                                    "application/json", strbuf_cstr(&body),
+                                    body.len, NULL, resp_len);
         } else {
             *resp = build_error_response(500, "Internal Server Error",
                                           "Internal server error", resp_len);
         }
+        strbuf_free(&body);
     } else if (strcmp(req->path, "/api/devices") == 0) {
         int status;
-        JsonValue *json = api_handle_devices(state, &status);
-        if (json) {
-            *resp = build_json_response(status, "OK", json, resp_len);
-            json_free(json);
+        StrBuf body = api_handle_devices_fast(state, &status);
+        if (body.data && body.len > 0) {
+            *resp = build_response(status, "OK",
+                                    "application/json", strbuf_cstr(&body),
+                                    body.len, NULL, resp_len);
         } else {
             *resp = build_error_response(500, "Internal Server Error",
                                           "Internal server error", resp_len);
         }
+        strbuf_free(&body);
     } else if (strcmp(req->path, "/api/health") == 0) {
         int status;
-        JsonValue *json = api_handle_health(state, &status);
-        *resp = build_json_response(status, "OK", json, resp_len);
-        json_free(json);
+        StrBuf body = api_handle_health_fast(state, &status);
+        *resp = build_response(status, "OK",
+                                "application/json", strbuf_cstr(&body),
+                                body.len, NULL, resp_len);
+        strbuf_free(&body);
     } else if (strcmp(req->path, "/api/config") == 0) {
         int status;
         JsonValue *json = api_handle_config(state, &status);

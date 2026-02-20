@@ -198,23 +198,82 @@ bool json_is_object(const JsonValue *v)
 static void serialize_string(const char *s, StrBuf *out)
 {
     strbuf_append_char(out, '"');
-    for (const unsigned char *p = (const unsigned char *)s; *p; p++) {
+    const unsigned char *start = (const unsigned char *)s;
+    const unsigned char *p = start;
+    while (*p) {
+        /* Scan for next special character */
+        const unsigned char *safe = p;
+        while (*p >= 0x20 && *p != '"' && *p != '\\') {
+            p++;
+        }
+        /* Flush safe run */
+        if (p > safe) {
+            strbuf_append(out, (const char *)safe, (size_t)(p - safe));
+        }
+        if (!*p) break;
+        /* Handle special character */
         switch (*p) {
-        case '"':  strbuf_append_cstr(out, "\\\""); break;
-        case '\\': strbuf_append_cstr(out, "\\\\"); break;
-        case '\n': strbuf_append_cstr(out, "\\n");  break;
-        case '\r': strbuf_append_cstr(out, "\\r");  break;
-        case '\t': strbuf_append_cstr(out, "\\t");  break;
+        case '"':  strbuf_append(out, "\\\"", 2); break;
+        case '\\': strbuf_append(out, "\\\\", 2); break;
+        case '\n': strbuf_append(out, "\\n", 2);  break;
+        case '\r': strbuf_append(out, "\\r", 2);  break;
+        case '\t': strbuf_append(out, "\\t", 2);  break;
         default:
-            if (*p < 0x20) {
-                strbuf_appendf(out, "\\u%04x", (unsigned)*p);
-            } else {
-                strbuf_append_char(out, (char)*p);
-            }
+            /* Control char < 0x20 */
+            strbuf_appendf(out, "\\u%04x", (unsigned)*p);
             break;
         }
+        p++;
     }
     strbuf_append_char(out, '"');
+}
+
+/* Serialize a bare string value (quoted) directly — no JsonValue node. */
+void json_serialize_string_to(const char *s, StrBuf *out)
+{
+    serialize_string(s, out);
+}
+
+/* Serialize a bare integer directly — no JsonValue node.
+   Hand-written itoa avoids double-vsnprintf in strbuf_appendf. */
+void json_serialize_i64_to(int64_t n, StrBuf *out)
+{
+    char buf[21]; /* enough for -9223372036854775808 + NUL */
+    char *p = buf + sizeof(buf) - 1;
+    *p = '\0';
+
+    bool neg = n < 0;
+    /* Work with unsigned to handle INT64_MIN safely */
+    uint64_t u = neg ? (uint64_t)(-(n + 1)) + 1u : (uint64_t)n;
+
+    do {
+        *--p = (char)('0' + (u % 10));
+        u /= 10;
+    } while (u > 0);
+
+    if (neg) *--p = '-';
+
+    strbuf_append(out, p, (size_t)(buf + sizeof(buf) - 1 - p));
+}
+
+/* Serialize a bare float directly — no JsonValue node.
+   Uses %.6g for sensor readings (6 significant digits).
+   Integer-valued floats use the fast itoa path. */
+void json_serialize_f64_to(double n, StrBuf *out)
+{
+    if (!isfinite(n)) {
+        strbuf_append(out, "null", 4);
+        return;
+    }
+    double intpart;
+    if (modf(n, &intpart) == 0.0 && fabs(n) < 9.007199254740992e15) {
+        json_serialize_i64_to((int64_t)n, out);
+    } else {
+        char buf[64];
+        int len = snprintf(buf, sizeof(buf), "%.6g", n);
+        if (len > 0 && (size_t)len < sizeof(buf))
+            strbuf_append(out, buf, (size_t)len);
+    }
 }
 
 void json_serialize(const JsonValue *v, StrBuf *out)
@@ -236,14 +295,15 @@ void json_serialize(const JsonValue *v, StrBuf *out)
         }
         double intpart;
         if (modf(n, &intpart) == 0.0 && fabs(n) < 9.007199254740992e15) {
-            strbuf_appendf(out, "%lld", (long long)(int64_t)n);
+            json_serialize_i64_to((int64_t)n, out);
         } else {
             /* Shortest representation that roundtrips */
             char buf[64];
             char *endptr;
             int prec;
             for (prec = 1; prec <= 17; prec++) {
-                snprintf(buf, sizeof(buf), "%.*g", prec, n);
+                int len = snprintf(buf, sizeof(buf), "%.*g", prec, n);
+                if (len <= 0 || (size_t)len >= sizeof(buf)) break;
                 double check = strtod(buf, &endptr);
                 if (check == n) break;
             }

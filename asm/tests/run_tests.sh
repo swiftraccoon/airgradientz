@@ -79,7 +79,7 @@ assert_json_not_null() {
 assert_http_status() {
     local label="$1" url="$2" method="$3" expected="$4"
     local code
-    code=$(curl -s -o /dev/null -w "%{http_code}" -X "${method}" "${url}" 2>/dev/null) || code="000"
+    code=$(curl -s -o /dev/null -w "%{http_code}" --path-as-is -X "${method}" "${url}" 2>/dev/null) || code="000"
     assert_eq "${label}" "${expected}" "${code}"
 }
 
@@ -385,9 +385,9 @@ echo ""
 
 echo "--- Security ---"
 
-assert_http_status "path traversal .." "${BASE}/../airgradientz.json" "GET" "404"
-assert_http_status "path traversal %2e%2e" "${BASE}/%2e%2e/airgradientz.json" "GET" "404"
-assert_http_status "path traversal encoded" "${BASE}/%2e%2e/%2e%2e/etc/passwd" "GET" "404"
+assert_http_status "path traversal .." "${BASE}/../airgradientz.json" "GET" "403"
+assert_http_status "path traversal %2e%2e" "${BASE}/%2e%2e/airgradientz.json" "GET" "403"
+assert_http_status "path traversal encoded" "${BASE}/%2e%2e/%2e%2e/etc/passwd" "GET" "403"
 
 # Security headers on API response
 headers=$(curl -si "${BASE}/api/stats" 2>/dev/null)
@@ -803,9 +803,9 @@ echo ""
 
 echo "--- test-spec: security ---"
 
-# Path traversal returns 403 or 404 (ASM impl returns 404 for path traversal)
-assert_http_status "path traversal /../../../etc/passwd" "${BASE}/../../../etc/passwd" "GET" "404"
-assert_http_status "encoded path traversal /%2e%2e/%2e%2e/etc/passwd" "${BASE}/%2e%2e/%2e%2e/etc/passwd" "GET" "404"
+# Path traversal returns 403 (URL-decoded paths with .. are blocked)
+assert_http_status "path traversal /../../../etc/passwd" "${BASE}/../../../etc/passwd" "GET" "403"
+assert_http_status "encoded path traversal /%2e%2e/%2e%2e/etc/passwd" "${BASE}/%2e%2e/%2e%2e/etc/passwd" "GET" "403"
 
 # Unknown API path returns 404
 assert_http_status "unknown API /api/nonexistent" "${BASE}/api/nonexistent" "GET" "404"

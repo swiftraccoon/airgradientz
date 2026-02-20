@@ -5,7 +5,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-static void strbuf_grow(StrBuf *sb, size_t needed)
+void strbuf_grow(StrBuf *sb, size_t needed)
 {
     if (sb->len + needed + 1 <= sb->cap) {
         return;
@@ -32,6 +32,25 @@ StrBuf strbuf_new(void)
     return sb;
 }
 
+StrBuf strbuf_new_with_cap(size_t cap)
+{
+    StrBuf sb;
+    if (cap > 0) {
+        sb.data = malloc(cap);
+        if (!sb.data) {
+            fprintf(stderr, "strbuf: out of memory\n");
+            abort();
+        }
+        sb.data[0] = '\0';
+        sb.cap = cap;
+    } else {
+        sb.data = NULL;
+        sb.cap = 0;
+    }
+    sb.len = 0;
+    return sb;
+}
+
 void strbuf_free(StrBuf *sb)
 {
     free(sb->data);
@@ -52,14 +71,6 @@ void strbuf_append(StrBuf *sb, const char *s, size_t n)
 void strbuf_append_cstr(StrBuf *sb, const char *s)
 {
     strbuf_append(sb, s, strlen(s));
-}
-
-void strbuf_append_char(StrBuf *sb, char c)
-{
-    strbuf_grow(sb, 1);
-    sb->data[sb->len] = c;
-    sb->len++;
-    sb->data[sb->len] = '\0';
 }
 
 void strbuf_appendf(StrBuf *sb, const char *fmt, ...)

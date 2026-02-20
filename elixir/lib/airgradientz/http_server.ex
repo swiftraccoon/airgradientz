@@ -402,12 +402,12 @@ defmodule Airgradientz.HttpServer do
   end
 
   defp send_json(socket, data) do
-    body = Jason.encode!(data)
+    body = Airgradientz.Json.encode!(data)
     send_response(socket, 200, "OK", "application/json", body)
   end
 
   defp send_json_error(socket, status_code, message) do
-    body = Jason.encode!(%{error: message})
+    body = Airgradientz.Json.encode!(%{error: message})
     status_text = Map.get(@status_texts, status_code, "Error")
     send_response(socket, status_code, status_text, "application/json", body)
   end

@@ -10,7 +10,6 @@ module Poller
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, withMVar, newMVar, modifyMVar_)
 import Control.Exception (SomeException, try)
-import Data.Aeson (Value(..), object, (.=), eitherDecodeStrict')
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.Int (Int64)
 import Log (logMsg)
@@ -23,6 +22,7 @@ import qualified Network.Socket.ByteString as NSB
 
 import Config (Config(..), DeviceConfig(..))
 import DB (DBHandle, insertReading, checkpoint, nowMillis)
+import Json (Value(..), object, (.=), decodeStrict)
 
 data DeviceHealth = DeviceHealth
   { dhIp                  :: !T.Text
@@ -106,7 +106,7 @@ fetchDevice dbMVar cfg h (idx, dev) = do
     Left (e :: SomeException) -> do
       setError h idx dev (show e)
     Right bodyBS -> do
-      case eitherDecodeStrict' bodyBS of
+      case decodeStrict bodyBS of
         Left err -> setError h idx dev ("JSON parse error: " ++ err)
         Right val -> case val of
           Object _ -> do

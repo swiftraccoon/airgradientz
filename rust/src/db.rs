@@ -173,15 +173,18 @@ pub(crate) struct Reading {
     wifi: Option<i64>,
 }
 
+#[cfg(test)]
 fn opt_f64_json(v: Option<f64>) -> JsonValue {
     v.map_or(JsonValue::Null, JsonValue::Number)
 }
 
+#[cfg(test)]
 fn opt_i64_json(v: Option<i64>) -> JsonValue {
     v.map_or(JsonValue::Null, JsonValue::from_i64)
 }
 
 impl Reading {
+    #[cfg(test)]
     pub(crate) fn to_json(&self) -> JsonValue {
         use crate::json::json_object;
 
@@ -209,6 +212,58 @@ impl Reading {
             ("wifi", opt_i64_json(self.wifi)),
         ]);
         json_object(fields)
+    }
+
+    /// Write this reading as JSON directly to a String buffer, avoiding
+    /// intermediate `JsonValue` allocations.
+    pub(crate) fn write_json(&self, buf: &mut String) {
+        use crate::json::{
+            write_i64_field, write_opt_f64_field, write_opt_i64_field, write_str_field,
+        };
+
+        buf.push('{');
+
+        // Downsampled rows have id=0; omit id field.
+        if self.id != 0 {
+            write_i64_field(buf, "id", self.id);
+            buf.push(',');
+        }
+
+        write_i64_field(buf, "timestamp", self.timestamp);
+
+        buf.push(',');
+        write_str_field(buf, "device_id", &self.device_id);
+        buf.push(',');
+        write_str_field(buf, "device_type", &self.device_type);
+        buf.push(',');
+        write_str_field(buf, "device_ip", &self.device_ip);
+
+        buf.push(',');
+        write_opt_f64_field(buf, "pm01", self.pm01);
+        buf.push(',');
+        write_opt_f64_field(buf, "pm02", self.pm02);
+        buf.push(',');
+        write_opt_f64_field(buf, "pm10", self.pm10);
+        buf.push(',');
+        write_opt_f64_field(buf, "pm02_compensated", self.pm02_compensated);
+        buf.push(',');
+        write_opt_i64_field(buf, "rco2", self.rco2);
+        buf.push(',');
+        write_opt_f64_field(buf, "atmp", self.atmp);
+        buf.push(',');
+        write_opt_f64_field(buf, "atmp_compensated", self.atmp_compensated);
+        buf.push(',');
+        write_opt_f64_field(buf, "rhum", self.rhum);
+        buf.push(',');
+        write_opt_f64_field(buf, "rhum_compensated", self.rhum_compensated);
+        buf.push(',');
+        write_opt_f64_field(buf, "tvoc_index", self.tvoc_index);
+        buf.push(',');
+        write_opt_f64_field(buf, "nox_index", self.nox_index);
+        buf.push(',');
+        write_opt_i64_field(buf, "wifi", self.wifi);
+
+        buf.push('}');
     }
 }
 
@@ -420,6 +475,7 @@ pub(crate) struct DeviceSummary {
 }
 
 impl DeviceSummary {
+    #[cfg(test)]
     pub(crate) fn to_json(&self) -> JsonValue {
         use crate::json::json_object;
         json_object(vec![
@@ -429,6 +485,23 @@ impl DeviceSummary {
             ("last_seen", JsonValue::from_i64(self.last_seen)),
             ("reading_count", JsonValue::from_i64(self.reading_count)),
         ])
+    }
+
+    /// Write this device summary as JSON directly to a String buffer.
+    pub(crate) fn write_json(&self, buf: &mut String) {
+        use crate::json::{write_i64_field, write_str_field};
+
+        buf.push('{');
+        write_str_field(buf, "device_id", &self.device_id);
+        buf.push(',');
+        write_str_field(buf, "device_type", &self.device_type);
+        buf.push(',');
+        write_str_field(buf, "device_ip", &self.device_ip);
+        buf.push(',');
+        write_i64_field(buf, "last_seen", self.last_seen);
+        buf.push(',');
+        write_i64_field(buf, "reading_count", self.reading_count);
+        buf.push('}');
     }
 }
 
@@ -688,6 +761,59 @@ mod tests {
     }
 
     #[test]
+    fn test_write_json_matches_to_json() {
+        let conn = setup_db();
+        insert_reading(&conn, "192.168.1.1", &indoor_fixture()).unwrap();
+
+        let readings = query_readings(
+            &conn,
+            &ReadingQuery { device: None, from: 0, to: i64::MAX, limit: None, downsample_ms: None },
+        ).unwrap();
+
+        let via_to_json = readings[0].to_json().to_string();
+        let mut via_write_json = String::new();
+        readings[0].write_json(&mut via_write_json);
+
+        assert_eq!(via_to_json, via_write_json, "write_json must produce identical output to to_json");
+    }
+
+    #[test]
+    fn test_write_json_downsampled_matches_to_json() {
+        let r = Reading {
+            id: 0,
+            timestamp: 1_700_000_000_000,
+            device_id: "dev1".to_string(),
+            device_type: "indoor".to_string(),
+            device_ip: "1.1.1.1".to_string(),
+            pm01: None, pm02: Some(15.0), pm10: None,
+            pm02_compensated: None, rco2: None,
+            atmp: None, atmp_compensated: None,
+            rhum: None, rhum_compensated: None,
+            tvoc_index: None, nox_index: None, wifi: None,
+        };
+
+        let via_to_json = r.to_json().to_string();
+        let mut via_write_json = String::new();
+        r.write_json(&mut via_write_json);
+
+        assert_eq!(via_to_json, via_write_json, "write_json for downsampled must match to_json");
+    }
+
+    #[test]
+    fn test_device_write_json_matches_to_json() {
+        let conn = setup_db();
+        insert_reading(&conn, "192.168.1.1", &indoor_fixture()).unwrap();
+
+        let devices = get_devices(&conn).unwrap();
+
+        let via_to_json = devices[0].to_json().to_string();
+        let mut via_write_json = String::new();
+        devices[0].write_json(&mut via_write_json);
+
+        assert_eq!(via_to_json, via_write_json, "DeviceSummary write_json must match to_json");
+    }
+
+    #[test]
     fn test_downsampled_query_groups_readings() {
         let conn = setup_db();
 
@@ -905,7 +1031,7 @@ mod tests {
         if let JsonValue::Object(pairs) = config_json.get("downsampleBuckets").unwrap() {
             for (key, val) in pairs {
                 if let Some(ms) = val.as_i64() {
-                    config_buckets.push((key.clone(), ms));
+                    config_buckets.push((key.to_string(), ms));
                 }
             }
         }
@@ -1199,8 +1325,8 @@ mod tests {
             ("label", JsonValue::String("test".to_string())),
         ])];
 
-        let buckets: Vec<(String, JsonValue)> = vec![
-            ("5m".to_string(), JsonValue::from_i64(300_000)),
+        let buckets: Vec<(std::borrow::Cow<'static, str>, JsonValue)> = vec![
+            (std::borrow::Cow::Borrowed("5m"), JsonValue::from_i64(300_000)),
         ];
 
         let config_json = crate::json::json_object(vec![

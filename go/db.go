@@ -1,6 +1,8 @@
 package main
 
 import (
+	"bytes"
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -14,7 +16,16 @@ import (
 	_ "github.com/mattn/go-sqlite3"
 )
 
+// estimatedReadingJSONSize is the approximate byte size of one reading JSON object.
+// Used for pre-allocating output buffers.
+const estimatedReadingJSONSize = 350
+
+// estimatedDeviceJSONSize is the approximate byte size of one device summary JSON object.
+const estimatedDeviceJSONSize = 120
+
 const deviceAll = "all"
+
+const defaultLatestCap = 16
 
 type Reading struct {
 	DeviceType      string
@@ -52,13 +63,33 @@ type ReadingQuery struct {
 	DownsampleMs int64
 }
 
+// DB wraps a sql.DB with a dedicated connection and cached prepared statements
+// to eliminate connection pool overhead and repeated prepare/finalize CGo calls.
+type DB struct {
+	pool *sql.DB
+	conn *sql.Conn
+
+	// Cached prepared statements on the dedicated connection.
+	stmtInsert      *sql.Stmt
+	stmtLatest      *sql.Stmt
+	stmtDevices     *sql.Stmt
+	stmtCount       *sql.Stmt
+	stmtReadingsAll *sql.Stmt
+	stmtReadingsDev *sql.Stmt
+	stmtCountAll    *sql.Stmt
+	stmtCountDev    *sql.Stmt
+	stmtCheckpoint  *sql.Stmt
+
+	mu sync.Mutex
+}
+
 // Package-level SQL loaded from queries.sql (or hardcoded fallbacks).
 var (
-	queryCols string
-	insertSQL string
-	latestSQL string
+	queryCols  string
+	insertSQL  string
+	latestSQL  string
 	devicesSQL string
-	countSQL  string
+	countSQL   string
 
 	loadQueriesOnce sync.Once
 )
@@ -176,44 +207,162 @@ func parseQueriesSQL(content string) map[string]string {
 	return queries
 }
 
-func convertPlaceholders(sql string) string {
-	return placeholderRe.ReplaceAllString(sql, "?")
+func convertPlaceholders(sqlStr string) string {
+	return placeholderRe.ReplaceAllString(sqlStr, "?")
 }
 
 func NowMillis() int64 {
 	return time.Now().UnixMilli()
 }
 
-func OpenDB(dbPath string) (*sql.DB, error) {
+// buildReadingsSQL builds the readings query for a given filter variant.
+func buildReadingsSQL(withDevice bool) string {
+	var b strings.Builder
+	b.WriteString("SELECT ")
+	b.WriteString(queryCols)
+	b.WriteString(" FROM readings WHERE ")
+	if withDevice {
+		b.WriteString("device_id = ? AND ")
+	}
+	b.WriteString("timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC LIMIT ?")
+	return b.String()
+}
+
+// buildCountFilteredSQL builds the filtered count query for a given filter variant.
+func buildCountFilteredSQL(withDevice bool) string {
+	var b strings.Builder
+	b.WriteString("SELECT COUNT(*) FROM readings WHERE ")
+	if withDevice {
+		b.WriteString("device_id = ? AND ")
+	}
+	b.WriteString("timestamp >= ? AND timestamp <= ?")
+	return b.String()
+}
+
+func OpenDB(dbPath string) (*DB, error) {
 	loadQueries()
 
 	dsn := dbPath + "?_journal_mode=WAL&_busy_timeout=5000&_foreign_keys=1"
-	db, err := sql.Open("sqlite3", dsn)
+	pool, err := sql.Open("sqlite3", dsn)
 	if err != nil {
 		return nil, fmt.Errorf("open database: %w", err)
 	}
-	db.SetMaxOpenConns(1)
+	pool.SetMaxOpenConns(2) // one for dedicated conn, one spare for schema init
 
-	if err := InitDB(db); err != nil {
-		db.Close()
-		return nil, err
+	if schemaErr := initSchema(pool); schemaErr != nil {
+		pool.Close()
+		return nil, schemaErr
 	}
 
-	return db, nil
+	// Grab a dedicated connection from the pool for all subsequent operations.
+	conn, err := pool.Conn(context.Background())
+	if err != nil {
+		pool.Close()
+		return nil, fmt.Errorf("acquire dedicated connection: %w", err)
+	}
+
+	d := &DB{pool: pool, conn: conn}
+	if err := d.prepareStatements(); err != nil {
+		conn.Close()
+		pool.Close()
+		return nil, fmt.Errorf("prepare statements: %w", err)
+	}
+
+	return d, nil
 }
 
-func InitDB(db *sql.DB) error {
+func (d *DB) prepareStatements() error {
+	var err error
+
+	d.stmtInsert, err = d.conn.PrepareContext(context.Background(), insertSQL)
+	if err != nil {
+		return fmt.Errorf("prepare insert: %w", err)
+	}
+
+	d.stmtLatest, err = d.conn.PrepareContext(context.Background(), latestSQL)
+	if err != nil {
+		return fmt.Errorf("prepare latest: %w", err)
+	}
+
+	d.stmtDevices, err = d.conn.PrepareContext(context.Background(), devicesSQL)
+	if err != nil {
+		return fmt.Errorf("prepare devices: %w", err)
+	}
+
+	d.stmtCount, err = d.conn.PrepareContext(context.Background(), countSQL)
+	if err != nil {
+		return fmt.Errorf("prepare count: %w", err)
+	}
+
+	d.stmtReadingsAll, err = d.conn.PrepareContext(context.Background(), buildReadingsSQL(false))
+	if err != nil {
+		return fmt.Errorf("prepare readings all: %w", err)
+	}
+
+	d.stmtReadingsDev, err = d.conn.PrepareContext(context.Background(), buildReadingsSQL(true))
+	if err != nil {
+		return fmt.Errorf("prepare readings dev: %w", err)
+	}
+
+	d.stmtCountAll, err = d.conn.PrepareContext(context.Background(), buildCountFilteredSQL(false))
+	if err != nil {
+		return fmt.Errorf("prepare count all: %w", err)
+	}
+
+	d.stmtCountDev, err = d.conn.PrepareContext(context.Background(), buildCountFilteredSQL(true))
+	if err != nil {
+		return fmt.Errorf("prepare count dev: %w", err)
+	}
+
+	d.stmtCheckpoint, err = d.conn.PrepareContext(context.Background(), "PRAGMA wal_checkpoint(TRUNCATE)")
+	if err != nil {
+		return fmt.Errorf("prepare checkpoint: %w", err)
+	}
+
+	return nil
+}
+
+// Close releases the dedicated connection and closes the pool.
+func (d *DB) Close() error {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+
+	// Close prepared statements.
+	stmts := []*sql.Stmt{
+		d.stmtInsert, d.stmtLatest, d.stmtDevices, d.stmtCount,
+		d.stmtReadingsAll, d.stmtReadingsDev, d.stmtCountAll, d.stmtCountDev,
+		d.stmtCheckpoint,
+	}
+	for _, s := range stmts {
+		if s != nil {
+			s.Close()
+		}
+	}
+
+	if d.conn != nil {
+		d.conn.Close()
+	}
+	return d.pool.Close()
+}
+
+// Pool returns the underlying *sql.DB for operations that need direct pool access
+// (e.g., schema init in tests that use raw db.Exec).
+func (d *DB) Pool() *sql.DB {
+	return d.pool
+}
+
+func initSchema(pool *sql.DB) error {
 	schema, err := os.ReadFile("../schema.sql")
 	if err != nil {
 		return fmt.Errorf("read schema: %w", err)
 	}
-	if _, err := db.Exec(string(schema)); err != nil {
+	if _, err := pool.Exec(string(schema)); err != nil {
 		return fmt.Errorf("apply schema: %w", err)
 	}
 	return nil
 }
 
-func InsertReading(db *sql.DB, ip string, data map[string]any) error {
+func (d *DB) InsertReading(ip string, data map[string]any) error {
 	deviceType := classifyDevice(data)
 	serial := getSerial(data)
 
@@ -222,7 +371,8 @@ func InsertReading(db *sql.DB, ip string, data map[string]any) error {
 		return fmt.Errorf("marshal raw json: %w", err)
 	}
 
-	_, err = db.Exec(insertSQL,
+	d.mu.Lock()
+	_, err = d.stmtInsert.Exec(
 		NowMillis(), serial, deviceType, ip,
 		optFloat(data, "pm01"), optFloat(data, "pm02"),
 		optFloat(data, "pm10"), optFloat(data, "pm02Compensated"),
@@ -232,49 +382,47 @@ func InsertReading(db *sql.DB, ip string, data map[string]any) error {
 		optFloat(data, "noxIndex"), optInt(data, "wifi"),
 		string(rawJSON),
 	)
+	d.mu.Unlock()
+
 	if err != nil {
 		return fmt.Errorf("insert reading: %w", err)
 	}
 	return nil
 }
 
-func QueryReadings(db *sql.DB, q ReadingQuery) ([]Reading, error) {
+func (d *DB) QueryReadings(q ReadingQuery) ([]Reading, error) {
 	if q.DownsampleMs > 0 {
-		return queryDownsampled(db, q)
+		return d.queryDownsampled(q)
 	}
 
 	wantDevice := q.Device != "" && q.Device != deviceAll
 
-	var b strings.Builder
-	var args []any
+	// Choose scan capacity: use limit when known and reasonable, else 256.
+	scanCap := 256
+	if q.Limit > 0 && q.Limit < 10000 {
+		scanCap = q.Limit
+	}
 
-	b.WriteString("SELECT ")
-	b.WriteString(queryCols)
-	b.WriteString(" FROM readings WHERE ")
+	var rows *sql.Rows
+	var err error
 
+	d.mu.Lock()
 	if wantDevice {
-		b.WriteString("device_id = ? AND ")
-		args = append(args, q.Device)
+		rows, err = d.stmtReadingsDev.Query(q.Device, q.From, q.To, q.Limit)
+	} else {
+		rows, err = d.stmtReadingsAll.Query(q.From, q.To, q.Limit)
 	}
+	d.mu.Unlock()
 
-	b.WriteString("timestamp >= ? AND timestamp <= ? ORDER BY timestamp ASC")
-	args = append(args, q.From, q.To)
-
-	if q.Limit > 0 {
-		b.WriteString(" LIMIT ?")
-		args = append(args, q.Limit)
-	}
-
-	rows, err := db.Query(b.String(), args...)
 	if err != nil {
 		return nil, fmt.Errorf("query readings: %w", err)
 	}
 	defer rows.Close()
 
-	return scanReadings(rows)
+	return scanReadings(rows, scanCap)
 }
 
-func queryDownsampled(db *sql.DB, q ReadingQuery) ([]Reading, error) {
+func (d *DB) queryDownsampled(q ReadingQuery) ([]Reading, error) {
 	wantDevice := q.Device != "" && q.Device != deviceAll
 	bucketMs := q.DownsampleMs
 
@@ -308,7 +456,10 @@ func queryDownsampled(db *sql.DB, q ReadingQuery) ([]Reading, error) {
 		args = append(args, q.Limit)
 	}
 
-	rows, err := db.Query(b.String(), args...)
+	d.mu.Lock()
+	rows, err := d.conn.QueryContext(context.Background(), b.String(), args...)
+	d.mu.Unlock()
+
 	if err != nil {
 		return nil, fmt.Errorf("query downsampled readings: %w", err)
 	}
@@ -317,18 +468,24 @@ func queryDownsampled(db *sql.DB, q ReadingQuery) ([]Reading, error) {
 	return scanDownsampledReadings(rows)
 }
 
-func GetLatestReadings(db *sql.DB) ([]Reading, error) {
-	rows, err := db.Query(latestSQL)
+func (d *DB) GetLatestReadings() ([]Reading, error) {
+	d.mu.Lock()
+	rows, err := d.stmtLatest.Query()
+	d.mu.Unlock()
+
 	if err != nil {
 		return nil, fmt.Errorf("get latest readings: %w", err)
 	}
 	defer rows.Close()
 
-	return scanReadings(rows)
+	return scanReadings(rows, defaultLatestCap)
 }
 
-func GetDevices(db *sql.DB) ([]DeviceSummary, error) {
-	rows, err := db.Query(devicesSQL)
+func (d *DB) GetDevices() ([]DeviceSummary, error) {
+	d.mu.Lock()
+	rows, err := d.stmtDevices.Query()
+	d.mu.Unlock()
+
 	if err != nil {
 		return nil, fmt.Errorf("get devices: %w", err)
 	}
@@ -336,46 +493,63 @@ func GetDevices(db *sql.DB) ([]DeviceSummary, error) {
 
 	var devices []DeviceSummary
 	for rows.Next() {
-		var d DeviceSummary
-		if err := rows.Scan(&d.DeviceID, &d.DeviceType, &d.DeviceIP,
-			&d.LastSeen, &d.ReadingCount); err != nil {
+		var ds DeviceSummary
+		if err := rows.Scan(&ds.DeviceID, &ds.DeviceType, &ds.DeviceIP,
+			&ds.LastSeen, &ds.ReadingCount); err != nil {
 			return nil, fmt.Errorf("scan device: %w", err)
 		}
-		devices = append(devices, d)
+		devices = append(devices, ds)
 	}
 	return devices, rows.Err()
 }
 
-func GetReadingsCount(db *sql.DB) (int64, error) {
+func (d *DB) GetReadingsCount() (int64, error) {
 	var count int64
-	err := db.QueryRow(countSQL).Scan(&count)
+
+	d.mu.Lock()
+	err := d.stmtCount.QueryRow().Scan(&count)
+	d.mu.Unlock()
+
 	return count, err
 }
 
-func GetFilteredCount(db *sql.DB, from, to int64, device string) (int64, error) {
+func (d *DB) GetFilteredCount(from, to int64, device string) (int64, error) {
 	wantDevice := device != "" && device != deviceAll
 
-	var b strings.Builder
-	var args []any
-
-	b.WriteString("SELECT COUNT(*) FROM readings WHERE ")
-
-	if wantDevice {
-		b.WriteString("device_id = ? AND ")
-		args = append(args, device)
-	}
-
-	b.WriteString("timestamp >= ? AND timestamp <= ?")
-	args = append(args, from, to)
-
 	var count int64
-	err := db.QueryRow(b.String(), args...).Scan(&count)
+	var err error
+
+	d.mu.Lock()
+	if wantDevice {
+		err = d.stmtCountDev.QueryRow(device, from, to).Scan(&count)
+	} else {
+		err = d.stmtCountAll.QueryRow(from, to).Scan(&count)
+	}
+	d.mu.Unlock()
+
 	return count, err
 }
 
-func Checkpoint(db *sql.DB) error {
-	_, err := db.Exec("PRAGMA wal_checkpoint(TRUNCATE)")
+func (d *DB) Checkpoint() error {
+	d.mu.Lock()
+	_, err := d.stmtCheckpoint.Exec()
+	d.mu.Unlock()
 	return err
+}
+
+// Exec runs a raw SQL statement on the dedicated connection (for tests).
+func (d *DB) Exec(query string, args ...any) (sql.Result, error) {
+	d.mu.Lock()
+	result, err := d.conn.ExecContext(context.Background(), query, args...)
+	d.mu.Unlock()
+	return result, err
+}
+
+// QueryRow runs a raw SQL query on the dedicated connection (for tests).
+func (d *DB) QueryRow(query string, args ...any) *sql.Row {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	return d.conn.QueryRowContext(context.Background(), query, args...)
 }
 
 func ReadingToJSON(r *Reading) map[string]any {
@@ -414,6 +588,170 @@ func DeviceSummaryToJSON(d *DeviceSummary) map[string]any {
 	}
 }
 
+// bufPool reuses bytes.Buffer for JSON serialization to reduce allocations.
+var bufPool = sync.Pool{
+	New: func() any {
+		return bytes.NewBuffer(make([]byte, 0, 4096))
+	},
+}
+
+// GetBuffer returns a bytes.Buffer from the pool, pre-grown to the requested capacity.
+func GetBuffer(capacity int) *bytes.Buffer {
+	buf, ok := bufPool.Get().(*bytes.Buffer)
+	if !ok {
+		buf = bytes.NewBuffer(make([]byte, 0, capacity))
+	}
+	buf.Reset()
+	buf.Grow(capacity)
+	return buf
+}
+
+// PutBuffer returns a bytes.Buffer to the pool.
+func PutBuffer(buf *bytes.Buffer) {
+	// Don't pool excessively large buffers (>1MB) to avoid memory bloat.
+	if buf.Cap() <= 1024*1024 {
+		bufPool.Put(buf)
+	}
+}
+
+// WriteReadingsJSON writes a JSON array of readings directly to buf,
+// bypassing map[string]any and encoding/json for maximum throughput.
+func WriteReadingsJSON(buf *bytes.Buffer, readings []Reading) {
+	buf.WriteByte('[')
+	for i := range readings {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		writeReadingJSON(buf, &readings[i])
+	}
+	buf.WriteByte(']')
+}
+
+// writeReadingJSON writes a single reading as a JSON object to buf.
+func writeReadingJSON(buf *bytes.Buffer, r *Reading) {
+	buf.WriteByte('{')
+	// Downsampled rows have ID=0 (no single row identity); omit id field.
+	if r.ID != 0 {
+		buf.WriteString(`"id":`)
+		buf.WriteString(strconv.FormatInt(r.ID, 10))
+		buf.WriteByte(',')
+	}
+	buf.WriteString(`"timestamp":`)
+	buf.WriteString(strconv.FormatInt(r.Timestamp, 10))
+	buf.WriteString(`,"device_id":`)
+	writeJSONString(buf, r.DeviceID)
+	buf.WriteString(`,"device_type":`)
+	writeJSONString(buf, r.DeviceType)
+	buf.WriteString(`,"device_ip":`)
+	writeJSONString(buf, r.DeviceIP)
+	buf.WriteString(`,"pm01":`)
+	writeNullFloat(buf, r.PM01)
+	buf.WriteString(`,"pm02":`)
+	writeNullFloat(buf, r.PM02)
+	buf.WriteString(`,"pm10":`)
+	writeNullFloat(buf, r.PM10)
+	buf.WriteString(`,"pm02_compensated":`)
+	writeNullFloat(buf, r.PM02Compensated)
+	buf.WriteString(`,"rco2":`)
+	writeNullInt(buf, r.RCO2)
+	buf.WriteString(`,"atmp":`)
+	writeNullFloat(buf, r.ATMP)
+	buf.WriteString(`,"atmp_compensated":`)
+	writeNullFloat(buf, r.ATMPCompensated)
+	buf.WriteString(`,"rhum":`)
+	writeNullFloat(buf, r.RHUM)
+	buf.WriteString(`,"rhum_compensated":`)
+	writeNullFloat(buf, r.RHUMCompensated)
+	buf.WriteString(`,"tvoc_index":`)
+	writeNullFloat(buf, r.TVOCIndex)
+	buf.WriteString(`,"nox_index":`)
+	writeNullFloat(buf, r.NOXIndex)
+	buf.WriteString(`,"wifi":`)
+	writeNullInt(buf, r.Wifi)
+	buf.WriteByte('}')
+}
+
+// WriteDevicesJSON writes a JSON array of device summaries directly to buf.
+func WriteDevicesJSON(buf *bytes.Buffer, devices []DeviceSummary) {
+	buf.WriteByte('[')
+	for i := range devices {
+		if i > 0 {
+			buf.WriteByte(',')
+		}
+		writeDeviceSummaryJSON(buf, &devices[i])
+	}
+	buf.WriteByte(']')
+}
+
+// writeDeviceSummaryJSON writes a single device summary as a JSON object to buf.
+func writeDeviceSummaryJSON(buf *bytes.Buffer, ds *DeviceSummary) {
+	buf.WriteString(`{"device_id":`)
+	writeJSONString(buf, ds.DeviceID)
+	buf.WriteString(`,"device_type":`)
+	writeJSONString(buf, ds.DeviceType)
+	buf.WriteString(`,"device_ip":`)
+	writeJSONString(buf, ds.DeviceIP)
+	buf.WriteString(`,"last_seen":`)
+	buf.WriteString(strconv.FormatInt(ds.LastSeen, 10))
+	buf.WriteString(`,"reading_count":`)
+	buf.WriteString(strconv.FormatInt(ds.ReadingCount, 10))
+	buf.WriteByte('}')
+}
+
+const maxASCIIControl = 0x1f // highest ASCII control character
+
+// writeJSONString writes a JSON-escaped string (with quotes) to buf.
+func writeJSONString(buf *bytes.Buffer, s string) {
+	buf.WriteByte('"')
+	for i := range len(s) {
+		c := s[i]
+		switch c {
+		case '"':
+			buf.WriteString(`\"`)
+		case '\\':
+			buf.WriteString(`\\`)
+		case '\n':
+			buf.WriteString(`\n`)
+		case '\r':
+			buf.WriteString(`\r`)
+		case '\t':
+			buf.WriteString(`\t`)
+		case '\b':
+			buf.WriteString(`\b`)
+		case '\f':
+			buf.WriteString(`\f`)
+		default:
+			if c <= maxASCIIControl {
+				// Control character — write as \u00XX
+				buf.WriteString(`\u00`)
+				buf.WriteByte("0123456789abcdef"[c>>4])
+				buf.WriteByte("0123456789abcdef"[c&0xf])
+			} else {
+				buf.WriteByte(c)
+			}
+		}
+	}
+	buf.WriteByte('"')
+}
+
+// writeNullFloat writes a JSON float or null to buf.
+func writeNullFloat(buf *bytes.Buffer, nf sql.NullFloat64) {
+	if !nf.Valid {
+		buf.WriteString("null")
+		return
+	}
+	buf.WriteString(strconv.FormatFloat(nf.Float64, 'f', -1, 64))
+}
+
+// writeNullInt writes a JSON integer or null to buf.
+func writeNullInt(buf *bytes.Buffer, ni sql.NullInt64) {
+	if !ni.Valid {
+		buf.WriteString("null")
+		return
+	}
+	buf.WriteString(strconv.FormatInt(ni.Int64, 10))
+}
+
 // --- constants ---
 
 const (
@@ -424,8 +762,8 @@ const (
 
 // --- helpers ---
 
-func scanReadings(rows *sql.Rows) ([]Reading, error) {
-	var readings []Reading
+func scanReadings(rows *sql.Rows, initCap int) ([]Reading, error) {
+	readings := make([]Reading, 0, initCap)
 	for rows.Next() {
 		var r Reading
 		if err := rows.Scan(
@@ -443,7 +781,7 @@ func scanReadings(rows *sql.Rows) ([]Reading, error) {
 }
 
 func scanDownsampledReadings(rows *sql.Rows) ([]Reading, error) {
-	var readings []Reading
+	readings := make([]Reading, 0, 256)
 	for rows.Next() {
 		var r Reading
 		// Downsampled query omits id column; ID stays 0 (zero value).

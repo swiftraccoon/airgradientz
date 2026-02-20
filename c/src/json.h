@@ -64,4 +64,10 @@ JsonValue *json_parse(const char *input, size_t len, JsonError *err);
 /* Serializer */
 void json_serialize(const JsonValue *v, StrBuf *out);
 
+/* Direct serialization helpers — write JSON primitives to StrBuf
+   without creating intermediate JsonValue nodes. */
+void json_serialize_string_to(const char *s, StrBuf *out);
+void json_serialize_i64_to(int64_t n, StrBuf *out);
+void json_serialize_f64_to(double n, StrBuf *out);
+
 #endif /* JSON_H */

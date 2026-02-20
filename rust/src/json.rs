@@ -1,3 +1,4 @@
+use std::borrow::Cow;
 use std::fmt;
 
 #[derive(Debug, Clone)]
@@ -30,7 +31,7 @@ pub(crate) enum JsonValue {
     Number(f64),
     String(String),
     Array(Vec<Self>),
-    Object(Vec<(String, Self)>),
+    Object(Vec<(Cow<'static, str>, Self)>),
 }
 
 impl JsonValue {
@@ -86,15 +87,154 @@ impl JsonValue {
     }
 }
 
-pub(crate) fn json_object(pairs: Vec<(&str, JsonValue)>) -> JsonValue {
-    JsonValue::Object(pairs.into_iter().map(|(k, v)| (k.to_string(), v)).collect())
+pub(crate) fn json_object(pairs: Vec<(&'static str, JsonValue)>) -> JsonValue {
+    JsonValue::Object(
+        pairs
+            .into_iter()
+            .map(|(k, v)| (Cow::Borrowed(k), v))
+            .collect(),
+    )
 }
 
 pub(crate) const fn json_array(items: Vec<JsonValue>) -> JsonValue {
     JsonValue::Array(items)
 }
 
+// --- Direct buffer serialization helpers ---
+
+/// Write a JSON-escaped string (with quotes) directly to a String buffer.
+pub(crate) fn write_str_to_buf(buf: &mut String, s: &str) {
+    buf.push('"');
+    for c in s.chars() {
+        match c {
+            '"' => buf.push_str("\\\""),
+            '\\' => buf.push_str("\\\\"),
+            '\n' => buf.push_str("\\n"),
+            '\r' => buf.push_str("\\r"),
+            '\t' => buf.push_str("\\t"),
+            c if c < '\x20' => {
+                use std::fmt::Write as _;
+                let _ = write!(buf, "\\u{:04x}", c as u32);
+            }
+            c => buf.push(c),
+        }
+    }
+    buf.push('"');
+}
+
+/// Write an i64 value directly to a String buffer.
+pub(crate) fn write_i64_to_buf(buf: &mut String, n: i64) {
+    use std::fmt::Write as _;
+    let _ = write!(buf, "{n}");
+}
+
+/// Write an f64 value directly to a String buffer (integer-style if no fractional part).
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+pub(crate) fn write_f64_to_buf(buf: &mut String, n: f64) {
+    use std::fmt::Write as _;
+    if n.fract() == 0.0 && n.abs() < (i64::MAX as f64) {
+        let _ = write!(buf, "{}", n as i64);
+    } else {
+        let _ = write!(buf, "{n}");
+    }
+}
+
+/// Write an optional f64 field (key:value) to a buffer. Writes null if None.
+pub(crate) fn write_opt_f64_field(buf: &mut String, key: &str, val: Option<f64>) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str("\":");
+    match val {
+        Some(n) => write_f64_to_buf(buf, n),
+        None => buf.push_str("null"),
+    }
+}
+
+/// Write an optional i64 field (key:value) to a buffer. Writes null if None.
+#[allow(clippy::cast_precision_loss)]
+pub(crate) fn write_opt_i64_field(buf: &mut String, key: &str, val: Option<i64>) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str("\":");
+    match val {
+        Some(n) => write_f64_to_buf(buf, n as f64),
+        None => buf.push_str("null"),
+    }
+}
+
+/// Write an i64 field (key:value) to a buffer.
+pub(crate) fn write_i64_field(buf: &mut String, key: &str, val: i64) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str("\":");
+    write_i64_to_buf(buf, val);
+}
+
+/// Write a string field (key:value) to a buffer.
+pub(crate) fn write_str_field(buf: &mut String, key: &str, val: &str) {
+    buf.push('"');
+    buf.push_str(key);
+    buf.push_str("\":");
+    write_str_to_buf(buf, val);
+}
+
+/// Serialize a `JsonValue` into an existing String buffer with pre-allocation hint.
+pub(crate) fn serialize_to_string(value: &JsonValue, size_hint: usize) -> String {
+    let mut buf = String::with_capacity(size_hint);
+    write_value_to_buf(&mut buf, value);
+    buf
+}
+
+/// Write a `JsonValue` directly to a String buffer (no Display trait overhead).
+#[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
+pub(crate) fn write_value_to_buf(buf: &mut String, value: &JsonValue) {
+    match value {
+        JsonValue::Null => buf.push_str("null"),
+        JsonValue::Bool(b) => buf.push_str(if *b { "true" } else { "false" }),
+        JsonValue::Number(n) => write_f64_to_buf(buf, *n),
+        JsonValue::String(s) => write_str_to_buf(buf, s),
+        JsonValue::Array(items) => {
+            buf.push('[');
+            for (i, item) in items.iter().enumerate() {
+                if i > 0 {
+                    buf.push(',');
+                }
+                write_value_to_buf(buf, item);
+            }
+            buf.push(']');
+        }
+        JsonValue::Object(pairs) => {
+            buf.push('{');
+            for (i, (key, val)) in pairs.iter().enumerate() {
+                if i > 0 {
+                    buf.push(',');
+                }
+                write_str_to_buf(buf, key);
+                buf.push(':');
+                write_value_to_buf(buf, val);
+            }
+            buf.push('}');
+        }
+    }
+}
+
 // --- Serializer ---
+
+fn write_json_str(f: &mut fmt::Formatter<'_>, s: &str) -> fmt::Result {
+    write!(f, "\"")?;
+    for c in s.chars() {
+        match c {
+            '"' => write!(f, "\\\"")?,
+            '\\' => write!(f, "\\\\")?,
+            '\n' => write!(f, "\\n")?,
+            '\r' => write!(f, "\\r")?,
+            '\t' => write!(f, "\\t")?,
+            c if c < '\x20' => write!(f, "\\u{:04x}", c as u32)?,
+            c => write!(f, "{c}")?,
+        }
+    }
+    write!(f, "\"")
+}
 
 #[allow(clippy::cast_possible_truncation, clippy::cast_precision_loss)]
 impl fmt::Display for JsonValue {
@@ -109,21 +249,7 @@ impl fmt::Display for JsonValue {
                     write!(f, "{n}")
                 }
             }
-            Self::String(s) => {
-                write!(f, "\"")?;
-                for c in s.chars() {
-                    match c {
-                        '"' => write!(f, "\\\"")?,
-                        '\\' => write!(f, "\\\\")?,
-                        '\n' => write!(f, "\\n")?,
-                        '\r' => write!(f, "\\r")?,
-                        '\t' => write!(f, "\\t")?,
-                        c if c < '\x20' => write!(f, "\\u{:04x}", c as u32)?,
-                        c => write!(f, "{c}")?,
-                    }
-                }
-                write!(f, "\"")
-            }
+            Self::String(s) => write_json_str(f, s),
             Self::Array(items) => {
                 write!(f, "[")?;
                 for (i, item) in items.iter().enumerate() {
@@ -140,7 +266,7 @@ impl fmt::Display for JsonValue {
                     if i > 0 {
                         write!(f, ",")?;
                     }
-                    write!(f, "{}", Self::String(key.clone()))?;
+                    write_json_str(f, key)?;
                     write!(f, ":{val}")?;
                 }
                 write!(f, "}}")
@@ -210,7 +336,7 @@ fn parse_object(bytes: &[u8], pos: &mut usize) -> Result<JsonValue, JsonError> {
         *pos += 1; // skip ':'
 
         let value = parse_value(bytes, pos)?;
-        pairs.push((key, value));
+        pairs.push((Cow::Owned(key), value));
 
         skip_whitespace(bytes, pos);
         match peek(bytes, *pos)? {

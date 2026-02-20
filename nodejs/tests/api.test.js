@@ -2,6 +2,7 @@
 
 const { describe, it, before, after, mock } = require('node:test');
 const assert = require('node:assert/strict');
+const http = require('node:http');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
@@ -11,7 +12,6 @@ const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'ag-api-test-'));
 const dbPath = path.join(tmpDir, 'test.db');
 process.env.DB_PATH = dbPath;
 
-const express = require('express');
 const db = require('../src/db');
 
 mock.method(console, 'log', () => {});
@@ -20,10 +20,35 @@ mock.method(console, 'error', () => {});
 const poller = require('../src/poller');
 poller.initHealth();
 
-const apiRouter = require('../src/api');
+const { handleApi, sendJson } = require('../src/api');
 
 let server;
 let baseUrl;
+
+function parseQuery(url) {
+  const params = {};
+  const qIdx = url.indexOf('?');
+  if (qIdx === -1) {
+    return params;
+  }
+  const searchParams = new URLSearchParams(url.slice(qIdx + 1));
+  for (const [key, value] of searchParams) {
+    params[key] = value;
+  }
+  return params;
+}
+
+function getPathname(url) {
+  const qIdx = url.indexOf('?');
+  return qIdx === -1 ? url : url.slice(0, qIdx);
+}
+
+const startedAt = Date.now();
+let requestsServed = 0;
+const appLocals = {
+  startedAt,
+  getRequestsServed: () => requestsServed,
+};
 
 before(async () => {
   const now = Date.now();
@@ -51,11 +76,24 @@ before(async () => {
   }
   rawDb.close();
 
-  const app = express();
-  app.disable('x-powered-by');
-  app.use('/api', apiRouter);
+  server = http.createServer((req, res) => {
+    requestsServed++;
+    const pathname = getPathname(req.url);
+    const query = parseQuery(req.url);
+
+    if (pathname.startsWith('/api/')) {
+      const apiPath = pathname.slice(4);
+      const handled = handleApi(req, res, apiPath, query, appLocals);
+      if (!handled) {
+        sendJson(res, 404, { error: 'Not found' });
+      }
+      return;
+    }
+    sendJson(res, 404, { error: 'Not found' });
+  });
+
   await new Promise((resolve) => {
-    server = app.listen(0, '127.0.0.1', () => {
+    server.listen(0, '127.0.0.1', () => {
       const addr = server.address();
       baseUrl = `http://127.0.0.1:${addr.port}`;
       resolve();

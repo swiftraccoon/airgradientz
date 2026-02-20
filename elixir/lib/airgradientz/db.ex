@@ -191,7 +191,7 @@ defmodule Airgradientz.DB do
             Map.get(data, "tvocIndex"),
             Map.get(data, "noxIndex"),
             Map.get(data, "wifi"),
-            Jason.encode!(data)
+            Airgradientz.Json.encode!(data)
           ])
 
         :done = Exqlite.Sqlite3.step(conn, stmt)
@@ -365,18 +365,13 @@ defmodule Airgradientz.DB do
 
   # -- Helpers --
 
+  # Batch all rows in a single NIF call (multi_step resets the statement on :done)
+  @fetch_chunk_size 50_000
+
   defp exec_prepared(conn, stmt, binds) do
     :ok = Exqlite.Sqlite3.bind(stmt, binds)
-    rows = fetch_all_rows(conn, stmt, [])
-    Exqlite.Sqlite3.reset(stmt)
+    {:ok, rows} = Exqlite.Sqlite3.fetch_all(conn, stmt, @fetch_chunk_size)
     rows
-  end
-
-  defp fetch_all_rows(conn, stmt, acc) do
-    case Exqlite.Sqlite3.step(conn, stmt) do
-      {:row, row} -> fetch_all_rows(conn, stmt, [row | acc])
-      :done -> Enum.reverse(acc)
-    end
   end
 
   # SQLite REAL columns return floats even for whole numbers (1.0 instead of 1).

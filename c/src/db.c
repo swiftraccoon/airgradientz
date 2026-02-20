@@ -884,3 +884,167 @@ JsonValue *device_summary_to_json(const DeviceSummary *d)
     json_object_set(obj, "reading_count", json_from_i64(d->reading_count));
     return obj;
 }
+
+/* ---- direct-to-StrBuf serialization (no JSON DOM) ---- */
+
+/* Pre-computed JSON key literals — avoids serialize_string overhead for
+   known-safe compile-time constant keys.  Each includes the quotes and colon. */
+#define DEFKEY(name, lit) static const char key_##name[] = "\"" lit "\":"
+DEFKEY(id,                "id");
+DEFKEY(timestamp,         "timestamp");
+DEFKEY(device_id,         "device_id");
+DEFKEY(device_type,       "device_type");
+DEFKEY(device_ip,         "device_ip");
+DEFKEY(pm01,              "pm01");
+DEFKEY(pm02,              "pm02");
+DEFKEY(pm10,              "pm10");
+DEFKEY(pm02_compensated,  "pm02_compensated");
+DEFKEY(rco2,              "rco2");
+DEFKEY(atmp,              "atmp");
+DEFKEY(atmp_compensated,  "atmp_compensated");
+DEFKEY(rhum,              "rhum");
+DEFKEY(rhum_compensated,  "rhum_compensated");
+DEFKEY(tvoc_index,        "tvoc_index");
+DEFKEY(nox_index,         "nox_index");
+DEFKEY(wifi,              "wifi");
+DEFKEY(last_seen,         "last_seen");
+DEFKEY(reading_count,     "reading_count");
+#undef DEFKEY
+
+/* Emit helpers that take a pre-computed key literal (bytes + length).
+   These skip json_serialize_string_to entirely for keys. */
+
+static void emit_key_str(StrBuf *out, const char *k, size_t klen, const char *val)
+{
+    strbuf_append(out, k, klen);
+    json_serialize_string_to(val, out);
+}
+
+static void emit_key_i64(StrBuf *out, const char *k, size_t klen, int64_t val)
+{
+    strbuf_append(out, k, klen);
+    json_serialize_i64_to(val, out);
+}
+
+static void emit_key_opt_f64(StrBuf *out, const char *k, size_t klen, bool has, double val)
+{
+    strbuf_append(out, k, klen);
+    if (has) {
+        json_serialize_f64_to(val, out);
+    } else {
+        strbuf_append(out, "null", 4);
+    }
+}
+
+static void emit_key_opt_i64(StrBuf *out, const char *k, size_t klen, bool has, int64_t val)
+{
+    strbuf_append(out, k, klen);
+    if (has) {
+        json_serialize_i64_to(val, out);
+    } else {
+        strbuf_append(out, "null", 4);
+    }
+}
+
+/* Convenience macro: emit_key_*(out, KEY(name), ...) */
+#define KEY(name) key_##name, sizeof(key_##name) - 1
+
+static void reading_serialize_to(const Reading *r, StrBuf *out)
+{
+    strbuf_append_char(out, '{');
+    bool first = true;
+
+    if (r->id != 0) {
+        emit_key_i64(out, KEY(id), r->id);
+        first = false;
+    }
+
+    if (!first) strbuf_append_char(out, ',');
+    emit_key_i64(out, KEY(timestamp), r->timestamp);
+
+    strbuf_append_char(out, ',');
+    emit_key_str(out, KEY(device_id), r->device_id);
+
+    strbuf_append_char(out, ',');
+    emit_key_str(out, KEY(device_type), r->device_type);
+
+    strbuf_append_char(out, ',');
+    emit_key_str(out, KEY(device_ip), r->device_ip);
+
+    strbuf_append_char(out, ',');
+    emit_key_opt_f64(out, KEY(pm01), r->has_pm01, r->pm01);
+
+    strbuf_append_char(out, ',');
+    emit_key_opt_f64(out, KEY(pm02), r->has_pm02, r->pm02);
+
+    strbuf_append_char(out, ',');
+    emit_key_opt_f64(out, KEY(pm10), r->has_pm10, r->pm10);
+
+    strbuf_append_char(out, ',');
+    emit_key_opt_f64(out, KEY(pm02_compensated), r->has_pm02_compensated, r->pm02_compensated);
+
+    strbuf_append_char(out, ',');
+    emit_key_opt_i64(out, KEY(rco2), r->has_rco2, r->rco2);
+
+    strbuf_append_char(out, ',');
+    emit_key_opt_f64(out, KEY(atmp), r->has_atmp, r->atmp);
+
+    strbuf_append_char(out, ',');
+    emit_key_opt_f64(out, KEY(atmp_compensated), r->has_atmp_compensated, r->atmp_compensated);
+
+    strbuf_append_char(out, ',');
+    emit_key_opt_f64(out, KEY(rhum), r->has_rhum, r->rhum);
+
+    strbuf_append_char(out, ',');
+    emit_key_opt_f64(out, KEY(rhum_compensated), r->has_rhum_compensated, r->rhum_compensated);
+
+    strbuf_append_char(out, ',');
+    emit_key_opt_f64(out, KEY(tvoc_index), r->has_tvoc_index, r->tvoc_index);
+
+    strbuf_append_char(out, ',');
+    emit_key_opt_f64(out, KEY(nox_index), r->has_nox_index, r->nox_index);
+
+    strbuf_append_char(out, ',');
+    emit_key_opt_i64(out, KEY(wifi), r->has_wifi, r->wifi);
+
+    strbuf_append_char(out, '}');
+}
+
+static void device_summary_serialize_to(const DeviceSummary *d, StrBuf *out)
+{
+    strbuf_append_char(out, '{');
+
+    emit_key_str(out, KEY(device_id), d->device_id);
+    strbuf_append_char(out, ',');
+    emit_key_str(out, KEY(device_type), d->device_type);
+    strbuf_append_char(out, ',');
+    emit_key_str(out, KEY(device_ip), d->device_ip);
+    strbuf_append_char(out, ',');
+    emit_key_i64(out, KEY(last_seen), d->last_seen);
+    strbuf_append_char(out, ',');
+    emit_key_i64(out, KEY(reading_count), d->reading_count);
+
+    strbuf_append_char(out, '}');
+}
+
+#undef KEY
+
+void reading_list_serialize_to(const ReadingList *rl, StrBuf *out)
+{
+    strbuf_append_char(out, '[');
+    for (size_t i = 0; i < rl->count; i++) {
+        if (i > 0) strbuf_append_char(out, ',');
+        reading_serialize_to(&rl->items[i], out);
+    }
+    strbuf_append_char(out, ']');
+}
+
+void device_summary_list_serialize_to(const DeviceSummaryList *dl, StrBuf *out)
+{
+    strbuf_append_char(out, '[');
+    for (size_t i = 0; i < dl->count; i++) {
+        if (i > 0) strbuf_append_char(out, ',');
+        device_summary_serialize_to(&dl->items[i], out);
+    }
+    strbuf_append_char(out, ']');
+}

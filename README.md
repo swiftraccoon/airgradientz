@@ -8,7 +8,7 @@ Local dashboard for AirGradient air quality monitors. Multiple independent imple
 ## Architecture
 
 - `c/` — C23 implementation (port 3011), canonical web UI in `c/public/`
-- `nodejs/` — Node.js/Express (port 3010), requires fnm + Node 24
+- `nodejs/` — Node.js (port 3010), requires fnm + Node 24
 - `rust/` — Rust 2024 edition (port 3009)
 - `zig/` — Zig 0.15 (port 3012), references `../c/sqlite3.c`
 - `d/` — D/LDC (port 3014)
@@ -17,12 +17,14 @@ Local dashboard for AirGradient air quality monitors. Multiple independent imple
 - `go/` — Go 1.25 (port 3016), `github.com/mattn/go-sqlite3` (CGo)
 - `bash/` — Pure Bash (port 3017), ncat + sqlite3 CLI + jq + curl
 - `asm/` — x86_64 NASM assembly (port 3018), links libc + vendored sqlite3.o
-- `haskell/` — Haskell/GHC 9.10 (port 3019), direct-sqlite + aeson
+- `haskell/` — Haskell/GHC 9.10 (port 3019), direct-sqlite
 - `airgradientz.json` — shared config (devices, poll interval, timeouts)
 - `schema.sql` — shared DB schema (single source of truth)
 - `c/public/` — canonical web UI (HTML/CSS/JS); all other impls symlink to it
 - `queries.sql` — named SQL queries (column lists, INSERT/SELECT patterns)
 - `test-fixtures.json` — canonical AirGradient device payloads for test suites
+- `test-spec.json` — shared edge case definitions (response shapes, query behaviors, downsample buckets)
+- `conformance/` — cross-implementation conformance test suite (compares all impls against C reference)
 - `bench/run.sh` — benchmark harness comparing all implementations
 - `docs/api-spec.md` — API response contract (JSON shapes for all endpoints)
 - `docs/polling-spec.md` — device polling contract (field mapping, health state machine)
@@ -69,7 +71,7 @@ Priority: env vars > `airgradientz.json` > hardcoded defaults.
 | Source | Keys |
 |--------|------|
 | Env vars | `PORT`, `DB_PATH`, `CONFIG_PATH` |
-| JSON file | `defaults.*`, `ports.<impl>`, `devices[].ip/label`, `pollIntervalMs`, `fetchTimeoutMs`, `maxApiRows` |
+| JSON file | `defaults.*`, `ports.<impl>`, `devices[].ip/label`, `pollIntervalMs`, `fetchTimeoutMs`, `maxApiRows`, `downsampleBuckets` |
 
 Config file search order: `CONFIG_PATH` env, `./airgradientz.json`, `../airgradientz.json`.
 
@@ -79,25 +81,26 @@ Config file search order: `CONFIG_PATH` env, `./airgradientz.json`, `../airgradi
 - C: epoll event loop, pool allocator with string arenas for query results
 - Rust: 2024 edition, mio-based event loop, RAII memory management
 - D: LDC compiler, epoll event loop
-- Elixir: OTP supervision tree, hand-rolled :gen_tcp HTTP server, exqlite + jason deps
+- Elixir: OTP supervision tree, hand-rolled :gen_tcp HTTP server, exqlite for SQLite
 - Nim: 2.2, epoll event loop, ORC GC, SQLite via C FFI to vendored sqlite3.c
 - Zig: 0.15 APIs, epoll event loop, per-connection arena allocator
 - Go: 1.25, net/http (goroutine-per-connection), `github.com/mattn/go-sqlite3` (CGo)
 - Bash: ncat fork-per-connection, sqlite3 CLI, jq for JSON, shellcheck -o all clean
 - ASM: x86_64 NASM, epoll event loop, System V AMD64 ABI, links libc + sqlite3.o from `../c/sqlite3.c`
-- Haskell: GHC2021, `-Wall -Wextra -Werror`, direct-sqlite + aeson, custom HTTP server via network, MVar-synchronized DB
+- Haskell: GHC2021, `-Wall -Wextra -Werror`, direct-sqlite, custom HTTP server via network, MVar-synchronized DB
 - SQLite: WAL mode, bundled amalgamation (vendored in `c/sqlite3.c`)
 - Web UI: vanilla HTML/CSS/JS, no build step
-- All compiled impls except Go and Bash: single-threaded non-blocking I/O (no thread-per-connection, ASM uses poller thread for background polling)
+- All compiled impls except Go, Bash, and Haskell: single-threaded non-blocking I/O (no thread-per-connection, ASM uses poller thread for background polling)
 
 ## API Endpoints (all impls)
 
 All implementations expose identical endpoints:
-- `GET /api/readings?from=&to=&device=&limit=` — historical readings
+- `GET /api/readings?from=&to=&device=&limit=&downsample=` — historical readings (downsample: `5m|10m|15m|30m|1h|1d|1w`)
 - `GET /api/readings/latest` — latest reading per device
+- `GET /api/readings/count?from=&to=&device=` — count matching readings
 - `GET /api/devices` — device summaries
 - `GET /api/health` — per-device poll health
-- `GET /api/config` — active configuration
+- `GET /api/config` — active configuration (includes `downsampleBuckets`)
 - `GET /api/stats` — runtime introspection (memory, uptime, counters)
 
 ## Testing
@@ -106,17 +109,17 @@ All implementations have tests. Run `./test.sh` for all, or `./test.sh <impl>` f
 
 | Impl | Framework | Command | Count |
 |------|-----------|---------|-------|
-| C | Custom test runner | `make -C c test` | 65 |
-| Node.js | `node:test` | `cd nodejs && npm test` | 66 |
-| Rust | `cargo test` | `cd rust && cargo test` | 35 |
-| Zig | `zig build test` | `cd zig && zig build test` | 35 |
-| D | Built-in `unittest` | `source d/activate-toolchain.sh && cd d && dub test` | 3 modules |
-| Elixir | ExUnit | `cd elixir && mix test` | 13 |
-| Nim | `unittest` module | `cd nim && nim c -r --path:src tests/test_db.nim` | 16 |
-| Go | `go test` | `cd go && go test ./...` | 48 |
-| Bash | Custom test runner | `cd bash && bash tests/run_tests.sh` | 86 |
-| ASM | Custom test runner | `make -C asm test` | 54 |
-| Haskell | tasty + tasty-hunit | `cd haskell && cabal test --project-file=cabal.project` | 21 |
+| C | Custom test runner | `make -C c test` | 84 |
+| Node.js | `node:test` | `cd nodejs && npm test` | 147 |
+| Rust | `cargo test` | `cd rust && cargo test` | 63 |
+| Zig | `zig build test` | `cd zig && zig build test` | 50 |
+| D | Built-in `unittest` | `source d/activate-toolchain.sh && cd d && dub test` | 5 modules |
+| Elixir | ExUnit | `cd elixir && mix test` | 156 |
+| Nim | `unittest` module | `cd nim && nim c -r --path:src tests/test_db.nim` | 43 |
+| Go | `go test` | `cd go && go test ./...` | 131 |
+| Bash | Custom test runner | `cd bash && bash tests/run_tests.sh` | 164 |
+| ASM | Custom test runner | `make -C asm test` | 148 |
+| Haskell | tasty + tasty-hunit | `cd haskell && cabal test` | 178 |
 
 ## Linting
 

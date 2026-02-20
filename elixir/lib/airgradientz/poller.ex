@@ -94,7 +94,7 @@ defmodule Airgradientz.Poller do
   defp handle_response(device, body) do
     body_str = IO.iodata_to_binary(body)
 
-    case Jason.decode(body_str) do
+    case Airgradientz.Json.decode(body_str) do
       {:ok, data} when is_map(data) ->
         case Airgradientz.DB.insert_reading(device.ip, data) do
           :ok ->
@@ -116,8 +116,8 @@ defmodule Airgradientz.Poller do
             Logger.error("[poller] #{device.label} (#{device.ip}): #{msg}")
         end
 
-      {:error, %Jason.DecodeError{} = err} ->
-        msg = "JSON decode failed: #{Exception.message(err)}"
+      {:error, reason} ->
+        msg = "JSON decode failed: #{inspect(reason)}"
         Airgradientz.Health.record_failure(device.ip, msg)
         Airgradientz.Stats.increment_poll_failures()
         Logger.error("[poller] #{device.label} (#{device.ip}): #{msg}")

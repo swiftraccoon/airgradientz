@@ -1,10 +1,11 @@
 'use strict';
 
-const express = require('express');
+const http = require('node:http');
+const fs = require('node:fs');
 const path = require('node:path');
 const config = require('./config');
 const { timestamp } = require('./src/log');
-const apiRouter = require('./src/api');
+const { handleApi, sendJson } = require('./src/api');
 const { startPoller, stopPoller } = require('./src/poller');
 const { close: closeDb } = require('./src/db');
 
@@ -15,58 +16,137 @@ if (major < 24) {
   process.exit(1);
 }
 
-// --- Express setup ---
+// --- State ---
 const startedAt = Date.now();
 let requestsServed = 0;
 
-const app = express();
+const appLocals = {
+  startedAt,
+  getRequestsServed: () => requestsServed,
+};
 
-// Security: remove fingerprint header
-app.disable('x-powered-by');
+// --- MIME types for static file serving ---
+const MIME_TYPES = Object.freeze({
+  '.html': 'text/html',
+  '.css': 'text/css',
+  '.js': 'application/javascript',
+  '.json': 'application/json',
+  '.png': 'image/png',
+  '.jpg': 'image/jpeg',
+  '.jpeg': 'image/jpeg',
+  '.gif': 'image/gif',
+  '.svg': 'image/svg+xml',
+  '.ico': 'image/x-icon',
+  '.woff': 'font/woff',
+  '.woff2': 'font/woff2',
+  '.ttf': 'font/ttf',
+  '.txt': 'text/plain',
+});
 
-// Security headers
-app.use((_req, res, next) => {
+const PUBLIC_DIR = path.join(__dirname, 'public');
+
+function parseQuery(url) {
+  const params = {};
+  const qIdx = url.indexOf('?');
+  if (qIdx === -1) {
+    return params;
+  }
+  const searchParams = new URLSearchParams(url.slice(qIdx + 1));
+  for (const [key, value] of searchParams) {
+    params[key] = value; // eslint-disable-line security/detect-object-injection
+  }
+  return params;
+}
+
+function getPathname(url) {
+  const qIdx = url.indexOf('?');
+  const raw = qIdx === -1 ? url : url.slice(0, qIdx);
+  // Normalize: remove trailing slash (except for root)
+  if (raw.length > 1 && raw.endsWith('/')) {
+    return raw.slice(0, -1);
+  }
+  return raw;
+}
+
+function serveStatic(res, pathname) {
+  // Path traversal detection (check decoded path)
+  const decoded = decodeURIComponent(pathname);
+  if (decoded.includes('..')) {
+    sendJson(res, 403, { error: 'Forbidden' });
+    return;
+  }
+
+  // Map / to /index.html
+  const filePath = pathname === '/' ? '/index.html' : pathname;
+  const fullPath = path.join(PUBLIC_DIR, filePath);
+
+  // Double-check resolved path is within PUBLIC_DIR
+  const resolved = path.resolve(fullPath);
+  if (!resolved.startsWith(PUBLIC_DIR)) {
+    sendJson(res, 403, { error: 'Forbidden' });
+    return;
+  }
+
+  // Determine MIME type
+  const ext = path.extname(resolved).toLowerCase();
+  // eslint-disable-next-line security/detect-object-injection
+  const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+
+  // Read and serve file
+  // resolved comes from joining PUBLIC_DIR (hardcoded) with the URL path after traversal checks.
+  // Not user-controlled beyond the validated pathname.
+  fs.readFile(resolved, (err, data) => { // eslint-disable-line security/detect-non-literal-fs-filename
+    if (err) {
+      sendJson(res, 404, { error: 'Not found' });
+      return;
+    }
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      'Content-Length': data.length,
+      'Cache-Control': 'public, max-age=600',
+    });
+    res.end(data);
+  });
+}
+
+// --- HTTP Server ---
+const server = http.createServer((req, res) => {
   requestsServed++;
+
+  // Security headers (on every response)
   res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('X-Frame-Options', 'DENY');
   res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
-  next();
-});
 
-app.locals.startedAt = startedAt;
-app.locals.getRequestsServed = () => requestsServed;
-
-// Reject non-GET methods early (405 Method Not Allowed)
-app.use((req, res, next) => {
+  // Reject non-GET methods (405 Method Not Allowed)
   if (req.method !== 'GET') {
-    return res.status(405).json({ error: 'Method not allowed' });
+    sendJson(res, 405, { error: 'Method not allowed' });
+    return;
   }
-  next();
-});
 
-app.use('/api', apiRouter);
+  const pathname = getPathname(req.url);
+  const query = parseQuery(req.url);
 
-// Path traversal detection (before static file serving)
-app.use((req, res, next) => {
-  const decoded = decodeURIComponent(req.path);
-  if (decoded.includes('..')) {
-    return res.status(403).json({ error: 'Forbidden' });
+  // API routes
+  if (pathname.startsWith('/api/')) {
+    const apiPath = pathname.slice(4); // strip "/api" prefix -> "/readings", "/health", etc.
+    const handled = handleApi(req, res, apiPath, query, appLocals);
+    if (!handled) {
+      sendJson(res, 404, { error: 'Not found' });
+    }
+    return;
   }
-  next();
-});
+  if (pathname === '/api') {
+    sendJson(res, 404, { error: 'Not found' });
+    return;
+  }
 
-app.use(express.static(path.join(__dirname, 'public'), {
-  maxAge: '10m',
-  etag: true,
-}));
-
-// Catch-all 404 for unmatched routes
-app.use((_req, res) => {
-  res.status(404).json({ error: 'Not found' });
+  // Static file serving
+  serveStatic(res, pathname);
 });
 
 // --- Start ---
-const server = app.listen(config.port, () => {
+server.listen(config.port, () => {
   console.log(`${timestamp()} [server] Listening on http://localhost:${config.port} (Node ${process.version})`);
   startPoller();
 });

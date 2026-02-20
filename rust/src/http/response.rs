@@ -1,5 +1,3 @@
-use crate::json::JsonValue;
-
 #[derive(Debug)]
 pub(crate) struct HttpResponse {
     status: u16,
@@ -25,7 +23,8 @@ impl HttpResponse {
         }
     }
 
-    pub(crate) fn ok_json(json: &JsonValue) -> Self {
+    #[cfg(test)]
+    pub(crate) fn ok_json(json: &crate::json::JsonValue) -> Self {
         let body = json.to_string().into_bytes();
         let mut resp = Self::new(200, "OK");
         resp.headers
@@ -33,6 +32,18 @@ impl HttpResponse {
         resp.headers
             .push(("Content-Length".to_string(), body.len().to_string()));
         resp.body = body;
+        resp
+    }
+
+    /// Build a 200 JSON response from a pre-serialized JSON string.
+    /// Avoids the Display trait overhead and allows pre-allocated buffers.
+    pub(crate) fn ok_json_raw(json_body: String) -> Self {
+        let mut resp = Self::new(200, "OK");
+        resp.headers
+            .push(("Content-Type".to_string(), "application/json".to_string()));
+        resp.headers
+            .push(("Content-Length".to_string(), json_body.len().to_string()));
+        resp.body = json_body.into_bytes();
         resp
     }
 
@@ -124,7 +135,7 @@ impl HttpResponse {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::json::json_object;
+    use crate::json::{json_object, JsonValue};
 
     #[test]
     fn test_ok_json_response() {
