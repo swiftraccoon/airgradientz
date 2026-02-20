@@ -7,8 +7,9 @@ extern atoll, atoi
 extern parse_query_param
 extern db_get_readings, db_get_readings_downsampled, db_get_latest, db_get_devices
 extern db_get_filtered_count
-extern clock_gettime, fprintf, fopen, fread, fclose
+extern clock_gettime, fprintf, fopen, fread, fclose, getpid, stat
 extern stderr
+extern db_get_count, g_db_path
 
 extern pthread_rwlock_rdlock, pthread_rwlock_unlock
 
@@ -902,27 +903,60 @@ handle_stats:
 .hs_no_rss:
 
 .hs_build:
-    ; Build stats JSON
-    ; Push stack args (right-to-left): poll_failures, poll_successes, active_conns, requests_served
-    mov rax, [g_poll_failures]
-    push rax
-    mov rax, [g_poll_successes]
-    push rax
-    mov rax, [g_active_conns]
-    push rax
-    mov rax, [g_requests_served]
-    push rax
+    ; Get PID
+    call getpid wrt ..plt
+    cdqe
+    mov r12, rax            ; r12 = pid
 
-    lea rdi, [rsp + 32]     ; buffer (4 pushes = 32 bytes)
+    ; Get DB size via stat()
+    sub rsp, 144            ; struct stat buffer (144 bytes on x86_64)
+    mov rdi, [g_db_path]
+    mov rsi, rsp
+    call stat wrt ..plt
+    xor ecx, ecx
+    test eax, eax
+    jnz .hs_no_db
+    mov rcx, [rsp + 48]     ; st_size at offset 48
+.hs_no_db:
+    add rsp, 144
+    mov [rsp + 4096], rcx   ; save db_size_bytes in scratch area
+
+    ; Get readings count
+    call db_get_count
+    mov [rsp + 4104], rax   ; save readings_count in scratch area
+
+    ; Build stats JSON
+    ; Register args: rcx=pid, r8=uptime_ms, r9=rss_bytes
+    ; Stack args (right-to-left): started_at, poll_failures, poll_successes,
+    ;   active_conns, requests_served, readings_count, db_size_bytes
+    ; + 1 padding for 16-byte alignment = 8 pushes = 64 bytes
+    xor eax, eax
+    push rax                            ; alignment padding
+    mov rax, [g_started_at]
+    push rax                            ; arg 10: started_at
+    mov rax, [g_poll_failures]
+    push rax                            ; arg 9: poll_failures
+    mov rax, [g_poll_successes]
+    push rax                            ; arg 8: poll_successes
+    mov rax, [g_active_conns]
+    push rax                            ; arg 7: active_connections
+    mov rax, [g_requests_served]
+    push rax                            ; arg 6: requests_served
+    mov rax, [rsp + 48 + 4104]         ; readings_count (6 pushes = 48 bytes offset)
+    push rax                            ; arg 5: readings_count
+    mov rax, [rsp + 56 + 4096]         ; db_size_bytes (7 pushes = 56 bytes offset)
+    push rax                            ; arg 4: db_size_bytes
+
+    lea rdi, [rsp + 64]     ; buffer (8 pushes = 64 bytes)
     mov esi, 4096
     lea rdx, [fmt_stats_json]
-    mov rcx, rbx            ; uptime_ms
-    mov r8, r15              ; rss_bytes
-    mov r9, [g_started_at]   ; started_at
+    mov rcx, r12             ; pid
+    mov r8, rbx              ; uptime_ms
+    mov r9, r15              ; rss_bytes
     xor eax, eax
     call snprintf wrt ..plt
 
-    add rsp, 32
+    add rsp, 64
 
     lea rdi, [rsp]
     call strdup wrt ..plt

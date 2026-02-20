@@ -185,6 +185,7 @@ http_200_file_hdr:
     db `Content-Length: %zu\r\n`
     db `X-Content-Type-Options: nosniff\r\n`
     db `X-Frame-Options: DENY\r\n`
+    db `Cache-Control: public, max-age=600\r\n`
     db `Connection: close\r\n`
     db `\r\n`, 0
 
@@ -252,10 +253,12 @@ http_500_response_len equ $ - http_500_response - 1
 
 global fmt_stats_json
 fmt_stats_json:
-    db `{"implementation":"asm","uptime_ms":%lld,"memory_rss_bytes":%lld,`
-    db `"started_at":%lld,"requests_served":%lld,`
-    db `"active_connections":%lld,`
-    db `"poll_successes":%lld,"poll_failures":%lld}`, 0
+    db `{"implementation":"asm","pid":%lld,"uptime_ms":%lld,`
+    db `"memory_rss_bytes":%lld,"db_size_bytes":%lld,`
+    db `"readings_count":%lld,"requests_served":%lld,`
+    db `"active_connections":%lld,"poll_successes":%lld,`
+    db `"poll_failures":%lld,"pool_alloc_count":0,`
+    db `"pool_bytes_used":0,"started_at":%lld}`, 0
 
 global fmt_config_json
 fmt_config_json:

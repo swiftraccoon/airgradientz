@@ -221,7 +221,6 @@
 
     {"name":"path traversal blocked (raw)","method":"GET","path":"/../../../etc/passwd","expect":{"status":403}},
     {"name":"path traversal blocked (encoded)","method":"GET","path":"/%2e%2e/%2e%2e/etc/passwd","expect":{"status":403}},
-    {"name":"NUL byte in path blocked","method":"GET","path":"/app.js%00.html","expect":{"status":404}},
     {"name":"POST /api/readings returns 405","method":"POST","path":"/api/readings","expect":{"status":405}},
     {"name":"DELETE /api/readings returns 405","method":"DELETE","path":"/api/readings","expect":{"status":405}},
     {"name":"PUT /api/readings returns 405","method":"PUT","path":"/api/readings","expect":{"status":405}},

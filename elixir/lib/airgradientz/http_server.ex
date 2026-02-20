@@ -372,7 +372,7 @@ defmodule Airgradientz.HttpServer do
         case File.read(full_path) do
           {:ok, content} ->
             content_type = content_type_for(file_path)
-            send_response(socket, 200, "OK", content_type, content)
+            send_response(socket, 200, "OK", content_type, content, "Cache-Control: public, max-age=600\r\n")
 
           {:error, _reason} ->
             send_json_error(socket, 404, "Not found")
@@ -389,13 +389,14 @@ defmodule Airgradientz.HttpServer do
 
   # -- Response helpers --
 
-  defp send_response(socket, status_code, status_text, content_type, body) do
+  defp send_response(socket, status_code, status_text, content_type, body, extra_headers \\ "") do
     header =
       "HTTP/1.1 #{status_code} #{status_text}\r\n" <>
         "Connection: close\r\n" <>
         "X-Content-Type-Options: nosniff\r\n" <>
         "X-Frame-Options: DENY\r\n" <>
         "Referrer-Policy: no-referrer\r\n" <>
+        extra_headers <>
         "Content-Type: #{content_type}\r\n" <>
         "Content-Length: #{byte_size(body)}\r\n" <>
         "\r\n"
