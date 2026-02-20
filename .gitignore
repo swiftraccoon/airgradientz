@@ -53,6 +53,9 @@ asm/src/*.o
 # Elixir crash dumps
 elixir/erl_crash.dump
 
+# Benchmark results
+bench/results/
+
 # Other
 references/
 CLAUDE.md
