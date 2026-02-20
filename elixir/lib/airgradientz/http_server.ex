@@ -313,6 +313,8 @@ defmodule Airgradientz.HttpServer do
       active_connections: counters.active_connections,
       poll_successes: counters.poll_successes,
       poll_failures: counters.poll_failures,
+      pool_alloc_count: 0,
+      pool_bytes_used: 0,
       started_at: counters.started_at
     }
 

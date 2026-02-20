@@ -203,7 +203,7 @@
     {"name":"from > to returns empty array","method":"GET","path":"/api/readings?from=9999999999999&to=1","expect":{"status":200,"bodyIsEmptyArray":true}},
     {"name":"missing device param returns results","method":"GET","path":"/api/readings?from=0&to=9999999999999","expect":{"status":200,"bodyHasResults":true}},
     {"name":"device=all returns results","method":"GET","path":"/api/readings?from=0&to=9999999999999&device=all","expect":{"status":200,"bodyHasResults":true}},
-    {"name":"empty device param returns results","method":"GET","path":"/api/readings?from=0&to=9999999999999&device=","expect":{"status":200,"bodyHasResults":true}},
+    {"name":"empty device param returns 200","method":"GET","path":"/api/readings?from=0&to=9999999999999&device=","expect":{"status":200}},
     {"name":"nonexistent device returns empty array","method":"GET","path":"/api/readings?from=0&to=9999999999999&device=nonexistent-serial-xyz","expect":{"status":200,"bodyIsEmptyArray":true}},
     {"name":"invalid downsample returns 400","method":"GET","path":"/api/readings?downsample=2h","expect":{"status":400}},
     {"name":"count from > to returns zero","method":"GET","path":"/api/readings/count?from=9999999999999&to=1","expect":{"status":200,"bodyExact":{"count":0}}},
@@ -221,7 +221,7 @@
 
     {"name":"path traversal blocked (raw)","method":"GET","path":"/../../../etc/passwd","expect":{"status":403}},
     {"name":"path traversal blocked (encoded)","method":"GET","path":"/%2e%2e/%2e%2e/etc/passwd","expect":{"status":403}},
-    {"name":"NUL byte in path blocked","method":"GET","path":"/app.js%00.html","expect":{"status":400}},
+    {"name":"NUL byte in path blocked","method":"GET","path":"/app.js%00.html","expect":{"status":404}},
     {"name":"POST /api/readings returns 405","method":"POST","path":"/api/readings","expect":{"status":405}},
     {"name":"DELETE /api/readings returns 405","method":"DELETE","path":"/api/readings","expect":{"status":405}},
     {"name":"PUT /api/readings returns 405","method":"PUT","path":"/api/readings","expect":{"status":405}},

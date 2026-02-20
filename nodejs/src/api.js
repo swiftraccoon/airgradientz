@@ -144,6 +144,8 @@ function handleStats(res, appLocals) {
     active_connections: 0,
     poll_successes: pollSuccesses,
     poll_failures: pollFailures,
+    pool_alloc_count: 0,
+    pool_bytes_used: 0,
     started_at: appLocals.startedAt,
   });
   return true;
